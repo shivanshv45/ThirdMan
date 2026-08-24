@@ -13,7 +13,7 @@ import { createTestMerchant } from "@/lib/test-helpers";
  * this proves the actual logic those wrappers delegate to.
  */
 async function main() {
-  const merchant = await createTestMerchant("__dashboard_action_check_merchant__");
+  const merchant = await createTestMerchant("__dashboard_action_check_merchant__", { withRazorpayCredentials: true });
 
   const [agent] = await db
     .insert(schema.agents)
@@ -77,7 +77,7 @@ async function main() {
 
   // --- resolveEscalation via reject: a fresh cap, so the second purchase
   // is again ~95% of *its own* cap rather than a small remaining sliver.
-  const cap2 = await setSpendCap({
+  await setSpendCap({
     merchantId: merchant.id,
     agentId: agent.id,
     capRupees: 1000,

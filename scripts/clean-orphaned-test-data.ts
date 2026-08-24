@@ -1,4 +1,4 @@
-import { like, or, inArray, eq } from "drizzle-orm";
+import { like, or, inArray } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 
 // One-off: removes merchants (and their cascaded rows) left behind by

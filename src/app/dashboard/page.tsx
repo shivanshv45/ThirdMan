@@ -1,11 +1,11 @@
 import { redirect } from "next/navigation";
-import { getAgentsWithCaps, getAuditTrail, getPendingEscalations } from "@/lib/dashboard";
+import Link from "next/link";
+import { getAgentsWithCaps, getAuditTrail, getPendingEscalations, getRazorpayConnectionStatus } from "@/lib/dashboard";
 import { getSessionMerchant } from "@/lib/auth";
-import { setSpendCap, revokeAgent, reactivateAgent, approveEscalation, rejectEscalation, logout } from "./actions";
-
-function rupees(paise: number): string {
-  return `₹${(paise / 100).toFixed(2)}`;
-}
+import { setSpendCap, revokeAgent, reactivateAgent, approveEscalation, rejectEscalation } from "./actions";
+import { CreateAgentForm, RotateKeyButton } from "./agent-key-reveal";
+import { AuditTrail } from "./audit-trail";
+import { formatPaise as rupees } from "@/lib/money";
 
 function formatDate(d: Date): string {
   return new Date(d).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
@@ -15,30 +15,71 @@ export default async function DashboardPage() {
   const merchant = await getSessionMerchant();
   if (!merchant) redirect("/login");
 
-  const [agents, auditTrail, escalations] = await Promise.all([
+  const [agents, auditTrail, escalations, razorpayStatus] = await Promise.all([
     getAgentsWithCaps(merchant.id),
     getAuditTrail(merchant.id, 100),
     getPendingEscalations(merchant.id),
+    getRazorpayConnectionStatus(merchant.id),
   ]);
+
+  const hasAgentWithCap = agents.some((a) => a.cap !== null);
+  const isFirstRun = !razorpayStatus.connected || agents.length === 0 || !hasAgentWithCap;
 
   return (
     <main className="max-w-5xl mx-auto p-6 space-y-10">
-      <header className="flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">{merchant.name}</h1>
-          <p className="text-sm text-gray-500">Merchant dashboard — spend caps, escalations, audit trail</p>
-        </div>
-        <form action={logout}>
-          <button type="submit" className="text-sm px-3 py-1 rounded border hover:bg-gray-50">
-            Log out
-          </button>
-        </form>
+      <header>
+        <h1 className="text-2xl font-semibold">Overview</h1>
+        <p className="text-sm text-gray-500">Spend caps, escalations, and the audit trail</p>
       </header>
+
+      {isFirstRun && (
+        <section className="border border-blue-200 bg-blue-50 rounded-lg p-5">
+          <h2 className="font-semibold mb-3">Get set up</h2>
+          <ol className="space-y-2 text-sm">
+            <li className="flex items-center gap-2">
+              <span className={razorpayStatus.connected ? "text-green-600" : "text-gray-400"}>
+                {razorpayStatus.connected ? "✓" : "○"}
+              </span>
+              {razorpayStatus.connected ? (
+                <span>Connected to Razorpay ({razorpayStatus.maskedKeyId})</span>
+              ) : (
+                <span>
+                  <Link href="/dashboard/settings" className="text-blue-700 underline">
+                    Connect your Razorpay test account
+                  </Link>{" "}
+                  — every purchase settles into your own account, not a shared one.
+                </span>
+              )}
+            </li>
+            <li className="flex items-center gap-2">
+              <span className={agents.length > 0 ? "text-green-600" : "text-gray-400"}>
+                {agents.length > 0 ? "✓" : "○"}
+              </span>
+              <span>Create an agent below — it gets its own API key an AI buyer authenticates with.</span>
+            </li>
+            <li className="flex items-center gap-2">
+              <span className={hasAgentWithCap ? "text-green-600" : "text-gray-400"}>
+                {hasAgentWithCap ? "✓" : "○"}
+              </span>
+              <span>Set a spend cap on that agent — no cap means it can never transact.</span>
+            </li>
+          </ol>
+        </section>
+      )}
 
       <section>
         <h2 className="text-lg font-semibold mb-3">Agents &amp; caps</h2>
+
+        <div className="mb-4">
+          <CreateAgentForm />
+        </div>
+
         <div className="space-y-4">
-          {agents.length === 0 && <p className="text-sm text-gray-500">No agents yet.</p>}
+          {agents.length === 0 && (
+            <p className="text-sm text-gray-500">
+              No agents yet — create one above to give an AI buyer a scoped API key and spend cap.
+            </p>
+          )}
           {agents.map((agent) => (
             <div key={agent.id} className="border rounded-lg p-4">
               <div className="flex items-center justify-between">
@@ -52,15 +93,18 @@ export default async function DashboardPage() {
                     {agent.status}
                   </span>
                 </div>
-                <form action={agent.status === "active" ? revokeAgent : reactivateAgent}>
-                  <input type="hidden" name="agentId" value={agent.id} />
-                  <button
-                    type="submit"
-                    className="text-sm px-3 py-1 rounded border hover:bg-gray-50"
-                  >
-                    {agent.status === "active" ? "Revoke" : "Reactivate"}
-                  </button>
-                </form>
+                <div className="flex items-center gap-2">
+                  <RotateKeyButton agentId={agent.id} />
+                  <form action={agent.status === "active" ? revokeAgent : reactivateAgent}>
+                    <input type="hidden" name="agentId" value={agent.id} />
+                    <button
+                      type="submit"
+                      className="text-sm px-3 py-1 rounded border hover:bg-gray-50"
+                    >
+                      {agent.status === "active" ? "Revoke" : "Reactivate"}
+                    </button>
+                  </form>
+                </div>
               </div>
 
               {agent.cap ? (
@@ -151,54 +195,7 @@ export default async function DashboardPage() {
         )}
       </section>
 
-      <section>
-        <h2 className="text-lg font-semibold mb-3">Audit trail</h2>
-        <div className="space-y-1">
-          {auditTrail.length === 0 && <p className="text-sm text-gray-500">No entries yet.</p>}
-          {auditTrail.map((entry) => (
-            <div
-              key={entry.id}
-              className={`border-l-4 pl-3 py-2 text-sm ${
-                entry.decision === "allow"
-                  ? "border-green-500"
-                  : entry.decision === "deny"
-                    ? "border-red-500"
-                    : entry.decision === "escalate"
-                      ? "border-amber-500"
-                      : "border-gray-300"
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <span
-                  className={`text-xs font-semibold uppercase ${
-                    entry.decision === "allow"
-                      ? "text-green-700"
-                      : entry.decision === "deny"
-                        ? "text-red-700"
-                        : entry.decision === "escalate"
-                          ? "text-amber-700"
-                          : "text-gray-500"
-                  }`}
-                >
-                  {entry.decision}
-                </span>
-                <span className="text-xs text-gray-400">{entry.event}</span>
-                <span className="text-xs text-gray-400 ml-auto">{formatDate(entry.createdAt)}</span>
-              </div>
-              <p className="text-gray-800">{entry.reason}</p>
-              {entry.boundApplied && (
-                <p className="text-xs text-gray-500">Bound: {entry.boundApplied}</p>
-              )}
-              {entry.moneyAction && (
-                <p className="text-xs text-gray-500">
-                  {entry.moneyAction.type} — {rupees(entry.moneyAction.amountPaise)} — {entry.moneyAction.status}
-                  {entry.moneyAction.razorpayEntityId && ` — ${entry.moneyAction.razorpayEntityId}`}
-                </p>
-              )}
-            </div>
-          ))}
-        </div>
-      </section>
+      <AuditTrail initialEntries={auditTrail} />
     </main>
   );
 }

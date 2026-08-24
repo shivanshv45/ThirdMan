@@ -2,6 +2,8 @@ import { describe, it, expect, afterEach } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { attemptMoneyAction, resolveEscalation } from "@/lib/gate";
+import { encrypt } from "@/lib/crypto";
+import { env } from "@/lib/env";
 
 /**
  * No mocks. These exercise the risk layer through the real gate, with
@@ -14,12 +16,17 @@ import { attemptMoneyAction, resolveEscalation } from "@/lib/gate";
  */
 
 async function makeMerchant() {
+  // Real Razorpay test-mode credentials required — checkBounds denies
+  // any merchant with none connected (Layer 2-2), and this file's
+  // "approve" path executes a real order.
   const [merchant] = await db
     .insert(schema.merchants)
     .values({
       name: `__escalation_test_${Date.now()}_${Math.random()}__`,
       email: `escalation_test_${Date.now()}_${Math.random()}@test.invalid`,
       passwordHash: "test:not-a-real-hash",
+      razorpayKeyIdEncrypted: encrypt(env.RAZORPAY_KEY_ID),
+      razorpayKeySecretEncrypted: encrypt(env.RAZORPAY_KEY_SECRET),
     })
     .returning();
   return merchant;

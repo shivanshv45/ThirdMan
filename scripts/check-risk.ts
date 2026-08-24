@@ -1,4 +1,4 @@
-import { assessRisk, computeRiskSignals } from "@/lib/risk";
+import { assessRisk } from "@/lib/risk";
 
 async function main() {
   console.log("Case 1: small, unremarkable purchase, should allow");

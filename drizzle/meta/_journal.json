@@ -29,6 +29,48 @@
       "when": 1787550976388,
       "tag": "0003_real_riptide",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1787577763119,
+      "tag": "0004_first_whirlwind",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1787590458340,
+      "tag": "0005_fixed_pixie",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787592083770,
+      "tag": "0006_cooing_starjammers",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1787592795126,
+      "tag": "0007_hot_dagger",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1787596202308,
+      "tag": "0008_typical_korath",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1787597813314,
+      "tag": "0009_smiling_black_cat",
+      "breakpoints": true
     }
   ]
 }

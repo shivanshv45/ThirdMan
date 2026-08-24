@@ -1,6 +1,8 @@
 import { eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { createOrder } from "@/lib/razorpay";
+import { decrypt } from "@/lib/crypto";
+import { env } from "@/lib/env";
 import { logAuditEntry, getRecentAuditEntries } from "@/lib/audit";
 
 /**
@@ -30,7 +32,16 @@ async function main() {
 
   console.log(`Using merchant "${merchant.name}", product "${product.name}" (₹${product.pricePaise / 100}).`);
 
-  const order = await createOrder({
+  // Uses this merchant's own connected Razorpay credentials if they've
+  // set any (Layer 2-2), falling back to the shared dev keys otherwise —
+  // this script predates per-merchant credentials and still needs to run
+  // against a merchant that hasn't connected one yet.
+  const credentials =
+    merchant.razorpayKeyIdEncrypted && merchant.razorpayKeySecretEncrypted
+      ? { keyId: decrypt(merchant.razorpayKeyIdEncrypted), keySecret: decrypt(merchant.razorpayKeySecretEncrypted) }
+      : { keyId: env.RAZORPAY_KEY_ID, keySecret: env.RAZORPAY_KEY_SECRET };
+
+  const order = await createOrder(credentials, {
     amountPaise: product.pricePaise,
     receipt: `integration_proof_${Date.now()}`,
     notes: { productId: product.id, purpose: "L0-8 integration proof" },

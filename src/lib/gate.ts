@@ -1,8 +1,34 @@
-import { and, eq, lte, sql } from "drizzle-orm";
+import { and, eq, gte, lte, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { logAuditEntry } from "@/lib/audit";
-import { createOrder, RazorpayCallError } from "@/lib/razorpay";
+import { createOrder, capturePayment, refundPayment, createPaymentLink, RazorpayCallError, type RazorpayCredentials } from "@/lib/razorpay";
+import { decrypt } from "@/lib/crypto";
 import { computeRiskSignals, assessRisk } from "@/lib/risk";
+
+/**
+ * Loads and decrypts a merchant's own Razorpay credentials. The gate is
+ * the only place that does this — feature code never reaches crypto.ts
+ * or razorpay.ts directly. Returns null if the merchant hasn't connected
+ * an account yet, which checkBounds treats as a deny, not a crash.
+ */
+async function loadMerchantCredentials(merchantId: string): Promise<RazorpayCredentials | null> {
+  const [merchant] = await db
+    .select({
+      keyIdEncrypted: schema.merchants.razorpayKeyIdEncrypted,
+      keySecretEncrypted: schema.merchants.razorpayKeySecretEncrypted,
+    })
+    .from(schema.merchants)
+    .where(eq(schema.merchants.id, merchantId));
+
+  if (!merchant?.keyIdEncrypted || !merchant?.keySecretEncrypted) {
+    return null;
+  }
+
+  return {
+    keyId: decrypt(merchant.keyIdEncrypted),
+    keySecret: decrypt(merchant.keySecretEncrypted),
+  };
+}
 
 /**
  * The only path to a money action in this codebase. Every feature layer
@@ -25,6 +51,33 @@ export interface MoneyActionRequest {
   context: string;
   /** Agents retry. A repeat with the same key returns the original outcome instead of reserving budget twice. */
   idempotencyKey?: string;
+  /**
+   * When present, the price comes from this product's row, never from
+   * amountPaise as supplied by the caller. If amountPaise is also given
+   * and disagrees with productPrice * quantity, that is a deny — a buyer
+   * agent that thinks the price is different has a bug or is probing.
+   */
+  productId?: string;
+  /** Only meaningful alongside productId. Defaults to 1. */
+  quantity?: number;
+  /**
+   * The escrow hold-and-capture flow (Layer 4-5): when true, the
+   * Razorpay order is created with payment_capture: false, so a
+   * successful checkout authorises the payment without capturing it.
+   * confirmCapture reads this back off the stored row to know whether a
+   * verified payment should land as "held" (awaiting a merchant
+   * decision) or go straight to "captured".
+   */
+  holdOnly?: boolean;
+  /**
+   * The recovery pipeline's retry/nudge strategies (Layer 4-3): instead
+   * of creating a Razorpay order, create a real Payment Link a customer
+   * can complete asynchronously. Still reserves budget through the same
+   * bound checks as any other action — only what gets created after
+   * "allow" differs. razorpayEntityId stores the link id;
+   * GateResult.paymentLinkUrl carries the payable URL.
+   */
+  paymentLink?: { description: string; referenceId: string };
 }
 
 export interface GateResult {
@@ -33,6 +86,10 @@ export interface GateResult {
   moneyActionId?: string;
   /** Only present on decision: "allow" with a successfully executed action. */
   razorpayOrderId?: string;
+  /** Only present when the request set paymentLink and it was created successfully. */
+  paymentLinkUrl?: string;
+  /** Only present alongside paymentLinkUrl — the Razorpay Payment Link id, for matching webhook/attempt rows back to this action. */
+  paymentLinkId?: string;
 }
 
 interface BoundCheckFailure {
@@ -40,17 +97,101 @@ interface BoundCheckFailure {
   boundApplied: string;
 }
 
+interface ResolvedProduct {
+  id: string;
+  stock: number;
+}
+
+interface BoundCheckSuccess {
+  /** Present only when the request named a productId and it resolved cleanly. */
+  product?: ResolvedProduct;
+}
+
 /**
- * The five deterministic checks, in order, short-circuiting on the
- * first failure. Returns null when every check passes.
+ * Looks up a product and validates it against the request before any
+ * budget or stock is touched: it must belong to the same merchant as the
+ * agent, be active, its price must match what the caller asserted in
+ * amountPaise exactly, and it must have enough stock. The price itself
+ * always comes from this row, never from the caller.
+ */
+async function resolveProduct(
+  request: MoneyActionRequest,
+): Promise<{ product?: ResolvedProduct; failure?: BoundCheckFailure }> {
+  const quantity = request.quantity ?? 1;
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    return {
+      failure: {
+        reason: `Denied — quantity ${quantity} is not a positive integer.`,
+        boundApplied: "quantity_validity",
+      },
+    };
+  }
+
+  const [product] = await db
+    .select()
+    .from(schema.products)
+    .where(eq(schema.products.id, request.productId!));
+
+  if (!product || product.merchantId !== request.merchantId) {
+    return {
+      failure: {
+        reason: `Denied — no product ${request.productId} found for this merchant.`,
+        boundApplied: "product_exists",
+      },
+    };
+  }
+
+  if (product.status !== "active") {
+    return {
+      failure: {
+        reason: `Denied — product "${product.name}" is ${product.status}, not active.`,
+        boundApplied: `product_status:${product.id}`,
+      },
+    };
+  }
+
+  const catalogueAmountPaise = product.pricePaise * quantity;
+
+  if (request.amountPaise !== catalogueAmountPaise) {
+    return {
+      failure: {
+        reason: `Denied — caller asserted ₹${(request.amountPaise / 100).toFixed(2)} for "${product.name}" x${quantity}, but the catalogue price is ₹${(catalogueAmountPaise / 100).toFixed(2)}. Price comes from the catalogue, never the caller.`,
+        boundApplied: `product_price_match:${product.id}`,
+      },
+    };
+  }
+
+  if (product.stock < quantity) {
+    return {
+      failure: {
+        reason: `Denied — "${product.name}" has ${product.stock} in stock, but ${quantity} were requested.`,
+        boundApplied: "product_stock",
+      },
+    };
+  }
+
+  return { product: { id: product.id, stock: product.stock } };
+}
+
+/**
+ * The deterministic checks, in order, short-circuiting on the first
+ * failure. Returns the resolved product (if any) when every check passes.
  */
 async function checkBounds(
   request: MoneyActionRequest,
-): Promise<BoundCheckFailure | null> {
+): Promise<BoundCheckFailure | BoundCheckSuccess> {
   if (!Number.isInteger(request.amountPaise) || request.amountPaise <= 0) {
     return {
       reason: `Denied — amount ${request.amountPaise} is not a positive integer number of paise.`,
       boundApplied: "amount_validity",
+    };
+  }
+
+  const credentials = await loadMerchantCredentials(request.merchantId);
+  if (!credentials) {
+    return {
+      reason: "Denied — this merchant has not connected a Razorpay account yet. Connect one in Settings before agents can transact.",
+      boundApplied: "merchant_razorpay_connected",
     };
   }
 
@@ -123,7 +264,19 @@ async function checkBounds(
     };
   }
 
-  return null;
+  if (request.productId) {
+    const { product, failure } = await resolveProduct(request);
+    if (failure) return failure;
+    return { product };
+  }
+
+  return {};
+}
+
+function isBoundFailure(
+  result: BoundCheckFailure | BoundCheckSuccess,
+): result is BoundCheckFailure {
+  return "reason" in result;
 }
 
 /**
@@ -164,6 +317,30 @@ async function releaseBudget(capId: string, amountPaise: number): Promise<void> 
 }
 
 /**
+ * Atomically decrements product stock. Same pattern as reserveBudget: the
+ * WHERE clause re-checks stock >= quantity in the same statement as the
+ * decrement, so concurrent purchases racing for the last units leave
+ * exactly the available count succeeding, never negative stock.
+ */
+async function reserveStock(productId: string, quantity: number): Promise<boolean> {
+  const result = await db
+    .update(schema.products)
+    .set({ stock: sql`${schema.products.stock} - ${quantity}` })
+    .where(and(eq(schema.products.id, productId), gte(schema.products.stock, quantity)))
+    .returning({ id: schema.products.id });
+
+  return result.length > 0;
+}
+
+/** Gives stock back to the product. Called when a reserved money action fails to execute or an escalation is rejected. */
+async function releaseStock(productId: string, quantity: number): Promise<void> {
+  await db
+    .update(schema.products)
+    .set({ stock: sql`${schema.products.stock} + ${quantity}` })
+    .where(eq(schema.products.id, productId));
+}
+
+/**
  * Inserts the money_actions row after budget is already reserved. If two
  * concurrent requests share the same idempotency key, both can pass the
  * earlier idempotency check (before either has a row yet) and both reach
@@ -185,6 +362,9 @@ async function insertMoneyActionOrReplay(
     if (pgCode !== "23505" || !values.idempotencyKey) throw err;
 
     await releaseBudget(capId, values.amountPaise);
+    if (values.productId) {
+      await releaseStock(values.productId, values.quantity ?? 1);
+    }
     const [existing] = await db
       .select()
       .from(schema.moneyActions)
@@ -208,6 +388,13 @@ interface ExecuteAndSettleInput {
   agentId: string;
   actor: (typeof schema.auditActorEnum.enumValues)[number];
   allowReasonPrefix: string;
+  /** Present only when this action bought a specific product — stock held for it releases alongside budget on failure. */
+  productId?: string;
+  quantity?: number;
+  /** Escrow (Layer 4-5): create the order with payment_capture: false so a successful checkout only authorises, never auto-captures. */
+  holdOnly?: boolean;
+  /** Recovery (Layer 4-3): create a real Payment Link instead of an order. */
+  paymentLink?: { description: string; referenceId: string };
 }
 
 /**
@@ -218,10 +405,47 @@ interface ExecuteAndSettleInput {
  */
 async function executeAndSettle(input: ExecuteAndSettleInput): Promise<GateResult> {
   try {
-    const order = await createOrder({
+    // Loaded fresh rather than passed through from checkBounds, so a
+    // credential rotation or disconnect between attempt and execution
+    // (the gap matters most for resolveEscalation, which can run long
+    // after the original attempt) is caught here too, not just at attempt time.
+    const credentials = await loadMerchantCredentials(input.merchantId);
+    if (!credentials) {
+      throw new Error("Merchant's Razorpay account is no longer connected");
+    }
+
+    if (input.paymentLink) {
+      const link = await createPaymentLink(credentials, {
+        amountPaise: input.amountPaise,
+        description: input.paymentLink.description,
+        referenceId: input.paymentLink.referenceId,
+      });
+
+      await db
+        .update(schema.moneyActions)
+        .set({ status: "executed", razorpayEntityId: link.id })
+        .where(eq(schema.moneyActions.id, input.moneyActionId));
+
+      const reason = `${input.allowReasonPrefix} and a real payment link was created successfully.`;
+      await logAuditEntry({
+        merchantId: input.merchantId,
+        actor: input.actor,
+        event: "money_action_executed",
+        decision: "allow",
+        reason,
+        boundApplied: `spend_cap_balance:${input.capId}`,
+        moneyActionId: input.moneyActionId,
+        metadata: { razorpayPaymentLinkId: link.id, paymentLinkUrl: link.shortUrl },
+      });
+
+      return { decision: "allow", reason, moneyActionId: input.moneyActionId, paymentLinkUrl: link.shortUrl, paymentLinkId: link.id };
+    }
+
+    const order = await createOrder(credentials, {
       amountPaise: input.amountPaise,
       receipt: input.moneyActionId,
       notes: { agentId: input.agentId, context: input.context },
+      autoCapture: !input.holdOnly,
     });
 
     await db
@@ -243,18 +467,22 @@ async function executeAndSettle(input: ExecuteAndSettleInput): Promise<GateResul
 
     return { decision: "allow", reason, moneyActionId: input.moneyActionId, razorpayOrderId: order.id };
   } catch (executionErr) {
-    // A failed payment must not consume the agent's cap.
+    // A failed payment must not consume the agent's cap or hold stock.
     await releaseBudget(input.capId, input.amountPaise);
+    if (input.productId) {
+      await releaseStock(input.productId, input.quantity ?? 1);
+    }
 
     await db
       .update(schema.moneyActions)
       .set({ status: "failed" })
       .where(eq(schema.moneyActions.id, input.moneyActionId));
 
+    const releasedWhat = input.productId ? "budget and stock" : "budget";
     const isRazorpayDecline = executionErr instanceof RazorpayCallError && executionErr.isRazorpayError;
     const reason = isRazorpayDecline
-      ? `Execution failed — Razorpay rejected the order (${(executionErr as RazorpayCallError).razorpayCode}): ${executionErr instanceof Error ? executionErr.message : String(executionErr)}. Reserved budget released back to the cap.`
-      : `Execution failed — ${executionErr instanceof Error ? executionErr.message : String(executionErr)}. Reserved budget released back to the cap.`;
+      ? `Execution failed — Razorpay rejected the order (${(executionErr as RazorpayCallError).razorpayCode}): ${executionErr instanceof Error ? executionErr.message : String(executionErr)}. Reserved ${releasedWhat} released.`
+      : `Execution failed — ${executionErr instanceof Error ? executionErr.message : String(executionErr)}. Reserved ${releasedWhat} released.`;
 
     await logAuditEntry({
       merchantId: input.merchantId,
@@ -310,19 +538,20 @@ export async function attemptMoneyAction(
       }
     }
 
-    const failure = await checkBounds(request);
-    if (failure) {
+    const boundsResult = await checkBounds(request);
+    if (isBoundFailure(boundsResult)) {
       await logAuditEntry({
         merchantId: request.merchantId,
         actor: "agent",
         event: `money_action_attempt:${request.type}`,
         decision: "deny",
-        reason: failure.reason,
-        boundApplied: failure.boundApplied,
-        metadata: { agentId: request.agentId, amountPaise: request.amountPaise, context: request.context },
+        reason: boundsResult.reason,
+        boundApplied: boundsResult.boundApplied,
+        metadata: { agentId: request.agentId, amountPaise: request.amountPaise, context: request.context, productId: request.productId },
       });
-      return { decision: "deny", reason: failure.reason };
+      return { decision: "deny", reason: boundsResult.reason };
     }
+    const { product } = boundsResult;
 
     // Re-fetch rather than thread the cap through from checkBounds, so
     // the reservation's WHERE clause is the sole source of truth on balance.
@@ -363,7 +592,28 @@ export async function attemptMoneyAction(
       return { decision: "deny", reason };
     }
 
-    // Budget is reserved. The risk layer runs next: it can only downgrade
+    const quantity = request.quantity ?? 1;
+    if (product) {
+      const stockReserved = await reserveStock(product.id, quantity);
+      if (!stockReserved) {
+        // Budget was already reserved above — give it back, same as any
+        // other post-reservation failure.
+        await releaseBudget(cap.id, request.amountPaise);
+        const reason = `Denied — another request consumed the remaining stock for product ${product.id} between check and reservation.`;
+        await logAuditEntry({
+          merchantId: request.merchantId,
+          actor: "agent",
+          event: `money_action_attempt:${request.type}`,
+          decision: "deny",
+          reason,
+          boundApplied: "product_stock",
+          metadata: { agentId: request.agentId, amountPaise: request.amountPaise, productId: product.id },
+        });
+        return { decision: "deny", reason };
+      }
+    }
+
+    // Budget (and stock, if a product) is reserved. The risk layer runs next: it can only downgrade
     // this to pending_escalation, never turn a passed bound check into a
     // deny, since attemptMoneyAction only reaches here after every
     // deterministic check has already passed.
@@ -374,6 +624,8 @@ export async function attemptMoneyAction(
       const { action: moneyAction, wasReplay } = await insertMoneyActionOrReplay(cap.id, {
         merchantId: request.merchantId,
         agentId: request.agentId,
+        productId: product?.id,
+        quantity,
         type: request.type,
         amountPaise: request.amountPaise,
         status: "pending_escalation",
@@ -408,6 +660,9 @@ export async function attemptMoneyAction(
     const { action: moneyAction, wasReplay } = await insertMoneyActionOrReplay(cap.id, {
       merchantId: request.merchantId,
       agentId: request.agentId,
+      productId: product?.id,
+      quantity,
+      holdOnly: request.holdOnly ?? false,
       type: request.type,
       amountPaise: request.amountPaise,
       status: "allowed",
@@ -415,6 +670,10 @@ export async function attemptMoneyAction(
     });
 
     if (wasReplay) return resultFromExistingAction(moneyAction);
+
+    const allowReasonPrefix = product
+      ? `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for "${request.context}" x${quantity} is within this agent's remaining cap`
+      : `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for "${request.context}" is within this agent's remaining cap`;
 
     return executeAndSettle({
       merchantId: request.merchantId,
@@ -424,7 +683,11 @@ export async function attemptMoneyAction(
       context: request.context,
       agentId: request.agentId,
       actor: "agent",
-      allowReasonPrefix: `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for "${request.context}" is within this agent's remaining cap`,
+      allowReasonPrefix,
+      productId: product?.id,
+      quantity,
+      holdOnly: request.holdOnly ?? false,
+      paymentLink: request.paymentLink,
     });
   } catch (unexpectedErr) {
     // Fail closed: anything not already handled above still denies.
@@ -493,12 +756,16 @@ export async function resolveEscalation(
 
   if (outcome === "rejected") {
     await releaseBudget(escalation.spendCapId, moneyAction.amountPaise);
+    if (moneyAction.productId) {
+      await releaseStock(moneyAction.productId, moneyAction.quantity);
+    }
     await db
       .update(schema.moneyActions)
       .set({ status: "failed" })
       .where(eq(schema.moneyActions.id, moneyAction.id));
 
-    const reason = `Rejected by merchant — ${escalation.riskReason} Reserved budget released back to the cap.`;
+    const releasedWhat = moneyAction.productId ? "budget and stock" : "budget";
+    const reason = `Rejected by merchant — ${escalation.riskReason} Reserved ${releasedWhat} released.`;
     await logAuditEntry({
       merchantId: moneyAction.merchantId,
       actor: "merchant",
@@ -521,5 +788,320 @@ export async function resolveEscalation(
     agentId: moneyAction.agentId ?? "",
     actor: "merchant",
     allowReasonPrefix: `Approved by merchant — ₹${(moneyAction.amountPaise / 100).toFixed(2)} previously escalated (${escalation.riskReason})`,
+    productId: moneyAction.productId ?? undefined,
+    quantity: moneyAction.quantity,
   });
+}
+
+/** How long an escrow hold is allowed to sit unresolved before it's auto-refunded. See plans/layer-4-front-door.md's "a hold that is never resolved is money in limbo." */
+export const ESCROW_HOLD_EXPIRY_HOURS = 48;
+
+/**
+ * Confirms a money action's payment actually settled, transitioning it
+ * from "executed" (an order exists — an intent to collect) to either
+ * "captured" (money genuinely arrived, the normal checkout path) or
+ * "held" (authorised but not captured — the escrow flow, when the
+ * originating request set holdOnly). Never reserves new budget or stock —
+ * both were already committed when the order was created via
+ * attemptMoneyAction; this only records the outcome of that already-
+ * reserved action. Called from two independent, converging paths (Layer
+ * 4-2's "fastest signal wins, only a verified one is written" contract):
+ * the browser's post-checkout signature verification, and the
+ * payment.captured/order.paid webhook. Idempotent: a second call against
+ * an already-settled action is a no-op that still returns success, so
+ * whichever signal arrives second doesn't double-log or error.
+ */
+export async function confirmCapture(
+  moneyActionId: string,
+  razorpayPaymentId: string,
+  verifiedBy: "checkout_signature" | "webhook",
+): Promise<GateResult> {
+  const [moneyAction] = await db
+    .select()
+    .from(schema.moneyActions)
+    .where(eq(schema.moneyActions.id, moneyActionId));
+
+  if (!moneyAction) {
+    throw new Error(`No money action found with id ${moneyActionId}`);
+  }
+
+  if (moneyAction.status === "captured" || moneyAction.status === "held") {
+    return {
+      decision: "allow",
+      reason: `Already ${moneyAction.status} (confirmed again via ${verifiedBy}, no change).`,
+      moneyActionId: moneyAction.id,
+      razorpayOrderId: moneyAction.razorpayEntityId ?? undefined,
+    };
+  }
+
+  if (moneyAction.status !== "executed") {
+    // A capture confirmation for an action that was never allowed, or
+    // already failed, means the two signals disagree with what this
+    // codebase itself recorded — fail closed rather than overwrite a
+    // deny/failed status with a capture.
+    const reason = `Denied — cannot confirm payment for money action ${moneyActionId}: its status is "${moneyAction.status}", not "executed".`;
+    await logAuditEntry({
+      merchantId: moneyAction.merchantId,
+      actor: "system",
+      event: "capture_confirmation_rejected",
+      decision: "deny",
+      reason,
+      moneyActionId: moneyAction.id,
+      metadata: { verifiedBy, razorpayPaymentId },
+    });
+    return { decision: "deny", reason, moneyActionId: moneyAction.id };
+  }
+
+  const targetStatus = moneyAction.holdOnly ? "held" : "captured";
+
+  const claimed = await db
+    .update(schema.moneyActions)
+    .set({ status: targetStatus, razorpayPaymentId })
+    .where(and(eq(schema.moneyActions.id, moneyActionId), eq(schema.moneyActions.status, "executed")))
+    .returning({ id: schema.moneyActions.id });
+
+  if (claimed.length === 0) {
+    // Lost a race with the other verification path (webhook vs.
+    // checkout signature landing at nearly the same time) — the other
+    // one already settled it. Treat as success, not an error.
+    return {
+      decision: "allow",
+      reason: `Already settled by a concurrent confirmation (this one via ${verifiedBy}).`,
+      moneyActionId: moneyAction.id,
+      razorpayOrderId: moneyAction.razorpayEntityId ?? undefined,
+    };
+  }
+
+  if (targetStatus === "held") {
+    // The bound that stops a hold from stranding a buyer's money
+    // indefinitely — see plans/layer-4-front-door.md's L4-5 note. A
+    // deterministic expiry, checked and swept by
+    // recovery/escrow-sweep.ts, not a model decision.
+    await db.insert(schema.escrowHolds).values({
+      merchantId: moneyAction.merchantId,
+      moneyActionId: moneyAction.id,
+      outcome: "held",
+      expiresAt: new Date(Date.now() + ESCROW_HOLD_EXPIRY_HOURS * 60 * 60 * 1000),
+    });
+  }
+
+  const reason =
+    targetStatus === "held"
+      ? `Authorised and held — payment ${razorpayPaymentId} for order ${moneyAction.razorpayEntityId} verified via ${verifiedBy === "checkout_signature" ? "the checkout signature" : "the payment.captured webhook"}. Not captured — awaiting merchant release, refund, or auto-expiry after ${ESCROW_HOLD_EXPIRY_HOURS}h.`
+      : `Captured — payment ${razorpayPaymentId} for order ${moneyAction.razorpayEntityId} verified via ${verifiedBy === "checkout_signature" ? "the checkout signature" : "the payment.captured webhook"}.`;
+
+  await logAuditEntry({
+    merchantId: moneyAction.merchantId,
+    actor: "system",
+    event: targetStatus === "held" ? "money_action_held" : "money_action_captured",
+    decision: "allow",
+    reason,
+    moneyActionId: moneyAction.id,
+    metadata: { verifiedBy, razorpayPaymentId },
+  });
+
+  return { decision: "allow", reason, moneyActionId: moneyAction.id, razorpayOrderId: moneyAction.razorpayEntityId ?? undefined };
+}
+
+/**
+ * Captures a payment that was created with autoCapture: false and is
+ * currently held (Layer 4-5's escrow flow). A real money action — moves
+ * a held payment out of authorization into the merchant's account — so
+ * it writes an audit entry the same as any other money action, but does
+ * not reserve budget: the budget was already reserved and held since the
+ * original order was created and gated. This is a settlement of an
+ * existing reservation, not a new spend.
+ */
+export async function captureHeldPayment(
+  merchantId: string,
+  moneyActionId: string,
+): Promise<GateResult> {
+  const [moneyAction] = await db
+    .select()
+    .from(schema.moneyActions)
+    .where(and(eq(schema.moneyActions.id, moneyActionId), eq(schema.moneyActions.merchantId, merchantId)));
+
+  if (!moneyAction) {
+    throw new Error(`No money action found with id ${moneyActionId} for this merchant`);
+  }
+
+  if (moneyAction.status === "captured") {
+    return {
+      decision: "allow",
+      reason: "Already captured, no change.",
+      moneyActionId: moneyAction.id,
+      razorpayOrderId: moneyAction.razorpayEntityId ?? undefined,
+    };
+  }
+
+  if (moneyAction.status !== "held" || !moneyAction.razorpayPaymentId) {
+    const reason = `Denied — money action ${moneyActionId} has no held payment to capture (status "${moneyAction.status}").`;
+    await logAuditEntry({
+      merchantId,
+      actor: "merchant",
+      event: "capture_denied",
+      decision: "deny",
+      reason,
+      moneyActionId: moneyAction.id,
+    });
+    return { decision: "deny", reason, moneyActionId: moneyAction.id };
+  }
+
+  try {
+    const credentials = await loadMerchantCredentials(merchantId);
+    if (!credentials) throw new Error("Merchant's Razorpay account is no longer connected");
+
+    await capturePayment(credentials, moneyAction.razorpayPaymentId, moneyAction.amountPaise);
+
+    await db
+      .update(schema.moneyActions)
+      .set({ status: "captured" })
+      .where(eq(schema.moneyActions.id, moneyActionId));
+
+    await db
+      .update(schema.escrowHolds)
+      .set({ outcome: "captured", resolvedAt: new Date() })
+      .where(eq(schema.escrowHolds.moneyActionId, moneyActionId));
+
+    const reason = `Captured — held payment ${moneyAction.razorpayPaymentId} (₹${(moneyAction.amountPaise / 100).toFixed(2)}) released to the merchant's account.`;
+    await logAuditEntry({
+      merchantId,
+      actor: "merchant",
+      event: "money_action_captured",
+      decision: "allow",
+      reason,
+      moneyActionId: moneyAction.id,
+    });
+
+    return { decision: "allow", reason, moneyActionId: moneyAction.id };
+  } catch (err) {
+    const reason = `Capture failed — ${err instanceof Error ? err.message : String(err)}.`;
+    await logAuditEntry({
+      merchantId,
+      actor: "system",
+      event: "capture_failed",
+      decision: "deny",
+      reason,
+      moneyActionId: moneyAction.id,
+    });
+    return { decision: "deny", reason, moneyActionId: moneyAction.id };
+  }
+}
+
+/**
+ * Refunds a captured (or held-and-authorised) payment, in full or in
+ * part. A real money action moving value back out of the merchant's
+ * account, so it writes an audit entry like any other. Releases the
+ * corresponding budget and stock back, mirroring what a failed execution
+ * releases — a refund is, from the spend cap's point of view, the same
+ * "this money didn't end up spent" outcome.
+ */
+export async function issueRefund(
+  merchantId: string,
+  moneyActionId: string,
+  amountPaise?: number,
+): Promise<GateResult> {
+  const [moneyAction] = await db
+    .select()
+    .from(schema.moneyActions)
+    .where(and(eq(schema.moneyActions.id, moneyActionId), eq(schema.moneyActions.merchantId, merchantId)));
+
+  if (!moneyAction) {
+    throw new Error(`No money action found with id ${moneyActionId} for this merchant`);
+  }
+
+  if ((moneyAction.status !== "captured" && moneyAction.status !== "held") || !moneyAction.razorpayPaymentId) {
+    const reason = `Denied — money action ${moneyActionId} has no captured or held payment to refund (status "${moneyAction.status}").`;
+    await logAuditEntry({
+      merchantId,
+      actor: "merchant",
+      event: "refund_denied",
+      decision: "deny",
+      reason,
+      moneyActionId: moneyAction.id,
+    });
+    return { decision: "deny", reason, moneyActionId: moneyAction.id };
+  }
+
+  const refundAmountPaise = amountPaise ?? moneyAction.amountPaise;
+  if (refundAmountPaise > moneyAction.amountPaise) {
+    const reason = `Denied — refund of ₹${(refundAmountPaise / 100).toFixed(2)} exceeds the original ₹${(moneyAction.amountPaise / 100).toFixed(2)} payment.`;
+    await logAuditEntry({
+      merchantId,
+      actor: "merchant",
+      event: "refund_denied",
+      decision: "deny",
+      reason,
+      moneyActionId: moneyAction.id,
+    });
+    return { decision: "deny", reason, moneyActionId: moneyAction.id };
+  }
+
+  try {
+    const credentials = await loadMerchantCredentials(merchantId);
+    if (!credentials) throw new Error("Merchant's Razorpay account is no longer connected");
+
+    const wasHeld = moneyAction.status === "held";
+    const isFullRefund = refundAmountPaise === moneyAction.amountPaise;
+
+    const refund = await refundPayment(credentials, moneyAction.razorpayPaymentId, refundAmountPaise);
+
+    // Find the spend cap that was active when this action reserved
+    // budget — the same lookup pattern checkBounds/reserveBudget use.
+    // Only a full refund gives back the whole reservation; a partial
+    // refund gives back only the refunded portion.
+    if (moneyAction.agentId) {
+      const [cap] = await db
+        .select()
+        .from(schema.spendCaps)
+        .where(eq(schema.spendCaps.agentId, moneyAction.agentId))
+        .orderBy(sql`${schema.spendCaps.createdAt} desc`)
+        .limit(1);
+      if (cap) await releaseBudget(cap.id, refundAmountPaise);
+    }
+    // Stock only comes back on a full refund — a partial refund is still
+    // the same purchase, the buyer keeps what was bought.
+    if (moneyAction.productId && isFullRefund) {
+      await releaseStock(moneyAction.productId, moneyAction.quantity);
+    }
+
+    // A full refund means this action's money didn't end up spent —
+    // same terminal state as a failed execution. A partial refund is
+    // still a completed sale, just reduced, so it stays captured.
+    if (isFullRefund) {
+      await db.update(schema.moneyActions).set({ status: "failed" }).where(eq(schema.moneyActions.id, moneyActionId));
+    }
+
+    if (wasHeld) {
+      await db
+        .update(schema.escrowHolds)
+        .set({ outcome: "refunded", resolvedAt: new Date() })
+        .where(eq(schema.escrowHolds.moneyActionId, moneyActionId));
+    }
+
+    const releasedWhat = moneyAction.productId && isFullRefund ? "budget and stock" : "budget";
+    const reason = `Refunded — ₹${(refundAmountPaise / 100).toFixed(2)} of ₹${(moneyAction.amountPaise / 100).toFixed(2)} (refund ${refund.id}). ${isFullRefund ? `Full refund — reserved ${releasedWhat} released.` : "Partial refund — the sale stands, reduced by the refunded amount."}`;
+    await logAuditEntry({
+      merchantId,
+      actor: "merchant",
+      event: "money_action_refunded",
+      decision: "n/a",
+      reason,
+      moneyActionId: moneyAction.id,
+      metadata: { refundId: refund.id, refundAmountPaise, wasHeld },
+    });
+
+    return { decision: "allow", reason, moneyActionId: moneyAction.id };
+  } catch (err) {
+    const reason = `Refund failed — ${err instanceof Error ? err.message : String(err)}.`;
+    await logAuditEntry({
+      merchantId,
+      actor: "system",
+      event: "refund_failed",
+      decision: "deny",
+      reason,
+      moneyActionId: moneyAction.id,
+    });
+    return { decision: "deny", reason, moneyActionId: moneyAction.id };
+  }
 }

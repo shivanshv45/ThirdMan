@@ -2,6 +2,8 @@ import { describe, it, expect, afterEach } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { attemptMoneyAction } from "@/lib/gate";
+import { encrypt } from "@/lib/crypto";
+import { env } from "@/lib/env";
 
 /**
  * No mocks anywhere in this file. These tests hit the real Neon database
@@ -20,12 +22,17 @@ import { attemptMoneyAction } from "@/lib/gate";
  */
 
 async function makeMerchant() {
+  // Real Razorpay test-mode credentials required — checkBounds denies
+  // any merchant with none connected (Layer 2-2), and most of this
+  // file's tests exercise real order creation.
   const [merchant] = await db
     .insert(schema.merchants)
     .values({
       name: `__gate_test_merchant_${Date.now()}_${Math.random()}__`,
       email: `gate_test_${Date.now()}_${Math.random()}@test.invalid`,
       passwordHash: "test:not-a-real-hash",
+      razorpayKeyIdEncrypted: encrypt(env.RAZORPAY_KEY_ID),
+      razorpayKeySecretEncrypted: encrypt(env.RAZORPAY_KEY_SECRET),
     })
     .returning();
   return merchant;
@@ -119,6 +126,41 @@ describe("attemptMoneyAction", () => {
     expect(result.decision).toBe("deny");
     expect(result.reason).toMatch(/revoked/i);
     expect(result.razorpayOrderId).toBeUndefined();
+  });
+
+  it("denies a merchant with no connected Razorpay account, before reserving budget", async () => {
+    // A merchant with no razorpayKeyIdEncrypted/SecretEncrypted at all —
+    // not even makeMerchant()'s credentialed helper.
+    const [uncredentialedMerchant] = await db
+      .insert(schema.merchants)
+      .values({
+        name: `__gate_test_no_credentials_${Date.now()}_${Math.random()}__`,
+        email: `gate_test_no_creds_${Date.now()}_${Math.random()}@test.invalid`,
+        passwordHash: "test:not-a-real-hash",
+      })
+      .returning();
+    merchantId = uncredentialedMerchant.id;
+
+    const agent = await makeAgent(merchantId);
+    agentIds.push(agent.id);
+    const cap = await makeCap(agent.id, { capPaise: 100_000, perTransactionMaxPaise: 50_000 });
+
+    const result = await attemptMoneyAction({
+      agentId: agent.id,
+      merchantId,
+      type: "order_create",
+      amountPaise: 10_000,
+      context: "test purchase",
+    });
+
+    expect(result.decision).toBe("deny");
+    expect(result.reason).toMatch(/razorpay account/i);
+    expect(result.razorpayOrderId).toBeUndefined();
+
+    // No reservation should have been taken — the credentials check runs
+    // before any budget is touched.
+    const [updatedCap] = await db.select().from(schema.spendCaps).where(eq(schema.spendCaps.id, cap.id));
+    expect(updatedCap.spentPaise).toBe(0);
   });
 
   it("denies when no spend cap exists", async () => {

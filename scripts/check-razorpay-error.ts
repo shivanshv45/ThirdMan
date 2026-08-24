@@ -1,9 +1,12 @@
 import { createOrder, RazorpayCallError } from "@/lib/razorpay";
+import { env } from "@/lib/env";
 
 async function main() {
+  const credentials = { keyId: env.RAZORPAY_KEY_ID, keySecret: env.RAZORPAY_KEY_SECRET };
+
   try {
     // amount 0 is invalid — Razorpay should reject this with a real API error.
-    await createOrder({ amountPaise: 0, receipt: `check_err_${Date.now()}` });
+    await createOrder(credentials, { amountPaise: 0, receipt: `check_err_${Date.now()}` });
     throw new Error("Expected createOrder to throw for amountPaise: 0");
   } catch (err) {
     if (!(err instanceof RazorpayCallError)) {

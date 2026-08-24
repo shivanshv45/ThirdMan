@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 
@@ -13,7 +13,7 @@ export async function authenticateAgent(
 ): Promise<typeof schema.agents.$inferSelect | null> {
   if (!rawKey) return null;
 
-  const apiKeyHash = createHash("sha256").update(rawKey).digest("hex");
+  const apiKeyHash = hashApiKey(rawKey);
   const [agent] = await db.select().from(schema.agents).where(eq(schema.agents.apiKeyHash, apiKeyHash));
 
   return agent ?? null;
@@ -23,4 +23,14 @@ export async function authenticateAgent(
 export function extractBearerKey(authHeader: string | null): string | null {
   if (!authHeader?.startsWith("Bearer ")) return null;
   return authHeader.slice("Bearer ".length).trim() || null;
+}
+
+/** SHA-256 hash of a raw agent key, as stored in agents.api_key_hash. The only place this hashing scheme is defined. */
+export function hashApiKey(rawKey: string): string {
+  return createHash("sha256").update(rawKey).digest("hex");
+}
+
+/** Generates a new raw agent API key. Never persisted — only its hash is stored. */
+export function generateApiKey(): string {
+  return `sk_${randomBytes(24).toString("base64url")}`;
 }

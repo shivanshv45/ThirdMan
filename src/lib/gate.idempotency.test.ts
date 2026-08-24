@@ -2,6 +2,8 @@ import { describe, it, expect, afterEach } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { attemptMoneyAction } from "@/lib/gate";
+import { encrypt } from "@/lib/crypto";
+import { env } from "@/lib/env";
 
 /**
  * No mocks. Real Razorpay orders, real concurrent requests via
@@ -10,12 +12,16 @@ import { attemptMoneyAction } from "@/lib/gate";
  */
 
 async function makeMerchant() {
+  // Real Razorpay test-mode credentials required — checkBounds denies
+  // any merchant with none connected (Layer 2-2).
   const [merchant] = await db
     .insert(schema.merchants)
     .values({
       name: `__idempotency_test_${Date.now()}_${Math.random()}__`,
       email: `idempotency_test_${Date.now()}_${Math.random()}@test.invalid`,
       passwordHash: "test:not-a-real-hash",
+      razorpayKeyIdEncrypted: encrypt(env.RAZORPAY_KEY_ID),
+      razorpayKeySecretEncrypted: encrypt(env.RAZORPAY_KEY_SECRET),
     })
     .returning();
   return merchant;

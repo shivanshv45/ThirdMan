@@ -1,13 +1,42 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { eq } from "drizzle-orm";
+import { db, schema } from "@/lib/db";
 import { authenticateAgent, extractBearerKey } from "@/lib/agent-auth";
 import { attemptMoneyAction } from "@/lib/gate";
+import { checkRateLimit } from "@/lib/rate-limit";
 
-const purchaseRequestSchema = z.object({
-  amountPaise: z.number().int().positive(),
-  context: z.string().min(1).max(500),
-  idempotencyKey: z.string().min(1).max(200).optional(),
-});
+// Keyed by agent id, not IP — an authenticated agent can legitimately
+// call this from a shared or rotating IP, and the spend cap already
+// bounds financial exposure. This limit exists to bound the load an
+// agent can put on the gate's risk layer (a real Groq call per attempt)
+// and Razorpay, not to bound spend, which the cap already does.
+const RATE_LIMIT_MAX = 60;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+
+/**
+ * v2 (Layer 4-4): buy a product by id, not an arbitrary number. The v1
+ * shape (amountPaise + free-text context, no productId) still works —
+ * amountPaise alone lets an agent name its own price for an unlisted
+ * spend (e.g. escrow, a non-catalogue action a later layer adds), which
+ * is a legitimate use the gate has always supported. What's new is that
+ * when productId is given, amountPaise (if also given) becomes an
+ * assertion the gate checks and denies on mismatch, never the source of
+ * truth — see gate.ts's resolveProduct.
+ */
+const purchaseRequestSchema = z
+  .object({
+    productId: z.string().uuid().optional(),
+    quantity: z.number().int().positive().max(999).optional(),
+    amountPaise: z.number().int().positive().optional(),
+    context: z.string().min(1).max(500).optional(),
+    idempotencyKey: z.string().min(1).max(200).optional(),
+    /** Escrow (Layer 4-5): authorise the payment but don't auto-capture it — held until the merchant releases or refunds it. */
+    holdOnly: z.boolean().optional(),
+  })
+  .refine((v) => v.productId !== undefined || (v.amountPaise !== undefined && v.context !== undefined), {
+    message: "either productId, or both amountPaise and context, is required",
+  });
 
 /**
  * A denial is a successful response, not an HTTP error — the reason is
@@ -18,6 +47,14 @@ export async function POST(req: NextRequest) {
   const agent = await authenticateAgent(extractBearerKey(req.headers.get("authorization")));
   if (!agent) {
     return NextResponse.json({ error: "invalid or missing agent API key" }, { status: 401 });
+  }
+
+  const rateLimit = checkRateLimit(`agent-purchase:${agent.id}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
+  if (!rateLimit.allowed) {
+    return NextResponse.json(
+      { error: "Too many requests. Please slow down." },
+      { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSeconds) } },
+    );
   }
 
   let body: unknown;
@@ -32,13 +69,32 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "invalid request body", details: parsed.error.flatten() }, { status: 400 });
   }
 
+  const { productId, quantity, idempotencyKey, holdOnly } = parsed.data;
+  let { amountPaise, context } = parsed.data;
+
+  if (productId) {
+    const [product] = await db.select().from(schema.products).where(eq(schema.products.id, productId));
+    if (!product || product.merchantId !== agent.merchantId) {
+      return NextResponse.json({ decision: "deny", reason: `No product ${productId} found for this merchant.` }, { status: 200 });
+    }
+    // Price always comes from the catalogue — this is only the context
+    // sentence for the audit trail. If the caller also asserted an
+    // amountPaise, it's passed through unchanged so the gate can catch a
+    // mismatch, rather than silently overwritten here.
+    context ??= `Agent purchase: ${product.name}`;
+    amountPaise ??= product.pricePaise * (quantity ?? 1);
+  }
+
   const result = await attemptMoneyAction({
     agentId: agent.id,
     merchantId: agent.merchantId,
     type: "order_create",
-    amountPaise: parsed.data.amountPaise,
-    context: parsed.data.context,
-    idempotencyKey: parsed.data.idempotencyKey,
+    amountPaise: amountPaise!,
+    context: context!,
+    idempotencyKey,
+    productId,
+    quantity,
+    holdOnly,
   });
 
   return NextResponse.json(result, { status: 200 });

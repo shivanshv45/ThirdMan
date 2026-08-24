@@ -1,9 +1,11 @@
-import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { hashPassword } from "@/lib/password";
+import { encrypt } from "@/lib/crypto";
+import { env } from "@/lib/env";
+import { hashApiKey, generateApiKey } from "@/lib/agent-auth";
 
 /**
  * Idempotent seed data — safe to re-run. This is the catalogue that
@@ -47,14 +49,6 @@ const AGENT_DEFS = [
   { key: "revoked_agent", name: "Demo Shopping Agent (revoked)", status: "revoked" as const },
 ];
 
-function hashKey(rawKey: string): string {
-  return createHash("sha256").update(rawKey).digest("hex");
-}
-
-function generateRawKey(): string {
-  return `sk_${randomBytes(24).toString("base64url")}`;
-}
-
 /**
  * Loads previously generated raw keys from the local seed-keys file, or
  * generates and persists new ones. Reusing the same raw key across runs
@@ -71,7 +65,7 @@ function loadOrCreateRawKeys(): Record<string, string> {
   let changed = false;
   for (const def of AGENT_DEFS) {
     if (!stored[def.key]) {
-      stored[def.key] = generateRawKey();
+      stored[def.key] = generateApiKey();
       changed = true;
     }
   }
@@ -112,6 +106,21 @@ async function main() {
     console.log("Merchant already exists:", merchant.name, merchant.id);
   }
 
+  if (!merchant.razorpayKeyIdEncrypted || !merchant.razorpayKeySecretEncrypted) {
+    // Layer 2-2: connect this dev merchant to the shared .env.local test
+    // keys, so the seed merchant can still transact and the demo-failure
+    // scripts (which use this merchant) keep working without every
+    // developer manually visiting /dashboard/settings first.
+    await db
+      .update(schema.merchants)
+      .set({
+        razorpayKeyIdEncrypted: encrypt(env.RAZORPAY_KEY_ID),
+        razorpayKeySecretEncrypted: encrypt(env.RAZORPAY_KEY_SECRET),
+      })
+      .where(eq(schema.merchants.id, merchant.id));
+    console.log("Connected Razorpay credentials (from .env.local) for the seed merchant.");
+  }
+
   const existingProducts = await db
     .select({ name: schema.products.name })
     .from(schema.products)
@@ -134,7 +143,7 @@ async function main() {
 
   for (const agentDef of AGENT_DEFS) {
     const rawKey = rawKeys[agentDef.key];
-    const apiKeyHash = hashKey(rawKey);
+    const apiKeyHash = hashApiKey(rawKey);
     const existing = (
       await db.select().from(schema.agents).where(eq(schema.agents.apiKeyHash, apiKeyHash))
     )[0];
