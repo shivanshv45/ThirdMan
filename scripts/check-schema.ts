@@ -29,6 +29,15 @@ async function main() {
       merchantId: merchant.id,
       name: "Test Product",
       description: "Schema check only",
+    })
+    .returning();
+
+  const [variant] = await db
+    .insert(schema.productVariants)
+    .values({
+      productId: product.id,
+      merchantId: merchant.id,
+      sku: `check-${merchant.id}`,
       pricePaise: 10000,
       costPaise: 6000,
       stock: 5,
@@ -62,7 +71,7 @@ async function main() {
       merchantId: merchant.id,
       agentId: agent.id,
       type: "order_create",
-      amountPaise: product.pricePaise,
+      amountPaise: variant.pricePaise,
       status: "allowed",
     })
     .returning();
@@ -82,6 +91,7 @@ async function main() {
 
   console.log("Full chain inserted OK:", {
     product: product.id,
+    variant: variant.id,
     agent: agent.id,
     cap: cap.id,
     action: action.id,
@@ -94,6 +104,7 @@ async function main() {
   await db.delete(schema.moneyActions).where(eq(schema.moneyActions.id, action.id));
   await db.delete(schema.spendCaps).where(eq(schema.spendCaps.id, cap.id));
   await db.delete(schema.agents).where(eq(schema.agents.id, agent.id));
+  await db.delete(schema.productVariants).where(eq(schema.productVariants.id, variant.id));
   await db.delete(schema.products).where(eq(schema.products.id, product.id));
   await db.delete(schema.merchants).where(eq(schema.merchants.id, merchant.id));
 

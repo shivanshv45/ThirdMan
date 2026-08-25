@@ -30,7 +30,16 @@ async function main() {
     throw new Error("No product found — run `npm run script scripts/seed.ts` first.");
   }
 
-  console.log(`Using merchant "${merchant.name}", product "${product.name}" (₹${product.pricePaise / 100}).`);
+  const [variant] = await db
+    .select()
+    .from(schema.productVariants)
+    .where(eq(schema.productVariants.productId, product.id))
+    .limit(1);
+  if (!variant) {
+    throw new Error("No variant found for the first product — run `npm run script scripts/seed.ts` first.");
+  }
+
+  console.log(`Using merchant "${merchant.name}", product "${product.name}" (₹${variant.pricePaise / 100}).`);
 
   // Uses this merchant's own connected Razorpay credentials if they've
   // set any (Layer 2-2), falling back to the shared dev keys otherwise —
@@ -42,7 +51,7 @@ async function main() {
       : { keyId: env.RAZORPAY_KEY_ID, keySecret: env.RAZORPAY_KEY_SECRET };
 
   const order = await createOrder(credentials, {
-    amountPaise: product.pricePaise,
+    amountPaise: variant.pricePaise,
     receipt: `integration_proof_${Date.now()}`,
     notes: { productId: product.id, purpose: "L0-8 integration proof" },
   });

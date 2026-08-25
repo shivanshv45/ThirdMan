@@ -113,13 +113,29 @@ export interface PendingEscalationRow {
   agent: { id: string; name: string } | null;
 }
 
-/** A merchant's own catalogue, newest first. Includes archived products so the dashboard can show and reactivate them. */
-export async function getProducts(merchantId: string) {
-  return db
-    .select()
-    .from(schema.products)
-    .where(eq(schema.products.merchantId, merchantId))
-    .orderBy(desc(schema.products.createdAt));
+export interface ProductWithVariants {
+  id: string;
+  merchantId: string;
+  name: string;
+  description: string;
+  category: (typeof schema.productCategoryEnum.enumValues)[number];
+  subcategory: string | null;
+  status: (typeof schema.productStatusEnum.enumValues)[number];
+  createdAt: Date;
+  variants: (typeof schema.productVariants.$inferSelect)[];
+}
+
+/** A merchant's own catalogue, newest first, each product with its variants. Includes archived products/variants so the dashboard can show and reactivate them. */
+export async function getProducts(merchantId: string): Promise<ProductWithVariants[]> {
+  const [products, variants] = await Promise.all([
+    db.select().from(schema.products).where(eq(schema.products.merchantId, merchantId)).orderBy(desc(schema.products.createdAt)),
+    db.select().from(schema.productVariants).where(eq(schema.productVariants.merchantId, merchantId)),
+  ]);
+
+  return products.map((p) => ({
+    ...p,
+    variants: variants.filter((v) => v.productId === p.id),
+  }));
 }
 
 export interface EscrowHoldRow {
@@ -165,6 +181,122 @@ export async function getEscrowHolds(merchantId: string): Promise<EscrowHoldRow[
     },
     productName: r.productName,
   }));
+}
+
+/** A merchant's structured return/refund/shipping terms (Layer 5-3), or null if never published — a genuinely unset state, not a default. */
+export async function getMerchantPolicy(merchantId: string) {
+  const [policy] = await db.select().from(schema.merchantPolicies).where(eq(schema.merchantPolicies.merchantId, merchantId));
+  return policy ?? null;
+}
+
+export async function getRewardSettingsForDashboard(merchantId: string) {
+  const [settings] = await db.select().from(schema.merchantRewardSettings).where(eq(schema.merchantRewardSettings.merchantId, merchantId));
+  return settings ?? null;
+}
+
+export interface RewardLedgerStats {
+  totalIssuedCoins: number;
+  totalRedeemedCoins: number;
+  netOutstandingCoins: number;
+  ledgerEntryCount: number;
+}
+
+/** Headline reward-program numbers — every coin issued/redeemed, summed straight from the ledger, never a cached total (same discipline as getOfferDecisionStats). */
+export async function getRewardLedgerStats(merchantId: string): Promise<RewardLedgerStats> {
+  const rows = await db.select().from(schema.rewardCoinLedger).where(eq(schema.rewardCoinLedger.merchantId, merchantId));
+
+  let totalIssuedCoins = 0;
+  let totalRedeemedCoins = 0;
+  for (const row of rows) {
+    if (row.coinsDelta > 0) totalIssuedCoins += row.coinsDelta;
+    else totalRedeemedCoins += -row.coinsDelta;
+  }
+
+  return {
+    totalIssuedCoins,
+    totalRedeemedCoins,
+    netOutstandingCoins: totalIssuedCoins - totalRedeemedCoins,
+    ledgerEntryCount: rows.length,
+  };
+}
+
+export interface OfferDecisionStats {
+  totalRuns: number;
+  offered: number;
+  accepted: number;
+  declined: number;
+  expired: number;
+  /** Runs where the engine deliberately made no offer — the refusal count, a headline number not a footnote (Layer 6-4). */
+  noOffer: number;
+}
+
+/** The offer/refusal log's headline numbers — every engine run, whether or not it produced an offer. See ARCHITECTURE.md, "The offer engine." */
+export async function getOfferDecisionStats(merchantId: string): Promise<OfferDecisionStats> {
+  const decisions = await db.select().from(schema.offerDecisions).where(eq(schema.offerDecisions.merchantId, merchantId));
+
+  const offerIds = decisions.map((d) => d.offeredOfferId).filter((id): id is string => id !== null);
+  const offers = offerIds.length > 0 ? await db.select().from(schema.offers).where(inArray(schema.offers.id, offerIds)) : [];
+  const statusById = new Map(offers.map((o) => [o.id, o.status]));
+
+  let offered = 0;
+  let accepted = 0;
+  let declined = 0;
+  let expired = 0;
+  let noOffer = 0;
+
+  for (const d of decisions) {
+    if (!d.offeredOfferId) {
+      noOffer++;
+      continue;
+    }
+    const status = statusById.get(d.offeredOfferId);
+    offered++;
+    if (status === "accepted") accepted++;
+    else if (status === "declined") declined++;
+    else if (status === "expired") expired++;
+  }
+
+  return { totalRuns: decisions.length, offered, accepted, declined, expired, noOffer };
+}
+
+export interface OfferDecisionRow {
+  id: string;
+  createdAt: Date;
+  eligibleCandidateCount: number;
+  belowMarginFloorCount: number;
+  offer: { id: string; bundleName: string; amountPaise: number; reasonText: string; status: string } | null;
+  noOfferReason: string | null;
+}
+
+/** Recent offer/refusal decisions, newest first — every run's exact arithmetic, so a refusal is auditable the same way a gate denial is. */
+export async function getRecentOfferDecisions(merchantId: string, limit = 50): Promise<OfferDecisionRow[]> {
+  const decisions = await db
+    .select()
+    .from(schema.offerDecisions)
+    .where(eq(schema.offerDecisions.merchantId, merchantId))
+    .orderBy(desc(schema.offerDecisions.createdAt))
+    .limit(limit);
+
+  const offerIds = decisions.map((d) => d.offeredOfferId).filter((id): id is string => id !== null);
+  const offers = offerIds.length > 0 ? await db.select().from(schema.offers).where(inArray(schema.offers.id, offerIds)) : [];
+  const offerById = new Map(offers.map((o) => [o.id, o]));
+
+  const bundleIds = [...new Set(offers.map((o) => o.bundleId))];
+  const bundles = bundleIds.length > 0 ? await db.select().from(schema.bundles).where(inArray(schema.bundles.id, bundleIds)) : [];
+  const bundleById = new Map(bundles.map((b) => [b.id, b]));
+
+  return decisions.map((d) => {
+    const offer = d.offeredOfferId ? offerById.get(d.offeredOfferId) : undefined;
+    const bundle = offer ? bundleById.get(offer.bundleId) : undefined;
+    return {
+      id: d.id,
+      createdAt: d.createdAt,
+      eligibleCandidateCount: d.eligibleCandidateCount,
+      belowMarginFloorCount: d.belowMarginFloorCount,
+      offer: offer && bundle ? { id: offer.id, bundleName: bundle.name, amountPaise: bundle.bundlePricePaise, reasonText: offer.reasonText, status: offer.status } : null,
+      noOfferReason: d.noOfferReason,
+    };
+  });
 }
 
 export async function getPendingEscalations(merchantId: string): Promise<PendingEscalationRow[]> {

@@ -6,10 +6,11 @@ import { encrypt } from "@/lib/crypto";
 import { env } from "@/lib/env";
 
 /**
- * L4-1: the catalogue as a real bound in the gate — price comes from the
- * product row, never the caller, and stock is decremented atomically the
- * same way spend_caps.spentPaise already is. Same no-mocks standard as
- * gate.test.ts: real DB, real Razorpay test-mode orders.
+ * L4-1, re-pointed at product_variants in L5-1: the catalogue as a real
+ * bound in the gate — price comes from the variant row, never the caller,
+ * and stock is decremented atomically the same way spend_caps.spentPaise
+ * already is. Same no-mocks standard as gate.test.ts: real DB, real
+ * Razorpay test-mode orders.
  */
 
 async function makeMerchant() {
@@ -57,13 +58,27 @@ async function makeCap(agentId: string, opts: Partial<typeof schema.spendCaps.$i
   return cap;
 }
 
-async function makeProduct(merchantId: string, opts: Partial<typeof schema.products.$inferInsert> = {}) {
+/** Creates a product with one variant, matching dashboard-mutations.ts's createProduct shape. Returns the variant, since that's what the gate resolves against. */
+async function makeVariant(
+  merchantId: string,
+  opts: Partial<typeof schema.productVariants.$inferInsert> = {},
+) {
   const [product] = await db
     .insert(schema.products)
     .values({
       merchantId,
       name: "__test product__",
       description: "test",
+      status: "active",
+    })
+    .returning();
+
+  const [variant] = await db
+    .insert(schema.productVariants)
+    .values({
+      productId: product.id,
+      merchantId,
+      sku: `TEST-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       pricePaise: 85_000,
       costPaise: 40_000,
       stock: 10,
@@ -71,7 +86,8 @@ async function makeProduct(merchantId: string, opts: Partial<typeof schema.produ
       ...opts,
     })
     .returning();
-  return product;
+
+  return { product, variant };
 }
 
 describe("attemptMoneyAction — product-bound purchases", () => {
@@ -103,6 +119,8 @@ describe("attemptMoneyAction — product-bound purchases", () => {
     await db.delete(schema.moneyActions).where(eq(schema.moneyActions.merchantId, currentMerchantId));
     await db.delete(schema.agents).where(eq(schema.agents.merchantId, currentMerchantId));
     if (currentProductIds.length > 0) {
+      // product_variants FKs into products, so variants go first.
+      await db.delete(schema.productVariants).where(inArray(schema.productVariants.productId, currentProductIds));
       await db.delete(schema.products).where(inArray(schema.products.id, currentProductIds));
     }
     await db.delete(schema.merchants).where(eq(schema.merchants.id, currentMerchantId));
@@ -119,7 +137,7 @@ describe("attemptMoneyAction — product-bound purchases", () => {
 
   it("denies when the caller's amountPaise disagrees with the catalogue price, before reserving budget", async () => {
     const { merchantId, agent } = await setup();
-    const product = await makeProduct(merchantId, { pricePaise: 85_000, stock: 5 });
+    const { product, variant } = await makeVariant(merchantId, { pricePaise: 85_000, stock: 5 });
     productIds.push(product.id);
 
     const result = await attemptMoneyAction({
@@ -128,7 +146,7 @@ describe("attemptMoneyAction — product-bound purchases", () => {
       type: "order_create",
       amountPaise: 90_000, // disagrees with the catalogue's 85,000
       context: "House Blend Espresso",
-      productId: product.id,
+      variantId: variant.id,
     });
 
     expect(result.decision).toBe("deny");
@@ -137,13 +155,13 @@ describe("attemptMoneyAction — product-bound purchases", () => {
     const [cap] = await db.select().from(schema.spendCaps).where(eq(schema.spendCaps.agentId, agent.id));
     expect(cap.spentPaise).toBe(0);
 
-    const [updatedProduct] = await db.select().from(schema.products).where(eq(schema.products.id, product.id));
-    expect(updatedProduct.stock).toBe(5);
+    const [updatedVariant] = await db.select().from(schema.productVariants).where(eq(schema.productVariants.id, variant.id));
+    expect(updatedVariant.stock).toBe(5);
   });
 
   it("denies a zero-stock purchase with boundApplied product_stock, before reserving budget", async () => {
     const { merchantId, agent } = await setup();
-    const product = await makeProduct(merchantId, { pricePaise: 85_000, stock: 0 });
+    const { product, variant } = await makeVariant(merchantId, { pricePaise: 85_000, stock: 0 });
     productIds.push(product.id);
 
     const result = await attemptMoneyAction({
@@ -152,7 +170,7 @@ describe("attemptMoneyAction — product-bound purchases", () => {
       type: "order_create",
       amountPaise: 85_000,
       context: "House Blend Espresso",
-      productId: product.id,
+      variantId: variant.id,
     });
 
     expect(result.decision).toBe("deny");
@@ -168,7 +186,7 @@ describe("attemptMoneyAction — product-bound purchases", () => {
     const merchantB = await makeMerchant();
     // merchantB's own id must be cleaned up too, but it has no agent, so
     // it isn't tracked by the shared afterEach — clean it up inline.
-    const productOfB = await makeProduct(merchantB.id, { pricePaise: 85_000, stock: 5 });
+    const { product: productOfB, variant: variantOfB } = await makeVariant(merchantB.id, { pricePaise: 85_000, stock: 5 });
 
     try {
       const result = await attemptMoneyAction({
@@ -177,20 +195,21 @@ describe("attemptMoneyAction — product-bound purchases", () => {
         type: "order_create",
         amountPaise: 85_000,
         context: "someone else's product",
-        productId: productOfB.id,
+        variantId: variantOfB.id,
       });
 
       expect(result.decision).toBe("deny");
       expect(result.reason).toMatch(/no product/i);
     } finally {
+      await db.delete(schema.productVariants).where(eq(schema.productVariants.id, variantOfB.id));
       await db.delete(schema.products).where(eq(schema.products.id, productOfB.id));
       await db.delete(schema.merchants).where(eq(schema.merchants.id, merchantB.id));
     }
   });
 
-  it("allows a valid product purchase, decrements stock atomically, and records productId/quantity", async () => {
+  it("allows a valid product purchase, decrements stock atomically, and records variantId/quantity", async () => {
     const { merchantId, agent } = await setup();
-    const product = await makeProduct(merchantId, { pricePaise: 85_000, stock: 5 });
+    const { product, variant } = await makeVariant(merchantId, { pricePaise: 85_000, stock: 5 });
     productIds.push(product.id);
 
     const result = await attemptMoneyAction({
@@ -199,17 +218,18 @@ describe("attemptMoneyAction — product-bound purchases", () => {
       type: "order_create",
       amountPaise: 170_000, // 85,000 x 2
       context: "House Blend Espresso",
-      productId: product.id,
+      variantId: variant.id,
       quantity: 2,
     });
 
     expect(result.decision).toBe("allow");
     expect(result.razorpayOrderId).toMatch(/^order_/);
 
-    const [updatedProduct] = await db.select().from(schema.products).where(eq(schema.products.id, product.id));
-    expect(updatedProduct.stock).toBe(3);
+    const [updatedVariant] = await db.select().from(schema.productVariants).where(eq(schema.productVariants.id, variant.id));
+    expect(updatedVariant.stock).toBe(3);
 
     const [action] = await db.select().from(schema.moneyActions).where(eq(schema.moneyActions.id, result.moneyActionId!));
+    expect(action.variantId).toBe(variant.id);
     expect(action.productId).toBe(product.id);
     expect(action.quantity).toBe(2);
   }, 20_000);
@@ -218,7 +238,7 @@ describe("attemptMoneyAction — product-bound purchases", () => {
     const { merchantId, agent } = await setup();
     // A price of 1 paisa clears the gate's own checks but Razorpay itself
     // rejects it as below its minimum order amount, after reservation.
-    const product = await makeProduct(merchantId, { pricePaise: 1, stock: 5 });
+    const { product, variant } = await makeVariant(merchantId, { pricePaise: 1, stock: 5 });
     productIds.push(product.id);
 
     const result = await attemptMoneyAction({
@@ -227,7 +247,7 @@ describe("attemptMoneyAction — product-bound purchases", () => {
       type: "order_create",
       amountPaise: 1,
       context: "House Blend Espresso",
-      productId: product.id,
+      variantId: variant.id,
     });
 
     expect(result.decision).toBe("deny");
@@ -236,15 +256,15 @@ describe("attemptMoneyAction — product-bound purchases", () => {
     const [cap] = await db.select().from(schema.spendCaps).where(eq(schema.spendCaps.agentId, agent.id));
     expect(cap.spentPaise).toBe(0);
 
-    const [updatedProduct] = await db.select().from(schema.products).where(eq(schema.products.id, product.id));
-    expect(updatedProduct.stock).toBe(5);
+    const [updatedVariant] = await db.select().from(schema.productVariants).where(eq(schema.productVariants.id, variant.id));
+    expect(updatedVariant.stock).toBe(5);
   }, 20_000);
 
   it("under N concurrent purchases against stock for exactly M, allows exactly M", async () => {
     const { merchantId, agent } = await setup();
     // Stock for exactly 3. amountPaise kept tiny relative to the cap so
     // the race is purely on reserveStock's atomicity, not the spend cap.
-    const product = await makeProduct(merchantId, { pricePaise: 10_000, stock: 3 });
+    const { product, variant } = await makeVariant(merchantId, { pricePaise: 10_000, stock: 3 });
     productIds.push(product.id);
 
     const attempts = Array.from({ length: 6 }, (_, i) =>
@@ -254,7 +274,7 @@ describe("attemptMoneyAction — product-bound purchases", () => {
         type: "order_create",
         amountPaise: 10_000,
         context: `concurrent buyer ${i}`,
-        productId: product.id,
+        variantId: variant.id,
       }),
     );
 
@@ -272,7 +292,7 @@ describe("attemptMoneyAction — product-bound purchases", () => {
     expect(reservedCount).toBe(3);
     expect(deniedCount).toBe(3);
 
-    const [updatedProduct] = await db.select().from(schema.products).where(eq(schema.products.id, product.id));
-    expect(updatedProduct.stock).toBe(0);
+    const [updatedVariant] = await db.select().from(schema.productVariants).where(eq(schema.productVariants.id, variant.id));
+    expect(updatedVariant.stock).toBe(0);
   }, 30_000);
 });

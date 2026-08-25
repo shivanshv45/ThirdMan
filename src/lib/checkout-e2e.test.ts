@@ -28,6 +28,7 @@ afterEach(async () => {
     await db.delete(schema.auditLog).where(eq(schema.auditLog.merchantId, merchantId));
     await db.delete(schema.moneyActions).where(eq(schema.moneyActions.merchantId, merchantId));
     await db.delete(schema.agents).where(eq(schema.agents.merchantId, merchantId));
+    await db.delete(schema.productVariants).where(eq(schema.productVariants.merchantId, merchantId));
     await db.delete(schema.products).where(eq(schema.products.merchantId, merchantId));
     await db.delete(schema.merchants).where(eq(schema.merchants.id, merchantId));
   }
@@ -48,6 +49,16 @@ describe("full checkout path: product -> checkout -> capture -> verify -> status
           merchantId: merchant.id,
           name: "E2E Test Coffee",
           description: "End-to-end checkout test product.",
+          status: "active",
+        })
+        .returning();
+
+      const [variant] = await db
+        .insert(schema.productVariants)
+        .values({
+          productId: product.id,
+          merchantId: merchant.id,
+          sku: `e2e-${Date.now()}`,
           pricePaise: 75_000,
           costPaise: 30_000,
           stock: 5,
@@ -76,9 +87,9 @@ describe("full checkout path: product -> checkout -> capture -> verify -> status
         agentId: agent.id,
         merchantId: merchant.id,
         type: "order_create",
-        amountPaise: product.pricePaise,
+        amountPaise: variant.pricePaise,
         context: `Checkout: ${product.name}`,
-        productId: product.id,
+        variantId: variant.id,
       });
       expect(checkout.decision).toBe("allow");
       expect(checkout.razorpayOrderId).toMatch(/^order_/);
@@ -86,8 +97,8 @@ describe("full checkout path: product -> checkout -> capture -> verify -> status
       const [afterCheckout] = await db.select().from(schema.moneyActions).where(eq(schema.moneyActions.id, checkout.moneyActionId!));
       expect(afterCheckout.status).toBe("executed");
 
-      const [productAfterCheckout] = await db.select().from(schema.products).where(eq(schema.products.id, product.id));
-      expect(productAfterCheckout.stock).toBe(4); // decremented atomically at checkout time
+      const [variantAfterCheckout] = await db.select().from(schema.productVariants).where(eq(schema.productVariants.id, variant.id));
+      expect(variantAfterCheckout.stock).toBe(4); // decremented atomically at checkout time
 
       // 3. Capture: confirmCapture is what /api/checkout/verify and the
       // webhook both converge on once a payment is verified.

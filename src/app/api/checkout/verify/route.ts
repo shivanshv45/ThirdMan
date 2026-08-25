@@ -6,6 +6,7 @@ import { verifyCheckoutSignature } from "@/lib/payment-verify";
 import { decrypt } from "@/lib/crypto";
 import { confirmCapture } from "@/lib/gate";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
+import { issueRewardCoinsForCapture } from "@/lib/reward-actions";
 
 const verifyRequestSchema = z.object({
   moneyActionId: z.string().uuid(),
@@ -76,6 +77,20 @@ export async function POST(req: NextRequest) {
   }
 
   const result = await confirmCapture(moneyActionId, razorpayPaymentId, "checkout_signature");
+
+  // Reward coins are issued only on a genuine capture, never on a hold
+  // (gate contract point 10 — executed is not captured, and a hold that
+  // never resolves has not earned anything). Never lets a failure here
+  // affect the checkout's own success response — issuing coins is
+  // additive, and its own idempotency key (the purchase's money_action
+  // id) protects against the webhook also triggering this.
+  if (result.decision === "allow" && !moneyAction.holdOnly && moneyAction.agentId) {
+    try {
+      await issueRewardCoinsForCapture(moneyAction.merchantId, moneyAction.agentId, moneyAction.id, moneyAction.amountPaise, { agentId: moneyAction.agentId });
+    } catch (err) {
+      console.warn("[checkout/verify] reward coin issuance failed:", err);
+    }
+  }
 
   return NextResponse.json({ decision: result.decision, reason: result.reason });
 }

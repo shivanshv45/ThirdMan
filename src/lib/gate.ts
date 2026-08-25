@@ -4,6 +4,7 @@ import { logAuditEntry } from "@/lib/audit";
 import { createOrder, capturePayment, refundPayment, createPaymentLink, RazorpayCallError, type RazorpayCredentials } from "@/lib/razorpay";
 import { decrypt } from "@/lib/crypto";
 import { computeRiskSignals, assessRisk } from "@/lib/risk";
+import { resolveOffer, loadOfferItems, type ResolvedOffer } from "@/lib/discount";
 
 /**
  * Loads and decrypts a merchant's own Razorpay credentials. The gate is
@@ -52,13 +53,15 @@ export interface MoneyActionRequest {
   /** Agents retry. A repeat with the same key returns the original outcome instead of reserving budget twice. */
   idempotencyKey?: string;
   /**
-   * When present, the price comes from this product's row, never from
+   * When present, the price comes from this variant's row, never from
    * amountPaise as supplied by the caller. If amountPaise is also given
-   * and disagrees with productPrice * quantity, that is a deny — a buyer
+   * and disagrees with variantPrice * quantity, that is a deny — a buyer
    * agent that thinks the price is different has a bug or is probing.
+   * (Layer 5-1: renamed from productId — a purchase resolves against a
+   * specific sellable variant, not the marketing-level product row.)
    */
-  productId?: string;
-  /** Only meaningful alongside productId. Defaults to 1. */
+  variantId?: string;
+  /** Only meaningful alongside variantId. Defaults to 1. */
   quantity?: number;
   /**
    * The escrow hold-and-capture flow (Layer 4-5): when true, the
@@ -78,6 +81,37 @@ export interface MoneyActionRequest {
    * GateResult.paymentLinkUrl carries the payable URL.
    */
   paymentLink?: { description: string; referenceId: string };
+  /**
+   * Layer 6: redeem a previously-accepted upsell offer instead of a
+   * single variant. Mutually exclusive with variantId — an offer already
+   * names the variants and quantities it covers (discount.ts's
+   * resolveOffer). If amountPaise is also given and disagrees with the
+   * offer's own bundlePricePaise, that is a deny — same discipline as
+   * variantId's price-match check. The caller can reference an offer,
+   * never assert its price.
+   */
+  offerId?: string;
+  /**
+   * Identifies the buyer redeeming an offer when there is no agent
+   * identity to match against (the storefront/chat's session-based
+   * flows) — see discount.ts's resolveOffer identity check.
+   */
+  sessionToken?: string;
+  /**
+   * Layer 6-5: a reward-coin issuance or redemption. amountPaise is
+   * still the coins' paise-equivalent value (reward-coins.ts computes
+   * it) and is still bounded by the same spend-cap checks as any other
+   * action — coins are real value leaving the merchant's business.
+   * executeAndSettle branches on this field: it writes a
+   * reward_coin_ledger row instead of calling Razorpay, since neither
+   * direction has a Razorpay counterpart. type must be "reward_issue" or
+   * "reward_redeem" to match.
+   */
+  rewardLedger?: {
+    coinsDelta: number;
+    reason: (typeof schema.rewardLedgerReasonEnum.enumValues)[number];
+    identity: { agentId?: string; sessionToken?: string };
+  };
 }
 
 export interface GateResult {
@@ -97,26 +131,31 @@ interface BoundCheckFailure {
   boundApplied: string;
 }
 
-interface ResolvedProduct {
+interface ResolvedVariant {
   id: string;
+  productId: string;
   stock: number;
 }
 
 interface BoundCheckSuccess {
-  /** Present only when the request named a productId and it resolved cleanly. */
-  product?: ResolvedProduct;
+  /** Present only when the request named a variantId and it resolved cleanly. */
+  variant?: ResolvedVariant;
+  /** Present only when the request named an offerId and it resolved cleanly (Layer 6). */
+  offer?: ResolvedOffer;
 }
 
 /**
- * Looks up a product and validates it against the request before any
+ * Looks up a variant and validates it against the request before any
  * budget or stock is touched: it must belong to the same merchant as the
  * agent, be active, its price must match what the caller asserted in
  * amountPaise exactly, and it must have enough stock. The price itself
- * always comes from this row, never from the caller.
+ * always comes from this row, never from the caller. (Layer 5-1: resolves
+ * product_variants, not products — a purchase is always against a
+ * specific sellable variant.)
  */
-async function resolveProduct(
+async function resolveVariant(
   request: MoneyActionRequest,
-): Promise<{ product?: ResolvedProduct; failure?: BoundCheckFailure }> {
+): Promise<{ variant?: ResolvedVariant; failure?: BoundCheckFailure }> {
   const quantity = request.quantity ?? 1;
   if (!Number.isInteger(quantity) || quantity <= 0) {
     return {
@@ -127,50 +166,92 @@ async function resolveProduct(
     };
   }
 
-  const [product] = await db
+  const [variant] = await db
     .select()
-    .from(schema.products)
-    .where(eq(schema.products.id, request.productId!));
+    .from(schema.productVariants)
+    .where(eq(schema.productVariants.id, request.variantId!));
 
-  if (!product || product.merchantId !== request.merchantId) {
+  if (!variant || variant.merchantId !== request.merchantId) {
     return {
       failure: {
-        reason: `Denied — no product ${request.productId} found for this merchant.`,
+        reason: `Denied — no product ${request.variantId} found for this merchant.`,
         boundApplied: "product_exists",
       },
     };
   }
 
-  if (product.status !== "active") {
+  if (variant.status !== "active") {
     return {
       failure: {
-        reason: `Denied — product "${product.name}" is ${product.status}, not active.`,
-        boundApplied: `product_status:${product.id}`,
+        reason: `Denied — product "${variant.sku}" is ${variant.status}, not active.`,
+        boundApplied: `product_status:${variant.id}`,
       },
     };
   }
 
-  const catalogueAmountPaise = product.pricePaise * quantity;
+  const catalogueAmountPaise = variant.pricePaise * quantity;
 
   if (request.amountPaise !== catalogueAmountPaise) {
     return {
       failure: {
-        reason: `Denied — caller asserted ₹${(request.amountPaise / 100).toFixed(2)} for "${product.name}" x${quantity}, but the catalogue price is ₹${(catalogueAmountPaise / 100).toFixed(2)}. Price comes from the catalogue, never the caller.`,
-        boundApplied: `product_price_match:${product.id}`,
+        reason: `Denied — caller asserted ₹${(request.amountPaise / 100).toFixed(2)} for "${variant.sku}" x${quantity}, but the catalogue price is ₹${(catalogueAmountPaise / 100).toFixed(2)}. Price comes from the catalogue, never the caller.`,
+        boundApplied: `product_price_match:${variant.id}`,
       },
     };
   }
 
-  if (product.stock < quantity) {
+  if (variant.stock < quantity) {
     return {
       failure: {
-        reason: `Denied — "${product.name}" has ${product.stock} in stock, but ${quantity} were requested.`,
+        reason: `Denied — "${variant.sku}" has ${variant.stock} in stock, but ${quantity} were requested.`,
         boundApplied: "product_stock",
       },
     };
   }
 
-  return { product: { id: product.id, stock: product.stock } };
+  return { variant: { id: variant.id, productId: variant.productId, stock: variant.stock } };
+}
+
+/**
+ * Resolves an offerId into what the gate will actually charge and
+ * reserve (Layer 6): discount.ts does the offer/bundle lookup and every
+ * identity/expiry/status check; this only adds the two checks every
+ * money action needs regardless of how the amount was derived — the
+ * caller's asserted amountPaise must match exactly, and every bundle
+ * item must have enough stock. Mirrors resolveVariant's shape and
+ * ordering so the two paths read the same way.
+ */
+async function resolveOfferForRequest(
+  request: MoneyActionRequest,
+): Promise<{ offer?: ResolvedOffer; failure?: BoundCheckFailure }> {
+  const { offer, failure } = await resolveOffer(request.merchantId, request.offerId!, {
+    agentId: request.agentId,
+    sessionToken: request.sessionToken,
+  });
+  if (failure) return { failure };
+
+  if (request.amountPaise !== offer!.amountPaise) {
+    return {
+      failure: {
+        reason: `Denied — caller asserted ₹${(request.amountPaise / 100).toFixed(2)} for offer ${offer!.offerId}, but the bundle price is ₹${(offer!.amountPaise / 100).toFixed(2)}. Price comes from the merchant-authored bundle, never the caller.`,
+        boundApplied: `offer_price_match:${offer!.offerId}`,
+      },
+    };
+  }
+
+  for (const item of offer!.items) {
+    const [variant] = await db.select().from(schema.productVariants).where(eq(schema.productVariants.id, item.variantId));
+    if (!variant || variant.stock < item.quantity) {
+      return {
+        failure: {
+          reason: `Denied — offer ${offer!.offerId}'s bundle needs ${item.quantity} of variant ${item.variantId}, but only ${variant?.stock ?? 0} in stock.`,
+          boundApplied: "offer_bundle_stock",
+        },
+      };
+    }
+  }
+
+  return { offer };
 }
 
 /**
@@ -264,10 +345,16 @@ async function checkBounds(
     };
   }
 
-  if (request.productId) {
-    const { product, failure } = await resolveProduct(request);
+  if (request.offerId) {
+    const { offer, failure } = await resolveOfferForRequest(request);
     if (failure) return failure;
-    return { product };
+    return { offer };
+  }
+
+  if (request.variantId) {
+    const { variant, failure } = await resolveVariant(request);
+    if (failure) return failure;
+    return { variant };
   }
 
   return {};
@@ -317,27 +404,54 @@ async function releaseBudget(capId: string, amountPaise: number): Promise<void> 
 }
 
 /**
- * Atomically decrements product stock. Same pattern as reserveBudget: the
+ * Atomically decrements variant stock. Same pattern as reserveBudget: the
  * WHERE clause re-checks stock >= quantity in the same statement as the
  * decrement, so concurrent purchases racing for the last units leave
  * exactly the available count succeeding, never negative stock.
+ * (Layer 5-1: operates on product_variants, not products.)
  */
-async function reserveStock(productId: string, quantity: number): Promise<boolean> {
+async function reserveStock(variantId: string, quantity: number): Promise<boolean> {
   const result = await db
-    .update(schema.products)
-    .set({ stock: sql`${schema.products.stock} - ${quantity}` })
-    .where(and(eq(schema.products.id, productId), gte(schema.products.stock, quantity)))
-    .returning({ id: schema.products.id });
+    .update(schema.productVariants)
+    .set({ stock: sql`${schema.productVariants.stock} - ${quantity}` })
+    .where(and(eq(schema.productVariants.id, variantId), gte(schema.productVariants.stock, quantity)))
+    .returning({ id: schema.productVariants.id });
 
   return result.length > 0;
 }
 
-/** Gives stock back to the product. Called when a reserved money action fails to execute or an escalation is rejected. */
-async function releaseStock(productId: string, quantity: number): Promise<void> {
+/** Gives stock back to the variant. Called when a reserved money action fails to execute or an escalation is rejected. */
+async function releaseStock(variantId: string, quantity: number): Promise<void> {
   await db
-    .update(schema.products)
-    .set({ stock: sql`${schema.products.stock} + ${quantity}` })
-    .where(eq(schema.products.id, productId));
+    .update(schema.productVariants)
+    .set({ stock: sql`${schema.productVariants.stock} + ${quantity}` })
+    .where(eq(schema.productVariants.id, variantId));
+}
+
+/**
+ * An offer's bundle covers multiple variants (Layer 6) — reserves stock
+ * for every item, all-or-nothing. If any item loses the race (another
+ * purchase took the last units between resolveOfferForRequest's read and
+ * now), every item already reserved in this call is rolled back before
+ * returning false, so a bundle purchase never leaves a partial hold on
+ * some of its items.
+ */
+async function reserveOfferStock(items: ResolvedOffer["items"]): Promise<boolean> {
+  const reservedSoFar: ResolvedOffer["items"] = [];
+  for (const item of items) {
+    const ok = await reserveStock(item.variantId, item.quantity);
+    if (!ok) {
+      for (const done of reservedSoFar) await releaseStock(done.variantId, done.quantity);
+      return false;
+    }
+    reservedSoFar.push(item);
+  }
+  return true;
+}
+
+/** Gives back stock for every item in an offer's bundle. Mirrors releaseStock. */
+async function releaseOfferStock(items: ResolvedOffer["items"]): Promise<void> {
+  for (const item of items) await releaseStock(item.variantId, item.quantity);
 }
 
 /**
@@ -362,8 +476,11 @@ async function insertMoneyActionOrReplay(
     if (pgCode !== "23505" || !values.idempotencyKey) throw err;
 
     await releaseBudget(capId, values.amountPaise);
-    if (values.productId) {
-      await releaseStock(values.productId, values.quantity ?? 1);
+    if (values.variantId) {
+      await releaseStock(values.variantId, values.quantity ?? 1);
+    }
+    if (values.offerId) {
+      await releaseOfferStock(await loadOfferItems(values.offerId));
     }
     const [existing] = await db
       .select()
@@ -388,13 +505,17 @@ interface ExecuteAndSettleInput {
   agentId: string;
   actor: (typeof schema.auditActorEnum.enumValues)[number];
   allowReasonPrefix: string;
-  /** Present only when this action bought a specific product — stock held for it releases alongside budget on failure. */
-  productId?: string;
+  /** Present only when this action bought a specific variant — stock held for it releases alongside budget on failure. */
+  variantId?: string;
   quantity?: number;
+  /** Present only when this action redeemed an offer's bundle (Layer 6) — every item's stock releases alongside budget on failure. */
+  offerItems?: ResolvedOffer["items"];
   /** Escrow (Layer 4-5): create the order with payment_capture: false so a successful checkout only authorises, never auto-captures. */
   holdOnly?: boolean;
   /** Recovery (Layer 4-3): create a real Payment Link instead of an order. */
   paymentLink?: { description: string; referenceId: string };
+  /** Layer 6-5: settle as a reward-coin ledger write instead of a Razorpay call. See MoneyActionRequest.rewardLedger. */
+  rewardLedger?: MoneyActionRequest["rewardLedger"];
 }
 
 /**
@@ -405,6 +526,87 @@ interface ExecuteAndSettleInput {
  */
 async function executeAndSettle(input: ExecuteAndSettleInput): Promise<GateResult> {
   try {
+    // Layer 6-5: a reward-coin issuance or redemption has no Razorpay
+    // counterpart — coins are an internal ledger, not money leaving or
+    // entering the merchant's Razorpay account. Settle by writing the
+    // ledger row directly rather than reaching razorpay.ts at all.
+    // checkBounds already required this merchant to have connected
+    // Razorpay before reaching here (deliberately not special-cased —
+    // a merchant running a rewards program is already selling real
+    // product through Razorpay). A DB failure here still hits the catch
+    // block below and releases the reservation, same as any other path.
+    if (input.rewardLedger) {
+      const { coinsDelta, reason: ledgerReason, identity } = input.rewardLedger;
+
+      // A redemption (negative delta) must be atomic against the live
+      // balance the same way reserveStock/reserveBudget are atomic
+      // against their own resource: the balance is re-summed from this
+      // exact identity's ledger rows and re-checked in the SAME
+      // statement as the insert, via a conditional INSERT ... SELECT.
+      // Two concurrent redemptions racing for the same balance leave
+      // exactly one INSERT affecting a row and the other affecting zero
+      // — the balance can never go negative, without a second mutable
+      // "balance" column that could diverge from the ledger it's
+      // supposed to summarize (see DECISIONS.md's recoveredPaise
+      // reasoning). An issuance (positive delta) always succeeds — it
+      // never needs this check.
+      const identityFilter = identity.agentId
+        ? sql`agent_id = ${identity.agentId}`
+        : sql`session_token = ${identity.sessionToken}`;
+
+      const inserted = await db.execute<{ id: string }>(sql`
+        insert into ${schema.rewardCoinLedger} (merchant_id, agent_id, session_token, coins_delta, reason, money_action_id)
+        select ${input.merchantId}, ${identity.agentId ?? null}, ${identity.sessionToken ?? null}, ${coinsDelta}, ${ledgerReason}, ${input.moneyActionId}
+        where ${coinsDelta} > 0 or (
+          coalesce((
+            select sum(coins_delta) from ${schema.rewardCoinLedger}
+            where merchant_id = ${input.merchantId} and ${identityFilter}
+          ), 0) + ${coinsDelta} >= 0
+        )
+        returning id
+      `);
+
+      if (inserted.length === 0) {
+        // Lost the race for the last of the balance between check and
+        // reservation — same shape as reserveStock's own concurrency
+        // loss, and it releases budget the same way.
+        await releaseBudget(input.capId, input.amountPaise);
+        await db.update(schema.moneyActions).set({ status: "failed" }).where(eq(schema.moneyActions.id, input.moneyActionId));
+
+        const reason = "Denied — another request consumed the remaining coin balance between check and reservation. Reserved budget released.";
+        await logAuditEntry({
+          merchantId: input.merchantId,
+          actor: input.actor,
+          event: "money_action_execution_failed",
+          decision: "deny",
+          reason,
+          boundApplied: "reward_coin_balance",
+          moneyActionId: input.moneyActionId,
+        });
+
+        return { decision: "deny", reason, moneyActionId: input.moneyActionId };
+      }
+
+      await db
+        .update(schema.moneyActions)
+        .set({ status: "executed" })
+        .where(eq(schema.moneyActions.id, input.moneyActionId));
+
+      const reason = `${input.allowReasonPrefix} and the reward-coin ledger was updated (${coinsDelta > 0 ? "+" : ""}${coinsDelta} coins).`;
+      await logAuditEntry({
+        merchantId: input.merchantId,
+        actor: input.actor,
+        event: "money_action_executed",
+        decision: "allow",
+        reason,
+        boundApplied: `spend_cap_balance:${input.capId}`,
+        moneyActionId: input.moneyActionId,
+        metadata: { coinsDelta, rewardReason: ledgerReason },
+      });
+
+      return { decision: "allow", reason, moneyActionId: input.moneyActionId };
+    }
+
     // Loaded fresh rather than passed through from checkBounds, so a
     // credential rotation or disconnect between attempt and execution
     // (the gap matters most for resolveEscalation, which can run long
@@ -469,8 +671,11 @@ async function executeAndSettle(input: ExecuteAndSettleInput): Promise<GateResul
   } catch (executionErr) {
     // A failed payment must not consume the agent's cap or hold stock.
     await releaseBudget(input.capId, input.amountPaise);
-    if (input.productId) {
-      await releaseStock(input.productId, input.quantity ?? 1);
+    if (input.variantId) {
+      await releaseStock(input.variantId, input.quantity ?? 1);
+    }
+    if (input.offerItems) {
+      await releaseOfferStock(input.offerItems);
     }
 
     await db
@@ -478,7 +683,7 @@ async function executeAndSettle(input: ExecuteAndSettleInput): Promise<GateResul
       .set({ status: "failed" })
       .where(eq(schema.moneyActions.id, input.moneyActionId));
 
-    const releasedWhat = input.productId ? "budget and stock" : "budget";
+    const releasedWhat = input.variantId || input.offerItems ? "budget and stock" : "budget";
     const isRazorpayDecline = executionErr instanceof RazorpayCallError && executionErr.isRazorpayError;
     const reason = isRazorpayDecline
       ? `Execution failed — Razorpay rejected the order (${(executionErr as RazorpayCallError).razorpayCode}): ${executionErr instanceof Error ? executionErr.message : String(executionErr)}. Reserved ${releasedWhat} released.`
@@ -547,11 +752,11 @@ export async function attemptMoneyAction(
         decision: "deny",
         reason: boundsResult.reason,
         boundApplied: boundsResult.boundApplied,
-        metadata: { agentId: request.agentId, amountPaise: request.amountPaise, context: request.context, productId: request.productId },
+        metadata: { agentId: request.agentId, amountPaise: request.amountPaise, context: request.context, variantId: request.variantId },
       });
       return { decision: "deny", reason: boundsResult.reason };
     }
-    const { product } = boundsResult;
+    const { variant, offer } = boundsResult;
 
     // Re-fetch rather than thread the cap through from checkBounds, so
     // the reservation's WHERE clause is the sole source of truth on balance.
@@ -593,13 +798,13 @@ export async function attemptMoneyAction(
     }
 
     const quantity = request.quantity ?? 1;
-    if (product) {
-      const stockReserved = await reserveStock(product.id, quantity);
+    if (variant) {
+      const stockReserved = await reserveStock(variant.id, quantity);
       if (!stockReserved) {
         // Budget was already reserved above — give it back, same as any
         // other post-reservation failure.
         await releaseBudget(cap.id, request.amountPaise);
-        const reason = `Denied — another request consumed the remaining stock for product ${product.id} between check and reservation.`;
+        const reason = `Denied — another request consumed the remaining stock for product ${variant.id} between check and reservation.`;
         await logAuditEntry({
           merchantId: request.merchantId,
           actor: "agent",
@@ -607,13 +812,30 @@ export async function attemptMoneyAction(
           decision: "deny",
           reason,
           boundApplied: "product_stock",
-          metadata: { agentId: request.agentId, amountPaise: request.amountPaise, productId: product.id },
+          metadata: { agentId: request.agentId, amountPaise: request.amountPaise, variantId: variant.id },
+        });
+        return { decision: "deny", reason };
+      }
+    }
+    if (offer) {
+      const stockReserved = await reserveOfferStock(offer.items);
+      if (!stockReserved) {
+        await releaseBudget(cap.id, request.amountPaise);
+        const reason = `Denied — another request consumed the remaining stock for offer ${offer.offerId}'s bundle between check and reservation.`;
+        await logAuditEntry({
+          merchantId: request.merchantId,
+          actor: "agent",
+          event: `money_action_attempt:${request.type}`,
+          decision: "deny",
+          reason,
+          boundApplied: "offer_bundle_stock",
+          metadata: { agentId: request.agentId, amountPaise: request.amountPaise, offerId: offer.offerId },
         });
         return { decision: "deny", reason };
       }
     }
 
-    // Budget (and stock, if a product) is reserved. The risk layer runs next: it can only downgrade
+    // Budget (and stock, if a variant) is reserved. The risk layer runs next: it can only downgrade
     // this to pending_escalation, never turn a passed bound check into a
     // deny, since attemptMoneyAction only reaches here after every
     // deterministic check has already passed.
@@ -624,7 +846,9 @@ export async function attemptMoneyAction(
       const { action: moneyAction, wasReplay } = await insertMoneyActionOrReplay(cap.id, {
         merchantId: request.merchantId,
         agentId: request.agentId,
-        productId: product?.id,
+        productId: variant?.productId,
+        variantId: variant?.id,
+        offerId: offer?.offerId,
         quantity,
         type: request.type,
         amountPaise: request.amountPaise,
@@ -660,7 +884,9 @@ export async function attemptMoneyAction(
     const { action: moneyAction, wasReplay } = await insertMoneyActionOrReplay(cap.id, {
       merchantId: request.merchantId,
       agentId: request.agentId,
-      productId: product?.id,
+      productId: variant?.productId,
+      variantId: variant?.id,
+      offerId: offer?.offerId,
       quantity,
       holdOnly: request.holdOnly ?? false,
       type: request.type,
@@ -671,9 +897,13 @@ export async function attemptMoneyAction(
 
     if (wasReplay) return resultFromExistingAction(moneyAction);
 
-    const allowReasonPrefix = product
-      ? `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for "${request.context}" x${quantity} is within this agent's remaining cap`
-      : `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for "${request.context}" is within this agent's remaining cap`;
+    const allowReasonPrefix = request.rewardLedger
+      ? `Allowed — ${request.rewardLedger.reason === "purchase_issue" ? "issuing" : "redeeming"} ₹${(request.amountPaise / 100).toFixed(2)} in reward coins is within this agent's remaining cap`
+      : offer
+        ? `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for offer ${offer.offerId}'s bundle is within this agent's remaining cap`
+        : variant
+          ? `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for "${request.context}" x${quantity} is within this agent's remaining cap`
+          : `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for "${request.context}" is within this agent's remaining cap`;
 
     return executeAndSettle({
       merchantId: request.merchantId,
@@ -684,10 +914,12 @@ export async function attemptMoneyAction(
       agentId: request.agentId,
       actor: "agent",
       allowReasonPrefix,
-      productId: product?.id,
+      variantId: variant?.id,
+      offerItems: offer?.items,
       quantity,
       holdOnly: request.holdOnly ?? false,
       paymentLink: request.paymentLink,
+      rewardLedger: request.rewardLedger,
     });
   } catch (unexpectedErr) {
     // Fail closed: anything not already handled above still denies.
@@ -756,15 +988,18 @@ export async function resolveEscalation(
 
   if (outcome === "rejected") {
     await releaseBudget(escalation.spendCapId, moneyAction.amountPaise);
-    if (moneyAction.productId) {
-      await releaseStock(moneyAction.productId, moneyAction.quantity);
+    if (moneyAction.variantId) {
+      await releaseStock(moneyAction.variantId, moneyAction.quantity);
+    }
+    if (moneyAction.offerId) {
+      await releaseOfferStock(await loadOfferItems(moneyAction.offerId));
     }
     await db
       .update(schema.moneyActions)
       .set({ status: "failed" })
       .where(eq(schema.moneyActions.id, moneyAction.id));
 
-    const releasedWhat = moneyAction.productId ? "budget and stock" : "budget";
+    const releasedWhat = moneyAction.variantId || moneyAction.offerId ? "budget and stock" : "budget";
     const reason = `Rejected by merchant — ${escalation.riskReason} Reserved ${releasedWhat} released.`;
     await logAuditEntry({
       merchantId: moneyAction.merchantId,
@@ -788,7 +1023,8 @@ export async function resolveEscalation(
     agentId: moneyAction.agentId ?? "",
     actor: "merchant",
     allowReasonPrefix: `Approved by merchant — ₹${(moneyAction.amountPaise / 100).toFixed(2)} previously escalated (${escalation.riskReason})`,
-    productId: moneyAction.productId ?? undefined,
+    variantId: moneyAction.variantId ?? undefined,
+    offerItems: moneyAction.offerId ? await loadOfferItems(moneyAction.offerId) : undefined,
     quantity: moneyAction.quantity,
   });
 }
@@ -1061,8 +1297,11 @@ export async function issueRefund(
     }
     // Stock only comes back on a full refund — a partial refund is still
     // the same purchase, the buyer keeps what was bought.
-    if (moneyAction.productId && isFullRefund) {
-      await releaseStock(moneyAction.productId, moneyAction.quantity);
+    if (moneyAction.variantId && isFullRefund) {
+      await releaseStock(moneyAction.variantId, moneyAction.quantity);
+    }
+    if (moneyAction.offerId && isFullRefund) {
+      await releaseOfferStock(await loadOfferItems(moneyAction.offerId));
     }
 
     // A full refund means this action's money didn't end up spent —
@@ -1079,7 +1318,7 @@ export async function issueRefund(
         .where(eq(schema.escrowHolds.moneyActionId, moneyActionId));
     }
 
-    const releasedWhat = moneyAction.productId && isFullRefund ? "budget and stock" : "budget";
+    const releasedWhat = (moneyAction.variantId || moneyAction.offerId) && isFullRefund ? "budget and stock" : "budget";
     const reason = `Refunded — ₹${(refundAmountPaise / 100).toFixed(2)} of ₹${(moneyAction.amountPaise / 100).toFixed(2)} (refund ${refund.id}). ${isFullRefund ? `Full refund — reserved ${releasedWhat} released.` : "Partial refund — the sale stands, reduced by the refunded amount."}`;
     await logAuditEntry({
       merchantId,

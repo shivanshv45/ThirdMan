@@ -15,18 +15,18 @@ const RATE_LIMIT_MAX = 60;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 
 /**
- * v2 (Layer 4-4): buy a product by id, not an arbitrary number. The v1
- * shape (amountPaise + free-text context, no productId) still works —
- * amountPaise alone lets an agent name its own price for an unlisted
- * spend (e.g. escrow, a non-catalogue action a later layer adds), which
- * is a legitimate use the gate has always supported. What's new is that
- * when productId is given, amountPaise (if also given) becomes an
- * assertion the gate checks and denies on mismatch, never the source of
- * truth — see gate.ts's resolveProduct.
+ * v2 (Layer 4-4, updated Layer 5-1): buy a specific variant by id, not an
+ * arbitrary number. The v1 shape (amountPaise + free-text context, no
+ * variantId) still works — amountPaise alone lets an agent name its own
+ * price for an unlisted spend (e.g. escrow, a non-catalogue action a
+ * later layer adds), which is a legitimate use the gate has always
+ * supported. What's new is that when variantId is given, amountPaise (if
+ * also given) becomes an assertion the gate checks and denies on
+ * mismatch, never the source of truth — see gate.ts's resolveVariant.
  */
 const purchaseRequestSchema = z
   .object({
-    productId: z.string().uuid().optional(),
+    variantId: z.string().uuid().optional(),
     quantity: z.number().int().positive().max(999).optional(),
     amountPaise: z.number().int().positive().optional(),
     context: z.string().min(1).max(500).optional(),
@@ -34,8 +34,8 @@ const purchaseRequestSchema = z
     /** Escrow (Layer 4-5): authorise the payment but don't auto-capture it — held until the merchant releases or refunds it. */
     holdOnly: z.boolean().optional(),
   })
-  .refine((v) => v.productId !== undefined || (v.amountPaise !== undefined && v.context !== undefined), {
-    message: "either productId, or both amountPaise and context, is required",
+  .refine((v) => v.variantId !== undefined || (v.amountPaise !== undefined && v.context !== undefined), {
+    message: "either variantId, or both amountPaise and context, is required",
   });
 
 /**
@@ -69,20 +69,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "invalid request body", details: parsed.error.flatten() }, { status: 400 });
   }
 
-  const { productId, quantity, idempotencyKey, holdOnly } = parsed.data;
+  const { variantId, quantity, idempotencyKey, holdOnly } = parsed.data;
   let { amountPaise, context } = parsed.data;
 
-  if (productId) {
-    const [product] = await db.select().from(schema.products).where(eq(schema.products.id, productId));
-    if (!product || product.merchantId !== agent.merchantId) {
-      return NextResponse.json({ decision: "deny", reason: `No product ${productId} found for this merchant.` }, { status: 200 });
+  if (variantId) {
+    const [variant] = await db.select().from(schema.productVariants).where(eq(schema.productVariants.id, variantId));
+    if (!variant || variant.merchantId !== agent.merchantId) {
+      return NextResponse.json({ decision: "deny", reason: `No product ${variantId} found for this merchant.` }, { status: 200 });
     }
     // Price always comes from the catalogue — this is only the context
     // sentence for the audit trail. If the caller also asserted an
     // amountPaise, it's passed through unchanged so the gate can catch a
     // mismatch, rather than silently overwritten here.
-    context ??= `Agent purchase: ${product.name}`;
-    amountPaise ??= product.pricePaise * (quantity ?? 1);
+    context ??= `Agent purchase: ${variant.sku}`;
+    amountPaise ??= variant.pricePaise * (quantity ?? 1);
   }
 
   const result = await attemptMoneyAction({
@@ -92,7 +92,7 @@ export async function POST(req: NextRequest) {
     amountPaise: amountPaise!,
     context: context!,
     idempotencyKey,
-    productId,
+    variantId,
     quantity,
     holdOnly,
   });

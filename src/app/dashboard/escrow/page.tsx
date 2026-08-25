@@ -27,7 +27,12 @@ export default async function EscrowPage() {
   await sweepOnLoad(merchant.id);
 
   const [holds, products] = await Promise.all([getEscrowHolds(merchant.id), getProducts(merchant.id)]);
-  const activeProducts = products.filter((p) => p.status === "active").map((p) => ({ id: p.id, name: p.name, pricePaise: p.pricePaise }));
+  const activeProducts = products
+    .filter((p) => p.status === "active")
+    .flatMap((p) => {
+      const variant = p.variants.find((v) => v.status === "active");
+      return variant ? [{ id: p.id, name: p.name, pricePaise: variant.pricePaise }] : [];
+    });
 
   return (
     <main className="max-w-4xl mx-auto p-6 space-y-8">

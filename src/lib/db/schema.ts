@@ -69,6 +69,33 @@ export const productStatusEnum = pgEnum("product_status", [
   "archived",
 ]);
 
+export const productCategoryEnum = pgEnum("product_category", [
+  "food_beverage",
+  "apparel",
+  "electronics",
+  "home_goods",
+  "beauty_personal_care",
+  "health_wellness",
+  "books_media",
+  "toys_games",
+  "sporting_goods",
+  "office_supplies",
+  "other",
+]);
+
+export const variantAvailabilityEnum = pgEnum("variant_availability", [
+  "in_stock",
+  "out_of_stock",
+  "preorder",
+  "discontinued",
+]);
+
+export const refundMethodEnum = pgEnum("refund_method", [
+  "original_payment_method",
+  "store_credit",
+  "either",
+]);
+
 export const escrowHoldOutcomeEnum = pgEnum("escrow_hold_outcome", [
   "held",
   "captured",
@@ -133,6 +160,11 @@ export const sessions = pgTable("sessions", {
     .defaultNow(),
 });
 
+// The marketing-level entity (Layer 5-1): title, description, category —
+// what a merchant thinks of as "a product." Money and stock now live on
+// product_variants, since a real product (a coffee bag in 250g/1kg, a mug
+// in three colours) is rarely one sellable unit. A product with exactly
+// one variant is still the common case and the dashboard's default path.
 export const products = pgTable("products", {
   id: uuid("id").primaryKey().defaultRandom(),
   merchantId: uuid("merchant_id")
@@ -140,22 +172,68 @@ export const products = pgTable("products", {
     .references(() => merchants.id),
   name: text("name").notNull(),
   description: text("description").notNull(),
-  pricePaise: integer("price_paise").notNull(),
-  // What margin-aware decisions in later layers (upsell, negotiation) read.
-  // Unused by Layer 0/1 but included now to avoid retrofitting the schema.
-  costPaise: integer("cost_paise").notNull(),
-  // Written exclusively by the gate (Layer 4), via the same atomic
-  // conditional-UPDATE pattern spend_caps.spentPaise already uses.
-  stock: integer("stock").notNull(),
+  // A small closed set, not free text — what makes cross-merchant
+  // comparison possible at all (prd.md §1 idea #6, not built yet, but the
+  // enum is the seam it would attach to).
+  category: productCategoryEnum("category").notNull().default("other"),
+  subcategory: text("subcategory"),
   // Archived products keep their history (past money_actions rows still
-  // reference them) but don't appear in the catalogue or accept new
-  // purchases. Never hard-delete a product — see setSpendCap's precedent
-  // of revoke-don't-delete for agent keys (Layer 2-3).
+  // reference their variants) but don't appear in the catalogue or accept
+  // new purchases. Never hard-delete a product — see setSpendCap's
+  // precedent of revoke-don't-delete for agent keys (Layer 2-3).
   status: productStatusEnum("status").notNull().default("active"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
 });
+
+// A sellable unit of a product (Layer 5-1) — its own SKU, price, cost,
+// stock, and attributes. The gate's productId bound (Layer 4-1) now
+// resolves and reserves against this table, not products directly.
+export const productVariants = pgTable(
+  "product_variants",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    productId: uuid("product_id")
+      .notNull()
+      .references(() => products.id),
+    // Denormalised from products.merchantId so SKU uniqueness can be
+    // enforced per merchant without a join, and so every gate/agent-facing
+    // query that's naturally merchant-scoped doesn't need one either.
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id),
+    // Stable, merchant-meaningful identifier. Unique per merchant — what an
+    // agent references in a reorder, not this row's own UUID.
+    sku: text("sku").notNull(),
+    pricePaise: integer("price_paise").notNull(),
+    // What margin-aware decisions in later layers (upsell, negotiation) read.
+    // Never exposed on any agent-facing or public shape.
+    costPaise: integer("cost_paise").notNull(),
+    // Written exclusively by the gate, via the same atomic conditional-
+    // UPDATE pattern spend_caps.spentPaise already uses.
+    stock: integer("stock").notNull(),
+    // Derived from stock where possible, but a merchant can override —
+    // "discontinued" is information an agent needs that a zero stock count
+    // alone doesn't convey.
+    availability: variantAvailabilityEnum("availability").notNull().default("in_stock"),
+    // Flat string->string map only, e.g. {"size": "250g", "roast": "light"}.
+    // Never nested — validated at the write boundary, not by the column
+    // type, so it stays machine-comparable.
+    attributes: jsonb("attributes").notNull().default(sql`'{}'::jsonb`),
+    // Optional global identifiers. Empty for most merchants — only useful
+    // once cross-merchant product matching exists, which it doesn't yet.
+    gtin: text("gtin"),
+    mpn: text("mpn"),
+    // A URL only. No image upload/hosting — see DECISIONS.md.
+    imageUrl: text("image_url"),
+    status: productStatusEnum("status").notNull().default("active"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [uniqueIndex("product_variants_merchant_sku_idx").on(table.merchantId, table.sku)],
+);
 
 // An external AI buyer authorised to transact against this merchant.
 export const agents = pgTable("agents", {
@@ -204,9 +282,14 @@ export const moneyActions = pgTable(
     // have no originating agent.
     agentId: uuid("agent_id").references(() => agents.id),
     // Nullable: escrow, recovery retries, and payouts aren't tied to one
-    // product. When set, the price and stock bound were enforced against
-    // this row, not the caller's say-so — see gate.ts.
+    // product. Kept after Layer 5-1's variant migration so past rows keep
+    // pointing at a valid product without repurposing this column —
+    // variantId (below) is what a Layer 5+ purchase actually resolves and
+    // reserves against.
     productId: uuid("product_id").references(() => products.id),
+    // The specific variant purchased (Layer 5-1). Nullable for the same
+    // reasons as productId, and additionally null on every pre-Layer-5 row.
+    variantId: uuid("variant_id").references(() => productVariants.id),
     quantity: integer("quantity").notNull().default(1),
     // True only for the escrow hold-and-capture flow (Layer 4-5): the
     // Razorpay order is created with payment_capture: false, so a
@@ -232,6 +315,14 @@ export const moneyActions = pgTable(
     // recognised and answered from the stored outcome rather than
     // re-running the gate.
     idempotencyKey: text("idempotency_key"),
+    // Layer 6: when a purchase references an accepted upsell offer, the
+    // gate resolves the discount from this row's bundle, never from
+    // anything the caller asserted (see gate.ts's resolveOffer). New
+    // column, never repurposing productId/variantId — same discipline
+    // Layer 5-1 used adding variantId. References offers, declared later
+    // in this file — drizzle resolves table references lazily via
+    // closures, so the forward reference is fine.
+    offerId: uuid("offer_id").references((): typeof offers.id => offers.id),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -414,6 +505,11 @@ export const conversations = pgTable("conversations", {
     .references(() => merchants.id),
   sessionToken: text("session_token").notNull().unique(),
   cartProductId: uuid("cart_product_id").references(() => products.id),
+  // The specific variant selected (Layer 5-7) — nullable for the same
+  // reason as money_actions.variantId: a pre-Layer-5-7 conversation row
+  // has a product but no resolved variant. When set, this (not
+  // cartProductId) is what price/stock/checkout actually resolve against.
+  cartVariantId: uuid("cart_variant_id").references(() => productVariants.id),
   cartQuantity: integer("cart_quantity").notNull().default(1),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
@@ -432,6 +528,221 @@ export const chatMessages = pgTable("chat_messages", {
     .references(() => conversations.id),
   role: chatMessageRoleEnum("role").notNull(),
   content: text("content").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// Structured, machine-readable merchant terms (Layer 5-3). Every field
+// here is what an agent parses; policyNotes is the one field that's ever
+// free text, and it's for the human reading it, never the field an agent
+// acts on. A merchant with no row here has genuinely not published a
+// policy — see DECISIONS.md on why there is no fabricated permissive
+// default.
+export const merchantPolicies = pgTable("merchant_policies", {
+  merchantId: uuid("merchant_id")
+    .primaryKey()
+    .references(() => merchants.id),
+  returnsAccepted: boolean("returns_accepted").notNull().default(false),
+  returnWindowDays: integer("return_window_days"),
+  refundMethod: refundMethodEnum("refund_method"),
+  // Integer percent, 0-100. Never a float near money.
+  restockingFeePercent: integer("restocking_fee_percent"),
+  shippingRegions: text("shipping_regions").array().notNull().default(sql`'{}'::text[]`),
+  handlingTimeDays: integer("handling_time_days"),
+  warrantyMonths: integer("warranty_months"),
+  policyNotes: text("policy_notes"),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const catalogueImportSourceEnum = pgEnum("catalogue_import_source", ["csv", "pasted_text"]);
+
+export const catalogueImportStatusEnum = pgEnum("catalogue_import_status", [
+  "previewed",
+  "imported",
+  "failed",
+]);
+
+// One row per import run (Layer 5-2) — CSV upload or a pasted-text blob
+// the model structured. Written once the merchant confirms the preview
+// and rows are actually written; a "previewed" row that's never confirmed
+// is not persisted here (nothing to show a merchant about an import that
+// never happened). rowCounts is a small summary object, not a copy of
+// every row — the imported rows themselves are the product_variants they
+// created or updated.
+export const catalogueImports = pgTable("catalogue_imports", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  merchantId: uuid("merchant_id")
+    .notNull()
+    .references(() => merchants.id),
+  source: catalogueImportSourceEnum("source").notNull(),
+  status: catalogueImportStatusEnum("status").notNull().default("imported"),
+  rowsParsed: integer("rows_parsed").notNull(),
+  rowsImported: integer("rows_imported").notNull(),
+  rowsSkipped: integer("rows_skipped").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// --- Layer 6: upsell, bundling, cashback rewards (§5) ---
+
+export const offerStatusEnum = pgEnum("offer_status", [
+  "offered",
+  "accepted",
+  "declined",
+  "expired",
+]);
+
+// A merchant-authored discount definition (Layer 6-1). The ONLY source of
+// truth for a discounted amount — a caller can reference a bundle by id,
+// never assert its own discounted price. See gate.ts's resolveOffer and
+// DECISIONS.md: this exists so the gate's product_price_match bound never
+// has to be weakened for a discount to be honoured.
+export const bundles = pgTable("bundles", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  merchantId: uuid("merchant_id")
+    .notNull()
+    .references(() => merchants.id),
+  name: text("name").notNull(),
+  status: productStatusEnum("status").notNull().default("active"),
+  // The bundle's total price, integer paise, merchant-set. Never derived
+  // from a percent at read time — one stable number an offer references.
+  bundlePricePaise: integer("bundle_price_paise").notNull(),
+  // True only if the merchant explicitly acknowledged bundlePricePaise
+  // falls below the summed costPaise of its items. Deterministic-code
+  // checked at creation time (dashboard-mutations.ts), never inferred
+  // later — see DECISIONS.md, "a merchant may genuinely want a
+  // loss-leader."
+  belowCostAcknowledged: boolean("below_cost_acknowledged").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// The variants (and their quantities) a bundle contains. A bundle needs
+// at least one item — enforced in code at creation, not by the schema.
+export const bundleItems = pgTable("bundle_items", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  bundleId: uuid("bundle_id")
+    .notNull()
+    .references(() => bundles.id),
+  variantId: uuid("variant_id")
+    .notNull()
+    .references(() => productVariants.id),
+  quantity: integer("quantity").notNull().default(1),
+});
+
+// One row per offer the engine actually presented to a buyer (Layer
+// 6-2/6-4) — never written for a run that produced no offer at all; that
+// case is offer_decisions below. expiresAt is a real, code-checked
+// deterministic bound, not decorative "limited time" copy — see
+// resolveOffer in gate.ts.
+export const offers = pgTable("offers", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  merchantId: uuid("merchant_id")
+    .notNull()
+    .references(() => merchants.id),
+  bundleId: uuid("bundle_id")
+    .notNull()
+    .references(() => bundles.id),
+  // Nullable: an offer can be made to an authenticated agent or to an
+  // anonymous storefront/chat session — never both, enforced in code.
+  agentId: uuid("agent_id").references(() => agents.id),
+  sessionToken: text("session_token"),
+  status: offerStatusEnum("status").notNull().default("offered"),
+  // The one-sentence explanation the model produced, shown to the buyer
+  // and kept for the audit/offer trail. Never contains a margin or cost
+  // figure — see cost-paise-never-leaks.test.ts.
+  reasonText: text("reason_text").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// The offer/refusal log (Layer 6-4) — one row per engine run, whether or
+// not it produced an offer. This is deliberately NOT audit_log: no money
+// moved yet at decision time, and overloading the money audit trail with
+// non-money events would make it harder to read for the thing it's
+// actually for. offeredOfferId is set only when the run resulted in an
+// offer (see offers above); a null offeredOfferId with a non-null
+// noOfferReason is the refusal case prd.md §7 idea #1 is about —
+// eligibleCandidateCount and belowMarginFloorCount let a merchant (or a
+// judge) see the exact arithmetic that produced the refusal.
+export const offerDecisions = pgTable("offer_decisions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  merchantId: uuid("merchant_id")
+    .notNull()
+    .references(() => merchants.id),
+  agentId: uuid("agent_id").references(() => agents.id),
+  sessionToken: text("session_token"),
+  cartVariantId: uuid("cart_variant_id").references(() => productVariants.id),
+  eligibleCandidateCount: integer("eligible_candidate_count").notNull(),
+  belowMarginFloorCount: integer("below_margin_floor_count").notNull(),
+  offeredOfferId: uuid("offered_offer_id").references(() => offers.id),
+  noOfferReason: text("no_offer_reason"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const rewardLedgerReasonEnum = pgEnum("reward_ledger_reason", [
+  "purchase_issue",
+  "redemption",
+]);
+
+// The reward-coin ledger (Layer 6-5) — append-only, integer coins, never
+// a mutable balance column. A balance is the sum of this table's deltas
+// for a customer, same reasoning as recoveredPaise living on the
+// attempt rather than the failure (DECISIONS.md): one number derived
+// from evidence, not two that can diverge. Every row traces back to a
+// settled money_actions row via moneyActionId — see gate.ts's
+// executeAndSettle reward branch. Coins are never paise; conversion
+// happens only in reward-coins.ts's deterministic rate arithmetic.
+// Merchant-set reward program bounds (Layer 6-5). No row means the
+// merchant hasn't turned rewards on — same "absence is real, not a
+// permissive default" discipline as merchant_policies (DECISIONS.md).
+export const merchantRewardSettings = pgTable("merchant_reward_settings", {
+  merchantId: uuid("merchant_id")
+    .primaryKey()
+    .references(() => merchants.id),
+  // Integer paise per coin — the sole conversion rate, merchant-set.
+  // coinsToIssue = floor(capturedAmountPaise * issueRatePermille / 1000 / paisePerCoin);
+  // redemptionValuePaise = coins * paisePerCoin. Both integer arithmetic,
+  // rounding direction fixed in reward-coins.ts, never a float.
+  paisePerCoin: integer("paise_per_coin").notNull(),
+  // Coins issued per 1000 paise captured (a permille rate keeps the whole
+  // computation in integers — e.g. 50 = 5% of the captured amount, in
+  // coin-equivalent value).
+  issueRatePermille: integer("issue_rate_permille").notNull(),
+  // Integer percent 0-100: the maximum share of a single purchase
+  // payable in redeemed coins.
+  maxRedemptionPercent: integer("max_redemption_percent").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const rewardCoinLedger = pgTable("reward_coin_ledger", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  merchantId: uuid("merchant_id")
+    .notNull()
+    .references(() => merchants.id),
+  // Nullable like offers.agentId/sessionToken: whichever identity earned
+  // or spent the coins, never both.
+  agentId: uuid("agent_id").references(() => agents.id),
+  sessionToken: text("session_token"),
+  // Positive on issue, negative on redemption. Never zero — a
+  // zero-coin ledger entry documents nothing and is rejected in code.
+  coinsDelta: integer("coins_delta").notNull(),
+  reason: rewardLedgerReasonEnum("reason").notNull(),
+  moneyActionId: uuid("money_action_id")
+    .notNull()
+    .references(() => moneyActions.id),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

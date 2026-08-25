@@ -21,6 +21,16 @@ async function main() {
       merchantId: merchant.id,
       name: "Demo Product — Out of Stock Scenario",
       description: "Last one in stock, for the concurrency demo.",
+      status: "active",
+    })
+    .returning();
+
+  const [variant] = await db
+    .insert(schema.productVariants)
+    .values({
+      productId: product.id,
+      merchantId: merchant.id,
+      sku: `demo-stock-${Date.now()}`,
       pricePaise: 50_000,
       costPaise: 20_000,
       stock: 1,
@@ -61,17 +71,17 @@ async function main() {
         agentId: agentA.id,
         merchantId: merchant.id,
         type: "order_create",
-        amountPaise: product.pricePaise,
+        amountPaise: variant.pricePaise,
         context: product.name,
-        productId: product.id,
+        variantId: variant.id,
       }),
       attemptMoneyAction({
         agentId: agentB.id,
         merchantId: merchant.id,
         type: "order_create",
-        amountPaise: product.pricePaise,
+        amountPaise: variant.pricePaise,
         context: product.name,
-        productId: product.id,
+        variantId: variant.id,
       }),
     ]);
 
@@ -83,10 +93,10 @@ async function main() {
       throw new Error(`Expected exactly one allow and one deny, got [${decisions.join(", ")}] — demo scenario is broken`);
     }
 
-    const [updatedProduct] = await db.select().from(schema.products).where(eq(schema.products.id, product.id));
-    console.log(`Stock after: ${updatedProduct.stock} (started at 1, exactly one purchase succeeded).`);
-    if (updatedProduct.stock !== 0) {
-      throw new Error(`Expected stock 0 after exactly one sale, got ${updatedProduct.stock}`);
+    const [updatedVariant] = await db.select().from(schema.productVariants).where(eq(schema.productVariants.id, variant.id));
+    console.log(`Stock after: ${updatedVariant.stock} (started at 1, exactly one purchase succeeded).`);
+    if (updatedVariant.stock !== 0) {
+      throw new Error(`Expected stock 0 after exactly one sale, got ${updatedVariant.stock}`);
     }
 
     console.log("\nThe denied agent's budget was never touched — stock, like spend caps, is a bound enforced atomically, not by luck.");
@@ -102,6 +112,7 @@ async function main() {
     }
     await db.delete(schema.spendCaps).where(inArray(schema.spendCaps.agentId, agentIds));
     await db.delete(schema.agents).where(inArray(schema.agents.id, agentIds));
+    await db.delete(schema.productVariants).where(eq(schema.productVariants.id, variant.id));
     await db.delete(schema.products).where(eq(schema.products.id, product.id));
   }
 

@@ -230,6 +230,22 @@ async function requireOwnedProduct(merchantId: string, productId: string) {
   return product;
 }
 
+/** Loads a variant and throws unless it belongs to the given merchant, so no mutation can act on another merchant's variant by id alone. */
+async function requireOwnedVariant(merchantId: string, variantId: string) {
+  const [variant] = await db
+    .select()
+    .from(schema.productVariants)
+    .where(and(eq(schema.productVariants.id, variantId), eq(schema.productVariants.merchantId, merchantId)));
+
+  if (!variant) throw new Error("Variant not found");
+  return variant;
+}
+
+/** A short, human-distinguishable default SKU when a merchant doesn't give one — never a collision risk in practice, and the unique index catches the rare case. */
+function generateDefaultSku(): string {
+  return `SKU-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+}
+
 export interface CreateProductInput {
   merchantId: string;
   name: string;
@@ -237,9 +253,15 @@ export interface CreateProductInput {
   priceRupees: number;
   costRupees: number;
   stock: number;
+  sku?: string;
 }
 
-/** Creates a product in the merchant's own catalogue. The only way a product exists outside scripts/seed.ts. */
+/**
+ * Creates a product with one default variant — the fast path for a
+ * merchant selling one thing, which stays a single form submission rather
+ * than forcing every merchant through a variant matrix (Layer 5-1). The
+ * only way a product exists outside scripts/seed.ts.
+ */
 export async function createProduct(input: CreateProductInput) {
   if (!input.name.trim()) throw new Error("Product name is required");
   if (!Number.isInteger(input.stock) || input.stock < 0) {
@@ -252,9 +274,20 @@ export async function createProduct(input: CreateProductInput) {
       merchantId: input.merchantId,
       name: input.name.trim(),
       description: input.description.trim(),
+      status: "active",
+    })
+    .returning();
+
+  const [variant] = await db
+    .insert(schema.productVariants)
+    .values({
+      productId: product.id,
+      merchantId: input.merchantId,
+      sku: input.sku?.trim() || generateDefaultSku(),
       pricePaise: rupeesToPaise(input.priceRupees),
       costPaise: rupeesToPaise(input.costRupees),
       stock: input.stock,
+      availability: input.stock > 0 ? "in_stock" : "out_of_stock",
       status: "active",
     })
     .returning();
@@ -264,41 +297,54 @@ export async function createProduct(input: CreateProductInput) {
     actor: "merchant",
     event: "product_created",
     decision: "n/a",
-    reason: `Merchant added "${product.name}" to the catalogue at ₹${input.priceRupees.toFixed(2)} (${input.stock} in stock).`,
+    reason: `Merchant added "${product.name}" to the catalogue at ₹${input.priceRupees.toFixed(2)} (${input.stock} in stock, SKU ${variant.sku}).`,
   });
 
-  return product;
+  return { product, variant };
 }
 
 export interface UpdateProductInput {
   merchantId: string;
   productId: string;
+  variantId: string;
   name: string;
   description: string;
   priceRupees: number;
   costRupees: number;
   stock: number;
+  sku: string;
 }
 
-/** Edits a product's listing fields. Never used to bypass the gate's atomic stock decrement — this sets an absolute stock count from the merchant, not a purchase-driven delta. */
+/** Edits a product's listing fields and its default variant. Never used to bypass the gate's atomic stock decrement — this sets an absolute stock count from the merchant, not a purchase-driven delta. */
 export async function updateProduct(input: UpdateProductInput) {
   if (!input.name.trim()) throw new Error("Product name is required");
+  if (!input.sku.trim()) throw new Error("SKU is required");
   if (!Number.isInteger(input.stock) || input.stock < 0) {
     throw new Error("Stock must be a non-negative integer");
   }
 
   const existing = await requireOwnedProduct(input.merchantId, input.productId);
+  await requireOwnedVariant(input.merchantId, input.variantId);
 
   const [product] = await db
     .update(schema.products)
     .set({
       name: input.name.trim(),
       description: input.description.trim(),
+    })
+    .where(eq(schema.products.id, input.productId))
+    .returning();
+
+  const [variant] = await db
+    .update(schema.productVariants)
+    .set({
+      sku: input.sku.trim(),
       pricePaise: rupeesToPaise(input.priceRupees),
       costPaise: rupeesToPaise(input.costRupees),
       stock: input.stock,
+      availability: input.stock > 0 ? "in_stock" : "out_of_stock",
     })
-    .where(eq(schema.products.id, input.productId))
+    .where(eq(schema.productVariants.id, input.variantId))
     .returning();
 
   await logAuditEntry({
@@ -306,13 +352,13 @@ export async function updateProduct(input: UpdateProductInput) {
     actor: "merchant",
     event: "product_updated",
     decision: "n/a",
-    reason: `Merchant updated "${existing.name}" — price ₹${input.priceRupees.toFixed(2)}, stock ${input.stock}.`,
+    reason: `Merchant updated "${existing.name}" — price ₹${input.priceRupees.toFixed(2)}, stock ${input.stock}, SKU ${input.sku}.`,
   });
 
-  return product;
+  return { product, variant };
 }
 
-/** Archives a product rather than deleting it — past money_actions rows keep their reference, and archived products stop appearing in the catalogue or accepting purchases. */
+/** Archives a product and every one of its variants rather than deleting them — past money_actions rows keep their reference, and archived products/variants stop appearing in the catalogue or accepting purchases. */
 export async function archiveProduct(merchantId: string, productId: string) {
   const existing = await requireOwnedProduct(merchantId, productId);
 
@@ -321,6 +367,11 @@ export async function archiveProduct(merchantId: string, productId: string) {
     .set({ status: "archived" })
     .where(eq(schema.products.id, productId))
     .returning();
+
+  await db
+    .update(schema.productVariants)
+    .set({ status: "archived" })
+    .where(eq(schema.productVariants.productId, productId));
 
   await logAuditEntry({
     merchantId,
@@ -333,7 +384,63 @@ export async function archiveProduct(merchantId: string, productId: string) {
   return product;
 }
 
-/** Reactivates a previously archived product. */
+export interface SetMerchantPolicyInput {
+  merchantId: string;
+  returnsAccepted: boolean;
+  returnWindowDays: number | null;
+  refundMethod: (typeof schema.refundMethodEnum.enumValues)[number] | null;
+  restockingFeePercent: number | null;
+  shippingRegions: string[];
+  handlingTimeDays: number | null;
+  warrantyMonths: number | null;
+  policyNotes: string;
+}
+
+/**
+ * Writes the merchant's structured return/refund/shipping terms (Layer
+ * 5-3) — an upsert, since every merchant starts with no row here and that
+ * is an honest "not published" state, not a permissive default (see
+ * DECISIONS.md). Fields not accepting returns implies (returnWindowDays,
+ * refundMethod null) are cleared rather than left stale.
+ */
+export async function setMerchantPolicy(input: SetMerchantPolicyInput) {
+  if (input.restockingFeePercent !== null && (input.restockingFeePercent < 0 || input.restockingFeePercent > 100)) {
+    throw new Error("Restocking fee percent must be between 0 and 100");
+  }
+
+  const values = {
+    merchantId: input.merchantId,
+    returnsAccepted: input.returnsAccepted,
+    returnWindowDays: input.returnsAccepted ? input.returnWindowDays : null,
+    refundMethod: input.returnsAccepted ? input.refundMethod : null,
+    restockingFeePercent: input.restockingFeePercent,
+    shippingRegions: input.shippingRegions,
+    handlingTimeDays: input.handlingTimeDays,
+    warrantyMonths: input.warrantyMonths,
+    policyNotes: input.policyNotes.trim() || null,
+    updatedAt: new Date(),
+  };
+
+  const [existing] = await db.select().from(schema.merchantPolicies).where(eq(schema.merchantPolicies.merchantId, input.merchantId));
+
+  const policy = existing
+    ? (await db.update(schema.merchantPolicies).set(values).where(eq(schema.merchantPolicies.merchantId, input.merchantId)).returning())[0]
+    : (await db.insert(schema.merchantPolicies).values(values).returning())[0];
+
+  await logAuditEntry({
+    merchantId: input.merchantId,
+    actor: "merchant",
+    event: "merchant_policy_updated",
+    decision: "n/a",
+    reason: input.returnsAccepted
+      ? `Merchant published a return policy: ${input.returnWindowDays ?? "?"}-day window, refund via ${input.refundMethod ?? "unspecified"}.`
+      : "Merchant set their policy to not accepting returns.",
+  });
+
+  return policy;
+}
+
+/** Reactivates a previously archived product and its variants. */
 export async function reactivateProduct(merchantId: string, productId: string) {
   const existing = await requireOwnedProduct(merchantId, productId);
 
@@ -342,6 +449,11 @@ export async function reactivateProduct(merchantId: string, productId: string) {
     .set({ status: "active" })
     .where(eq(schema.products.id, productId))
     .returning();
+
+  await db
+    .update(schema.productVariants)
+    .set({ status: "active" })
+    .where(eq(schema.productVariants.productId, productId));
 
   await logAuditEntry({
     merchantId,
@@ -352,4 +464,54 @@ export async function reactivateProduct(merchantId: string, productId: string) {
   });
 
   return product;
+}
+
+export interface SetRewardSettingsInput {
+  merchantId: string;
+  paisePerCoinRupees: number;
+  issueRatePermille: number;
+  maxRedemptionPercent: number;
+}
+
+/**
+ * Writes the merchant's reward-coin program bounds (Layer 6-5) — an
+ * upsert, since no row means rewards are simply off (see
+ * merchant_reward_settings' schema comment). Every field here is
+ * integer arithmetic the gate/reward-coins.ts later trusts unchanged, so
+ * validation happens once, here, at the write boundary.
+ */
+export async function setRewardSettings(input: SetRewardSettingsInput) {
+  if (!Number.isFinite(input.paisePerCoinRupees) || input.paisePerCoinRupees <= 0) {
+    throw new Error("Paise per coin must be a positive amount");
+  }
+  if (!Number.isInteger(input.issueRatePermille) || input.issueRatePermille < 0 || input.issueRatePermille > 1000) {
+    throw new Error("Issue rate must be an integer per-mille between 0 and 1000");
+  }
+  if (!Number.isInteger(input.maxRedemptionPercent) || input.maxRedemptionPercent < 0 || input.maxRedemptionPercent > 100) {
+    throw new Error("Max redemption percent must be an integer between 0 and 100");
+  }
+
+  const values = {
+    merchantId: input.merchantId,
+    paisePerCoin: rupeesToPaise(input.paisePerCoinRupees),
+    issueRatePermille: input.issueRatePermille,
+    maxRedemptionPercent: input.maxRedemptionPercent,
+    updatedAt: new Date(),
+  };
+
+  const [existing] = await db.select().from(schema.merchantRewardSettings).where(eq(schema.merchantRewardSettings.merchantId, input.merchantId));
+
+  const settings = existing
+    ? (await db.update(schema.merchantRewardSettings).set(values).where(eq(schema.merchantRewardSettings.merchantId, input.merchantId)).returning())[0]
+    : (await db.insert(schema.merchantRewardSettings).values(values).returning())[0];
+
+  await logAuditEntry({
+    merchantId: input.merchantId,
+    actor: "merchant",
+    event: "reward_settings_updated",
+    decision: "n/a",
+    reason: `Merchant set reward coins to ₹${input.paisePerCoinRupees.toFixed(2)}/coin, issuing ${(input.issueRatePermille / 10).toFixed(1)}% of a captured purchase's value in coins, redeemable up to ${input.maxRedemptionPercent}% of any single purchase.`,
+  });
+
+  return settings;
 }

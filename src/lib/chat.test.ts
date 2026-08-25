@@ -24,13 +24,26 @@ afterEach(async () => {
     if (conversationIds.length > 0) {
       await db.delete(schema.chatMessages).where(inArray(schema.chatMessages.conversationId, conversationIds));
     }
-    // conversations.cartProductId FKs into products, so conversations
-    // must go before products, and products before merchants — same
-    // FK-dependency-order lesson FAILURES.md documents elsewhere.
+    // conversations.cartProductId/cartVariantId FK into products/
+    // product_variants, so conversations must go before both, and
+    // products/variants before merchants — same FK-dependency-order
+    // lesson FAILURES.md documents elsewhere.
     await db.delete(schema.conversations).where(eq(schema.conversations.merchantId, merchantId));
   }
 
+  for (const merchantId of createdMerchantIds) {
+    // Layer 6: offer_decisions.cartVariantId FKs into product_variants,
+    // and offers.bundleId (via bundle_items) can too — both must be
+    // deleted before product_variants, same FK-dependency-order lesson
+    // as everywhere else in this file. Chat doesn't create bundles/offers
+    // itself, but runOfferEngine (chat.ts) always writes an
+    // offer_decisions row for a cart, so this must be cleaned up here.
+    await db.delete(schema.offerDecisions).where(eq(schema.offerDecisions.merchantId, merchantId));
+    await db.delete(schema.offers).where(eq(schema.offers.merchantId, merchantId));
+  }
+
   if (createdProductIds.length > 0) {
+    await db.delete(schema.productVariants).where(inArray(schema.productVariants.productId, createdProductIds));
     await db.delete(schema.products).where(inArray(schema.products.id, createdProductIds));
     createdProductIds.length = 0;
   }
@@ -51,13 +64,20 @@ async function makeMerchantWithProduct() {
       merchantId: merchant.id,
       name: "Test Espresso Blend",
       description: "A test product for chat.",
-      pricePaise: 50_000,
-      costPaise: 20_000,
-      stock: 10,
       status: "active",
     })
     .returning();
   createdProductIds.push(product.id);
+
+  await db.insert(schema.productVariants).values({
+    productId: product.id,
+    merchantId: merchant.id,
+    sku: `chat-test-${Date.now()}`,
+    pricePaise: 50_000,
+    costPaise: 20_000,
+    stock: 10,
+    status: "active",
+  });
 
   return { merchant, product };
 }
@@ -76,7 +96,7 @@ describe("handleChatTurn — the AI/code split", () => {
     const result = await handleChatTurn(merchant.id, newSessionToken(), "add the test espresso blend to my cart");
 
     expect(result.cart).not.toBeNull();
-    expect(result.cart!.product.id).toBe(product.id);
+    expect(result.cart!.product.productId).toBe(product.id);
     expect(result.cart!.product.pricePaise).toBe(50_000);
     expect(result.cart!.subtotalPaise).toBe(result.cart!.quantity * 50_000);
   }, 20_000);

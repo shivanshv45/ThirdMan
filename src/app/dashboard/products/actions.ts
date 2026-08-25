@@ -22,6 +22,7 @@ export async function createProduct(formData: FormData) {
       priceRupees: Number(formData.get("priceRupees")),
       costRupees: Number(formData.get("costRupees")),
       stock: Number(formData.get("stock")),
+      sku: String(formData.get("sku") ?? ""),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Could not create product.";
@@ -38,11 +39,13 @@ export async function updateProduct(formData: FormData) {
     await mutations.updateProduct({
       merchantId: merchant.id,
       productId: String(formData.get("productId")),
+      variantId: String(formData.get("variantId")),
       name: String(formData.get("name") ?? ""),
       description: String(formData.get("description") ?? ""),
       priceRupees: Number(formData.get("priceRupees")),
       costRupees: Number(formData.get("costRupees")),
       stock: Number(formData.get("stock")),
+      sku: String(formData.get("sku") ?? ""),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Could not update product.";

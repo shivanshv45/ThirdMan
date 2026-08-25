@@ -7,6 +7,7 @@ import { recordPaymentFailure } from "@/lib/recovery/intake";
 import { confirmCapture } from "@/lib/gate";
 import { confirmRecoveryLinkPaid } from "@/lib/recovery/sequencer";
 import { logAuditEntry } from "@/lib/audit";
+import { issueRewardCoinsForCapture } from "@/lib/reward-actions";
 
 /**
  * Razorpay's webhook intake. Handles payment.failed (feeds the recovery
@@ -151,7 +152,13 @@ async function handlePaymentCaptured(payload: unknown): Promise<void> {
   const paymentId = entity.id;
 
   const [moneyAction] = await db
-    .select({ id: schema.moneyActions.id, merchantId: schema.moneyActions.merchantId })
+    .select({
+      id: schema.moneyActions.id,
+      merchantId: schema.moneyActions.merchantId,
+      agentId: schema.moneyActions.agentId,
+      amountPaise: schema.moneyActions.amountPaise,
+      holdOnly: schema.moneyActions.holdOnly,
+    })
     .from(schema.moneyActions)
     .where(eq(schema.moneyActions.razorpayEntityId, orderId));
 
@@ -167,7 +174,20 @@ async function handlePaymentCaptured(payload: unknown): Promise<void> {
   // already-captured/held action is a no-op) — this webhook path and
   // /api/checkout/verify's browser-driven path converge on the same
   // function, whichever signal arrives first wins, the second is a no-op.
-  await confirmCapture(moneyAction.id, paymentId, "webhook");
+  const result = await confirmCapture(moneyAction.id, paymentId, "webhook");
+
+  // Same reward-issuance rule as /api/checkout/verify: only on a genuine
+  // capture, never a hold, and issueRewardCoinsForCapture's own
+  // idempotency key (the purchase's money_action id) protects against
+  // double-issuing when both this webhook and the browser's signature
+  // check confirm the same payment.
+  if (result.decision === "allow" && !moneyAction.holdOnly && moneyAction.agentId) {
+    try {
+      await issueRewardCoinsForCapture(moneyAction.merchantId, moneyAction.agentId, moneyAction.id, moneyAction.amountPaise, { agentId: moneyAction.agentId });
+    } catch (err) {
+      console.warn("[webhook] reward coin issuance failed:", err);
+    }
+  }
 }
 
 async function handlePaymentLinkPaid(payload: unknown): Promise<void> {

@@ -61,12 +61,24 @@ async function makeAgentWithCap(merchantId: string) {
   return { agent, rawKey };
 }
 
-async function makeProduct(merchantId: string) {
+async function makeProductWithVariant(merchantId: string) {
   const [product] = await db
     .insert(schema.products)
-    .values({ merchantId, name: "__route test product__", description: "test", pricePaise: 50_000, costPaise: 20_000, stock: 10, status: "active" })
+    .values({ merchantId, name: "__route test product__", description: "test", status: "active" })
     .returning();
-  return product;
+  const [variant] = await db
+    .insert(schema.productVariants)
+    .values({
+      productId: product.id,
+      merchantId,
+      sku: `route-test-${Date.now()}`,
+      pricePaise: 50_000,
+      costPaise: 20_000,
+      stock: 10,
+      status: "active",
+    })
+    .returning();
+  return { product, variant };
 }
 
 describe("POST /api/agent/purchase", () => {
@@ -90,6 +102,7 @@ describe("POST /api/agent/purchase", () => {
     await db.delete(schema.moneyActions).where(eq(schema.moneyActions.merchantId, currentMerchantId));
     await db.delete(schema.agents).where(eq(schema.agents.merchantId, currentMerchantId));
     if (currentProductIds.length > 0) {
+      await db.delete(schema.productVariants).where(inArray(schema.productVariants.productId, currentProductIds));
       await db.delete(schema.products).where(inArray(schema.products.id, currentProductIds));
     }
     await db.delete(schema.merchants).where(eq(schema.merchants.id, currentMerchantId));
@@ -163,22 +176,22 @@ describe("POST /api/agent/purchase", () => {
     expect(body.razorpayOrderId).toMatch(/^order_/);
   }, 20_000);
 
-  it("v2 shape: productId alone buys the catalogue product at its real price", async () => {
+  it("v2 shape: variantId alone buys the catalogue product at its real price", async () => {
     const merchant = await makeMerchant();
     merchantId = merchant.id;
     const { agent, rawKey } = await makeAgentWithCap(merchant.id);
     agentIds.push(agent.id);
-    const product = await makeProduct(merchant.id);
+    const { product, variant } = await makeProductWithVariant(merchant.id);
     productIds.push(product.id);
 
-    const res = await POST(request({ productId: product.id }, { authorization: `Bearer ${rawKey}` }));
+    const res = await POST(request({ variantId: variant.id }, { authorization: `Bearer ${rawKey}` }));
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.decision).toBe("allow");
 
     const [action] = await db.select().from(schema.moneyActions).where(eq(schema.moneyActions.id, body.moneyActionId));
-    expect(action.amountPaise).toBe(product.pricePaise);
-    expect(action.productId).toBe(product.id);
+    expect(action.amountPaise).toBe(variant.pricePaise);
+    expect(action.variantId).toBe(variant.id);
   }, 20_000);
 
   it("v2 shape: an asserted amountPaise that disagrees with the catalogue price is denied, HTTP 200", async () => {
@@ -186,11 +199,11 @@ describe("POST /api/agent/purchase", () => {
     merchantId = merchant.id;
     const { agent, rawKey } = await makeAgentWithCap(merchant.id);
     agentIds.push(agent.id);
-    const product = await makeProduct(merchant.id);
+    const { product, variant } = await makeProductWithVariant(merchant.id);
     productIds.push(product.id);
 
     const res = await POST(
-      request({ productId: product.id, amountPaise: product.pricePaise - 1 }, { authorization: `Bearer ${rawKey}` }),
+      request({ variantId: variant.id, amountPaise: variant.pricePaise - 1 }, { authorization: `Bearer ${rawKey}` }),
     );
     expect(res.status).toBe(200);
     const body = await res.json();

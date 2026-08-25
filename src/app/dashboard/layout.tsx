@@ -6,8 +6,12 @@ import { logout } from "./actions";
 const NAV_LINKS = [
   { href: "/dashboard", label: "Overview" },
   { href: "/dashboard/products", label: "Products" },
+  { href: "/dashboard/offers", label: "Offers" },
+  { href: "/dashboard/rewards", label: "Rewards" },
   { href: "/dashboard/escrow", label: "Escrow" },
   { href: "/dashboard/recovery", label: "Recovery" },
+  { href: "/dashboard/policies", label: "Policies" },
+  { href: "/dashboard/readiness", label: "Readiness" },
   { href: "/dashboard/settings", label: "Settings" },
 ];
 

@@ -4,6 +4,7 @@ import { db, schema } from "@/lib/db";
 import { complete, completeStructured } from "@/lib/llm";
 import { getPublicCatalogue, type PublicProduct } from "@/lib/storefront-catalogue";
 import { formatPaise } from "@/lib/money";
+import { runOfferEngine, getOpenOfferForIdentity } from "@/lib/offer-engine";
 import { z } from "zod";
 
 /**
@@ -33,7 +34,9 @@ type ChatIntent = z.infer<typeof intentSchema>;
 
 export interface ChatTurnResult {
   reply: string;
-  cart: { product: PublicProduct; quantity: number; subtotalPaise: number } | null;
+  cart: { product: ChatProduct; quantity: number; subtotalPaise: number } | null;
+  /** Layer 6-3: at most one open upsell offer for this cart, if the engine found one. Never present without a cart. */
+  offer: { offerId: string; bundleName: string; amountPaise: number; reasonText: string } | null;
 }
 
 async function getOrCreateConversation(merchantId: string, sessionToken: string) {
@@ -64,10 +67,62 @@ async function getHistory(conversationId: string) {
     .limit(20);
 }
 
-/** Fuzzy-resolves a model-proposed product name against the real catalogue. Never trusts the name as authoritative — only ever used to look up a real row. */
-function resolveProductByName(catalogue: PublicProduct[], name: string): PublicProduct | null {
+/**
+ * The cart's flattened view of one purchasable variant for chat purposes
+ * (Layer 5-7). "id" is the variant's own id, not the product's — the
+ * cart is still single-line (conversations.cartProductId/cartQuantity
+ * hold one product+its resolved variant at a time; a genuine multi-line
+ * cart is a real gap, not built here, see plans/layer-5-agent-readable-catalog.md).
+ * name folds in a distinguishing attribute when the product has more
+ * than one variant, e.g. "Ethiopia Yirgacheffe (250g)" vs "(1kg)", so the
+ * model's reply and the cart display read unambiguously.
+ */
+interface ChatProduct {
+  id: string;
+  productId: string;
+  name: string;
+  description: string;
+  sku: string;
+  pricePaise: number;
+  stock: number;
+}
+
+function describeVariant(product: PublicProduct, variant: PublicProduct["variants"][number]): string {
+  const attrs = Object.values(variant.attributes);
+  if (product.variants.length <= 1 || attrs.length === 0) return product.name;
+  return `${product.name} (${attrs.join(", ")})`;
+}
+
+function toChatProducts(catalogue: PublicProduct[]): ChatProduct[] {
+  return catalogue.flatMap((p) =>
+    p.variants.map((v) => ({
+      id: v.id,
+      productId: p.id,
+      name: describeVariant(p, v),
+      description: p.description,
+      sku: v.sku,
+      pricePaise: v.pricePaise,
+      stock: v.stock,
+    })),
+  );
+}
+
+/**
+ * Resolves a model-proposed product/variant reference against the real
+ * catalogue — never trusts it as an id, only ever used to look up a real
+ * row. Tries, in order: exact SKU match (an agent-savvy customer or a
+ * copy-pasted SKU), exact name match, then a word-overlap score computed
+ * against BOTH the display name and the variant's own attribute values —
+ * so "the 250g ethiopia" resolves by attribute, not just by how much of
+ * the product name string overlaps (Layer 5-7's actual improvement over
+ * L4-6's name-only matching).
+ */
+function resolveProductByName(catalogue: ChatProduct[], name: string): ChatProduct | null {
   const needle = name.trim().toLowerCase();
   if (!needle) return null;
+
+  const skuMatch = catalogue.find((p) => p.sku.toLowerCase() === needle);
+  if (skuMatch) return skuMatch;
 
   const exact = catalogue.find((p) => p.name.toLowerCase() === needle);
   if (exact) return exact;
@@ -75,9 +130,11 @@ function resolveProductByName(catalogue: PublicProduct[], name: string): PublicP
   const contains = catalogue.find((p) => p.name.toLowerCase().includes(needle) || needle.includes(p.name.toLowerCase()));
   if (contains) return contains;
 
-  // Loose word-overlap match for phrasing like "the ethiopia one".
+  // Loose word-overlap match for phrasing like "the 250g ethiopia one" —
+  // scored against the full display name, which already folds in the
+  // distinguishing attribute values from describeVariant above.
   const needleWords = needle.split(/\s+/).filter((w) => w.length > 2);
-  let best: PublicProduct | null = null;
+  let best: ChatProduct | null = null;
   let bestScore = 0;
   for (const product of catalogue) {
     const productWords = product.name.toLowerCase().split(/\s+/);
@@ -92,8 +149,8 @@ function resolveProductByName(catalogue: PublicProduct[], name: string): PublicP
 
 async function classifyIntent(
   message: string,
-  catalogue: PublicProduct[],
-  currentCart: { product: PublicProduct; quantity: number } | null,
+  catalogue: ChatProduct[],
+  currentCart: { product: ChatProduct; quantity: number } | null,
 ): Promise<ChatIntent> {
   const catalogueList = catalogue.map((p) => `- ${p.name}: ${formatPaise(p.pricePaise)}, ${p.stock} in stock`).join("\n");
   const cartContext = currentCart
@@ -119,33 +176,33 @@ async function classifyIntent(
 async function applyIntent(
   conversation: typeof schema.conversations.$inferSelect,
   intent: ChatIntent,
-  catalogue: PublicProduct[],
+  catalogue: ChatProduct[],
 ): Promise<void> {
   if (intent.action === "remove_from_cart") {
-    await db.update(schema.conversations).set({ cartProductId: null, cartQuantity: 1 }).where(eq(schema.conversations.id, conversation.id));
+    await db.update(schema.conversations).set({ cartProductId: null, cartVariantId: null, cartQuantity: 1 }).where(eq(schema.conversations.id, conversation.id));
     return;
   }
 
-  if (intent.action === "set_quantity" && conversation.cartProductId) {
+  if (intent.action === "set_quantity" && conversation.cartVariantId) {
     const quantity = intent.quantity && intent.quantity > 0 ? intent.quantity : 1;
     await db.update(schema.conversations).set({ cartQuantity: quantity }).where(eq(schema.conversations.id, conversation.id));
     return;
   }
 
   if (intent.action === "add_to_cart" && intent.productName) {
-    const product = resolveProductByName(catalogue, intent.productName);
-    if (!product || product.stock <= 0) return; // unresolvable or out of stock — leave the cart unchanged, the reply below explains it wasn't found
+    const variant = resolveProductByName(catalogue, intent.productName);
+    if (!variant || variant.stock <= 0) return; // unresolvable or out of stock — leave the cart unchanged, the reply below explains it wasn't found
     const quantity = intent.quantity && intent.quantity > 0 ? intent.quantity : 1;
     await db
       .update(schema.conversations)
-      .set({ cartProductId: product.id, cartQuantity: quantity })
+      .set({ cartProductId: variant.productId, cartVariantId: variant.id, cartQuantity: quantity })
       .where(eq(schema.conversations.id, conversation.id));
   }
 }
 
-async function loadCart(conversation: typeof schema.conversations.$inferSelect, catalogue: PublicProduct[]) {
-  if (!conversation.cartProductId) return null;
-  const product = catalogue.find((p) => p.id === conversation.cartProductId);
+async function loadCart(conversation: typeof schema.conversations.$inferSelect, catalogue: ChatProduct[]) {
+  if (!conversation.cartVariantId) return null;
+  const product = catalogue.find((p) => p.id === conversation.cartVariantId);
   if (!product) return null;
   return { product, quantity: conversation.cartQuantity, subtotalPaise: product.pricePaise * conversation.cartQuantity };
 }
@@ -163,7 +220,7 @@ export async function handleChatTurn(
   customerMessage: string,
 ): Promise<ChatTurnResult> {
   const conversation = await getOrCreateConversation(merchantId, sessionToken);
-  const catalogue = await getPublicCatalogue(merchantId);
+  const catalogue = toChatProducts(await getPublicCatalogue(merchantId));
 
   await db.insert(schema.chatMessages).values({ conversationId: conversation.id, role: "customer", content: customerMessage });
 
@@ -195,22 +252,54 @@ export async function handleChatTurn(
 
   await db.insert(schema.chatMessages).values({ conversationId: conversation.id, role: "assistant", content: reply });
 
-  return { reply, cart };
+  // Layer 6-3: run the offer engine at most once per cart — an existing
+  // open offer for this session is reused, never re-offered or replaced
+  // by a second engine run, so a buyer is never shown two upsells for
+  // one checkout (getOpenOfferForIdentity is the single source of truth
+  // every surface, not just chat, checks first).
+  let offer: ChatTurnResult["offer"] = null;
+  if (cart) {
+    const existingOffer = await getOpenOfferForIdentity(merchantId, { sessionToken });
+    if (existingOffer) {
+      const [bundle] = await db.select().from(schema.bundles).where(eq(schema.bundles.id, existingOffer.bundleId));
+      if (bundle) offer = { offerId: existingOffer.id, bundleName: bundle.name, amountPaise: bundle.bundlePricePaise, reasonText: existingOffer.reasonText };
+    } else {
+      const engineResult = await runOfferEngine(merchantId, cart.product.id, { sessionToken });
+      if (engineResult.offer) {
+        offer = {
+          offerId: engineResult.offer.offerId,
+          bundleName: engineResult.offer.bundleName,
+          amountPaise: engineResult.offer.amountPaise,
+          reasonText: engineResult.offer.reasonText,
+        };
+      }
+    }
+  }
+
+  return { reply, cart, offer };
 }
 
 export async function getConversationState(merchantId: string, sessionToken: string): Promise<{
   messages: { role: "customer" | "assistant"; content: string }[];
-  cart: { product: PublicProduct; quantity: number; subtotalPaise: number } | null;
+  cart: { product: ChatProduct; quantity: number; subtotalPaise: number } | null;
+  offer: ChatTurnResult["offer"];
 }> {
   const [conversation] = await db
     .select()
     .from(schema.conversations)
     .where(and(eq(schema.conversations.merchantId, merchantId), eq(schema.conversations.sessionToken, sessionToken)));
 
-  if (!conversation) return { messages: [], cart: null };
+  if (!conversation) return { messages: [], cart: null, offer: null };
 
-  const catalogue = await getPublicCatalogue(merchantId);
+  const catalogue = toChatProducts(await getPublicCatalogue(merchantId));
   const [messages, cart] = await Promise.all([getHistory(conversation.id), loadCart(conversation, catalogue)]);
 
-  return { messages: messages.map((m) => ({ role: m.role, content: m.content })), cart };
+  let offer: ChatTurnResult["offer"] = null;
+  const existingOffer = await getOpenOfferForIdentity(merchantId, { sessionToken });
+  if (existingOffer) {
+    const [bundle] = await db.select().from(schema.bundles).where(eq(schema.bundles.id, existingOffer.bundleId));
+    if (bundle) offer = { offerId: existingOffer.id, bundleName: bundle.name, amountPaise: bundle.bundlePricePaise, reasonText: existingOffer.reasonText };
+  }
+
+  return { messages: messages.map((m) => ({ role: m.role, content: m.content })), cart, offer };
 }

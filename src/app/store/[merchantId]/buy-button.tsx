@@ -47,13 +47,22 @@ type Status = "idle" | "loading" | "paying" | "verifying" | "success" | "error";
 export function BuyButton({
   merchantId,
   productId,
+  variantId,
+  offerId,
+  sessionToken,
   productName,
   quantity = 1,
   disabled,
   onSuccess,
 }: {
   merchantId: string;
-  productId: string;
+  /** Either productId (buy a single product/variant) or offerId (Layer 6-3: buy an accepted upsell's bundle) — mutually exclusive. */
+  productId?: string;
+  /** Layer 5-7: when the buyer chat resolved a specific variant, pass it so checkout buys exactly what was in the cart rather than the product's default variant. */
+  variantId?: string;
+  /** Layer 6-3: buy a previously-accepted bundle offer instead of a single product. Requires sessionToken. */
+  offerId?: string;
+  sessionToken?: string;
   productName: string;
   quantity?: number;
   disabled?: boolean;
@@ -72,7 +81,7 @@ export function BuyButton({
       const orderRes = await fetch("/api/checkout/order", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ merchantId, productId, quantity }),
+        body: JSON.stringify({ merchantId, productId, variantId, quantity, offerId, sessionToken }),
       });
       const order = await orderRes.json();
 

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { attemptMoneyAction } from "@/lib/gate";
 import { decrypt } from "@/lib/crypto";
@@ -55,7 +55,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "product not found" }, { status: 404 });
   }
 
-  const amountPaise = product.pricePaise * quantity;
+  const [variant] = await db
+    .select()
+    .from(schema.productVariants)
+    .where(and(eq(schema.productVariants.productId, product.id), eq(schema.productVariants.status, "active")));
+  if (!variant) {
+    return NextResponse.json({ error: "product not found" }, { status: 404 });
+  }
+
+  const amountPaise = variant.pricePaise * quantity;
   const storefrontAgent = await getOrCreateStorefrontAgent(merchant.id);
 
   const result = await attemptMoneyAction({
@@ -64,7 +72,7 @@ export async function POST(req: NextRequest) {
     type: "order_create",
     amountPaise,
     context: `Escrow hold: ${product.name}`,
-    productId: product.id,
+    variantId: variant.id,
     quantity,
     holdOnly: true,
   });

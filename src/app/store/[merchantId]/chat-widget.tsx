@@ -36,9 +36,19 @@ interface Message {
 }
 
 interface Cart {
-  product: { id: string; name: string; pricePaise: number };
+  // "id" is the resolved variant's own id (Layer 5-7 — chat.ts's
+  // ChatProduct is variant-level); "productId" is the parent product,
+  // which BuyButton's checkout call needs alongside it.
+  product: { id: string; productId: string; name: string; pricePaise: number };
   quantity: number;
   subtotalPaise: number;
+}
+
+interface Offer {
+  offerId: string;
+  bundleName: string;
+  amountPaise: number;
+  reasonText: string;
 }
 
 export function ChatWidget({ merchantId }: { merchantId: string }) {
@@ -49,6 +59,8 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
   const [sessionToken] = useState<string>(() => getOrCreateSessionToken());
   const [messages, setMessages] = useState<Message[]>([]);
   const [cart, setCart] = useState<Cart | null>(null);
+  const [offer, setOffer] = useState<Offer | null>(null);
+  const [decliningOffer, setDecliningOffer] = useState(false);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -76,6 +88,7 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
       if (res.ok) {
         setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
         setCart(data.cart);
+        setOffer(data.offer ?? null);
       } else {
         setMessages((prev) => [...prev, { role: "assistant", content: "Sorry, something went wrong. Please try again." }]);
       }
@@ -83,6 +96,21 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
       setMessages((prev) => [...prev, { role: "assistant", content: "Sorry, I couldn't reach the server. Please try again." }]);
     } finally {
       setSending(false);
+    }
+  }
+
+  async function declineOffer() {
+    if (!offer || decliningOffer) return;
+    setDecliningOffer(true);
+    try {
+      await fetch("/api/checkout/decline-offer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ merchantId, offerId: offer.offerId, sessionToken }),
+      });
+    } finally {
+      setOffer(null);
+      setDecliningOffer(false);
     }
   }
 
@@ -118,6 +146,35 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
         {sending && <div className="text-sm text-gray-400">Thinking…</div>}
       </div>
 
+      {offer && (
+        <div className="border-t px-3 py-2 bg-amber-50">
+          <p className="text-sm text-amber-900 mb-2">{offer.reasonText}</p>
+          <div className="flex items-center justify-between text-sm mb-2">
+            <span className="font-medium">{offer.bundleName}</span>
+            <span className="font-medium">{rupees(offer.amountPaise)}</span>
+          </div>
+          <div className="flex gap-2">
+            <BuyButton
+              merchantId={merchantId}
+              offerId={offer.offerId}
+              sessionToken={sessionToken}
+              productName={offer.bundleName}
+              onSuccess={() => {
+                setOffer(null);
+                setCart(null);
+              }}
+            />
+            <button
+              onClick={declineOffer}
+              disabled={decliningOffer}
+              className="px-3 py-2 rounded border text-sm text-gray-600 hover:bg-gray-100 disabled:opacity-50"
+            >
+              No thanks
+            </button>
+          </div>
+        </div>
+      )}
+
       {cart && (
         <div className="border-t px-3 py-2 bg-gray-50">
           <div className="flex items-center justify-between text-sm mb-2">
@@ -128,7 +185,8 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
           </div>
           <BuyButton
             merchantId={merchantId}
-            productId={cart.product.id}
+            productId={cart.product.productId}
+            variantId={cart.product.id}
             productName={cart.product.name}
             quantity={cart.quantity}
             onSuccess={() => setCart(null)}
