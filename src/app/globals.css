@@ -27,12 +27,17 @@
   --on-ink-dim: #93a1ac;
   --on-ink-faint: #5c6870;
 
-  /* ---- Accent — the one actionable colour, used sparingly ---- */
-  --accent: #4fd1c5;
-  --accent-bright: #6ee7db;
-  --accent-ink: #04211d;
-  --accent-wash: rgba(79, 209, 197, 0.12);
-  --accent-wash-strong: rgba(79, 209, 197, 0.22);
+  /* ---- Accent — the one actionable colour, used sparingly ----
+     Razorpay's own brand blue (navy #012652 / dodger blue #0D94FB) —
+     see DECISIONS.md, "Palette: Razorpay blue over the teal accent."
+     A deliberate reversal of the earlier teal choice: teal/cyan-on-
+     near-black is itself now a recognisable "AI infra product" tell,
+     and this product is built for Razorpay merchants specifically. */
+  --accent: #0d94fb;
+  --accent-bright: #4db5ff;
+  --accent-ink: #04101f;
+  --accent-wash: rgba(13, 148, 251, 0.12);
+  --accent-wash-strong: rgba(13, 148, 251, 0.22);
 
   /* ---- Decision triad — the palette's real spine ---- */
   --allow: #3ecf8e;
@@ -138,12 +143,19 @@
    Reset
    ============================================================= */
 
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+/* Tailwind v4 emits its utilities inside @layer utilities, and unlayered
+   rules always beat layered ones regardless of specificity. An unlayered
+   `* { margin:0; padding:0 }` therefore silently overrode every mx-auto,
+   px-*, py-* and mt-* on the site — containers stopped centring and all
+   section padding collapsed. Tailwind's own preflight already zeroes margin
+   and padding from inside the base layer, so this only needs to set
+   box-sizing, and it must stay layered to lose to utilities. */
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
 }
 
 html {
@@ -240,4 +252,60 @@ button {
     transform: none;
     transition: none;
   }
+}
+
+/* =============================================================
+   Coda Theme Override — landing page only
+   ============================================================= */
+
+/* Matches the Claude Design reference (public/design_zip/ThirdMan
+   Landing.dc.html) exactly: the landing page's light sections (hero,
+   the refusal payoff, footer-proof) run on warm paper with the same
+   deep green used as this product's "allow"/actionable colour, restated
+   at poster scale. Its dark sections (#surfaces) are NOT a separate
+   palette — they use the product's real dark tokens (--ink/#0a0d0f etc,
+   defined in :root above) completely unchanged, so the dashboard and the
+   landing page's dark band are visually the same system, not two. Only
+   the light sections opt in here, via .coda-theme; anything inside them
+   that needs to render dark (e.g. the #surfaces band) simply is NOT
+   wrapped in .coda-theme and inherits the un-overridden :root tokens. */
+
+.coda-theme {
+  --ink: #f4f4ec;
+  --on-ink: #101210;
+  --on-ink-dim: #4a4f4a;
+  --on-ink-faint: #83887f;
+  --ink-raised: #ecece2;
+  --ink-line: #d8d8cc;
+  --ink-line-soft: #e4e4d8;
+
+  --accent: #004020;
+  --accent-bright: #00512a;
+  --accent-ink: #f2f7ef;
+
+  --font-display: var(--font-archivo-black), ui-sans-serif, system-ui, sans-serif;
+
+  background-color: var(--ink);
+  color: var(--on-ink);
+}
+
+/* A dark band inside .coda-theme (the "#surfaces" section) re-declares the
+   product's real dark tokens locally, so it renders identically to the
+   dashboard rather than needing a parallel palette. */
+.coda-theme .coda-dark-band {
+  --ink: #0a0d0f;
+  --ink-raised: #10151a;
+  --ink-overlay: #161d24;
+  --ink-line: #232c34;
+  --ink-line-soft: #1a2129;
+  --on-ink: #eef2f4;
+  --on-ink-dim: #93a1ac;
+  --on-ink-faint: #5c6870;
+  --accent: #0d94fb;
+  --accent-bright: #4db5ff;
+  --accent-ink: #04101f;
+  --font-display: var(--font-fraunces), ui-serif, Georgia, "Times New Roman", serif;
+
+  background-color: var(--ink);
+  color: var(--on-ink);
 }

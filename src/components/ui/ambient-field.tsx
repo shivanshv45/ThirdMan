@@ -50,7 +50,7 @@ export function AmbientField() {
     resize();
     window.addEventListener("resize", resize);
 
-    const palette = ["#4fd1c5", "#3ecf8e", "#e8a13d", "#f2545b"];
+    const palette = ["#0d94fb", "#3ecf8e", "#e8a13d", "#f2545b"];
     const blobs: Blob[] = Array.from({ length: 5 }, (_, i) => ({
       x: Math.random(),
       y: Math.random(),

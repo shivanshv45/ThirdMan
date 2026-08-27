@@ -73,7 +73,7 @@ export function CreateHoldForm({ products }: { products: { id: string; name: str
         currency: "INR",
         name: `${order.productName} (held, not captured)`,
         order_id: order.razorpayOrderId,
-        theme: { color: "#4fd1c5" },
+        theme: { color: "#0d94fb" },
         modal: { ondismiss: () => setStatus("idle") },
         handler: async (response) => {
           try {

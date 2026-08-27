@@ -105,7 +105,7 @@ export function BuyButton({
         currency: "INR",
         name: productName,
         order_id: order.razorpayOrderId,
-        theme: { color: "#4fd1c5" },
+        theme: { color: "#0d94fb" },
         modal: {
           ondismiss: () => {
             if (status !== "success") {

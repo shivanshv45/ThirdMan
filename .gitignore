@@ -52,3 +52,15 @@ next-env.d.ts
 /PROGRESS.md
 /prd.md
 /plans/
+/DESIGN_SPEC.md
+
+# design reference material — Claude Design source files and screenshots
+# used to build the landing page UI; not app assets, never served or
+# imported at runtime, not for the public repo.
+/public/design_zip/
+
+# superseded background video from an earlier hero implementation — the
+# hero now uses a procedural canvas animation (AntCanvas.tsx) instead, and
+# nothing in src/ references this file. Left on disk locally rather than
+# deleted in case of a future rollback, but never pushed.
+/public/bg_video.mp4

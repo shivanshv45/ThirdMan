@@ -1,18 +1,22 @@
 import { redirect } from "next/navigation";
 import { getSessionMerchant } from "@/lib/auth";
-import { AnimatedHero } from "@/components/home/AnimatedHero";
-import { AnimatedRefusal } from "@/components/home/AnimatedRefusal";
-import { AnimatedFeatures } from "@/components/home/AnimatedFeatures";
+import { CodaHero } from "@/components/home/CodaHero";
+import { Surfaces } from "@/components/home/Surfaces";
+import { RefusalSection } from "@/components/home/RefusalSection";
+import { ProofSection } from "@/components/home/ProofSection";
+import { Footer } from "@/components/home/Footer";
 
 export default async function Home() {
   const merchant = await getSessionMerchant();
   if (merchant) redirect("/dashboard");
 
   return (
-    <main className="flex-1">
-      <AnimatedHero />
-      <AnimatedRefusal />
-      <AnimatedFeatures />
+    <main className="coda-theme flex-1 min-h-screen relative">
+      <CodaHero />
+      <Surfaces />
+      <RefusalSection />
+      <ProofSection />
+      <Footer />
     </main>
   );
 }

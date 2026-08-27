@@ -21,7 +21,7 @@ export default function Image() {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 40 }}>
-          <div style={{ width: 20, height: 20, borderRadius: 4, background: "#4fd1c5" }} />
+          <div style={{ width: 20, height: 20, borderRadius: 4, background: "#0d94fb" }} />
           <div style={{ fontSize: 32, color: "#93a1ac", letterSpacing: 2, textTransform: "uppercase" }}>
             For Razorpay merchants
           </div>
