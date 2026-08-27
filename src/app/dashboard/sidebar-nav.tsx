@@ -73,7 +73,7 @@ export function SidebarNav({ groups }: { groups: NavGroup[] }) {
     <>
       {/* Mobile top bar with a real drawer toggle */}
       <div className="md:hidden flex items-center justify-between px-4 h-[var(--nav-h)] border-b border-ink-line bg-ink">
-        <span className="font-[family-name:var(--font-display)] text-lg text-on-ink">Northside</span>
+        <span className="font-[family-name:var(--font-display)] text-lg text-on-ink">ThirdMan</span>
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}

@@ -26,20 +26,32 @@ export function SuggestDescription({ productId, productName }: { productId: stri
 
   if (status === "idle") {
     return (
-      <button onClick={handleSuggest} className="text-xs text-blue-700 underline">
+      <button
+        onClick={handleSuggest}
+        className="text-xs text-accent hover:text-accent-bright underline underline-offset-2 transition-colors"
+      >
         Suggest a description for &quot;{productName}&quot;
       </button>
     );
   }
 
   if (status === "loading") {
-    return <p className="text-xs text-gray-400">Generating a draft…</p>;
+    return (
+      <p className="text-xs text-on-ink-faint flex items-center gap-1.5">
+        <span className="h-2.5 w-2.5 rounded-full border-2 border-current border-t-transparent animate-spin" aria-hidden="true" />
+        Generating a draft…
+      </p>
+    );
   }
 
   return (
-    <div className="text-xs bg-gray-50 border rounded p-2 mt-1">
-      <p className={status === "error" ? "text-red-700" : "text-gray-700"}>{text}</p>
-      {status === "done" && <p className="text-gray-400 mt-1">Draft only — copy it into the product&apos;s edit form on the Products page to save it.</p>}
+    <div className="text-xs bg-ink-overlay border border-ink-line-soft rounded-[var(--radius)] p-2.5 mt-1">
+      <p className={status === "error" ? "text-deny-bright" : "text-on-ink"}>{text}</p>
+      {status === "done" && (
+        <p className="text-on-ink-faint mt-1.5">
+          Draft only — copy it into the product&apos;s edit form on the Products page to save it.
+        </p>
+      )}
     </div>
   );
 }

@@ -57,6 +57,14 @@ describe("reward coins — issue and redeem through the gate", () => {
     agentIds = [];
 
     if (currentAgentIds.length > 0) {
+      const capRows = await db
+        .select({ id: schema.spendCaps.id })
+        .from(schema.spendCaps)
+        .where(inArray(schema.spendCaps.agentId, currentAgentIds));
+      const capIds = capRows.map((c) => c.id);
+      if (capIds.length > 0) {
+        await db.delete(schema.escalations).where(inArray(schema.escalations.spendCapId, capIds));
+      }
       await db.delete(schema.spendCaps).where(inArray(schema.spendCaps.agentId, currentAgentIds));
     }
     await db.delete(schema.rewardCoinLedger).where(eq(schema.rewardCoinLedger.merchantId, currentMerchantId));

@@ -427,6 +427,153 @@ export async function setVariantNegotiationFloor(input: SetNegotiationFloorInput
   return updated;
 }
 
+export interface AddVariantInput {
+  merchantId: string;
+  productId: string;
+  sku?: string;
+  priceRupees: number;
+  costRupees: number;
+  stock: number;
+  /** e.g. {"size": "250g"} — a merchant adding a second variant is almost always distinguishing it by something like this. Free text key/value, parsed at the form boundary. */
+  attributeKey?: string;
+  attributeValue?: string;
+}
+
+/**
+ * Adds a second (or third, ...) variant to an existing product — the
+ * multi-variant path createProduct's single-form fast path doesn't cover.
+ * Same validation and audit discipline as createProduct; the only real
+ * difference is this attaches to an existing productId instead of
+ * creating one.
+ */
+export async function addVariant(input: AddVariantInput) {
+  const product = await requireOwnedProduct(input.merchantId, input.productId);
+
+  if (!Number.isInteger(input.stock) || input.stock < 0) {
+    throw new Error("Stock must be a non-negative integer");
+  }
+  if (!Number.isFinite(input.priceRupees) || input.priceRupees <= 0) {
+    throw new Error("Price must be positive");
+  }
+
+  const attributes: Record<string, string> =
+    input.attributeKey?.trim() && input.attributeValue?.trim() ? { [input.attributeKey.trim()]: input.attributeValue.trim() } : {};
+
+  const [variant] = await db
+    .insert(schema.productVariants)
+    .values({
+      productId: product.id,
+      merchantId: input.merchantId,
+      sku: input.sku?.trim() || generateDefaultSku(),
+      pricePaise: rupeesToPaise(input.priceRupees),
+      costPaise: rupeesToPaise(input.costRupees),
+      stock: input.stock,
+      availability: input.stock > 0 ? "in_stock" : "out_of_stock",
+      attributes,
+      status: "active",
+    })
+    .returning();
+
+  await logAuditEntry({
+    merchantId: input.merchantId,
+    actor: "merchant",
+    event: "variant_added",
+    decision: "n/a",
+    reason: `Merchant added a new variant to "${product.name}": SKU ${variant.sku}, ₹${input.priceRupees.toFixed(2)}, ${input.stock} in stock${Object.keys(attributes).length > 0 ? ` (${Object.entries(attributes).map(([k, v]) => `${k}: ${v}`).join(", ")})` : ""}.`,
+  });
+
+  return variant;
+}
+
+export interface UpdateVariantInput {
+  merchantId: string;
+  variantId: string;
+  sku: string;
+  priceRupees: number;
+  costRupees: number;
+  stock: number;
+  attributeKey?: string;
+  attributeValue?: string;
+}
+
+/** Edits one variant directly — the multi-variant counterpart to updateProduct's combined product+variant form, used once a product has more than its original default variant. Never used to bypass the gate's atomic stock decrement — this sets an absolute stock count from the merchant, not a purchase-driven delta. */
+export async function updateVariant(input: UpdateVariantInput) {
+  if (!input.sku.trim()) throw new Error("SKU is required");
+  if (!Number.isInteger(input.stock) || input.stock < 0) {
+    throw new Error("Stock must be a non-negative integer");
+  }
+
+  await requireOwnedVariant(input.merchantId, input.variantId);
+
+  const attributes: Record<string, string> =
+    input.attributeKey?.trim() && input.attributeValue?.trim() ? { [input.attributeKey.trim()]: input.attributeValue.trim() } : {};
+
+  const [variant] = await db
+    .update(schema.productVariants)
+    .set({
+      sku: input.sku.trim(),
+      pricePaise: rupeesToPaise(input.priceRupees),
+      costPaise: rupeesToPaise(input.costRupees),
+      stock: input.stock,
+      availability: input.stock > 0 ? "in_stock" : "out_of_stock",
+      attributes,
+    })
+    .where(eq(schema.productVariants.id, input.variantId))
+    .returning();
+
+  await logAuditEntry({
+    merchantId: input.merchantId,
+    actor: "merchant",
+    event: "variant_updated",
+    decision: "n/a",
+    reason: `Merchant updated variant "${input.sku}" — price ₹${input.priceRupees.toFixed(2)}, stock ${input.stock}.`,
+  });
+
+  return variant;
+}
+
+/** Archives a single variant without touching the rest of the product's variants or the product itself — the multi-variant counterpart to archiveProduct. A product with zero active variants simply stops appearing in the catalogue (getPublicCatalogue already filters empty-variant products), without needing to also archive the product row. */
+export async function archiveVariant(merchantId: string, variantId: string) {
+  const variant = await requireOwnedVariant(merchantId, variantId);
+
+  const [updated] = await db
+    .update(schema.productVariants)
+    .set({ status: "archived" })
+    .where(eq(schema.productVariants.id, variantId))
+    .returning();
+
+  await logAuditEntry({
+    merchantId,
+    actor: "merchant",
+    event: "variant_archived",
+    decision: "n/a",
+    reason: `Merchant archived variant "${variant.sku}". It no longer appears in the catalogue or accepts purchases.`,
+  });
+
+  return updated;
+}
+
+/** Reactivates a single archived variant. */
+export async function reactivateVariant(merchantId: string, variantId: string) {
+  const variant = await requireOwnedVariant(merchantId, variantId);
+
+  const [updated] = await db
+    .update(schema.productVariants)
+    .set({ status: "active" })
+    .where(eq(schema.productVariants.id, variantId))
+    .returning();
+
+  await logAuditEntry({
+    merchantId,
+    actor: "merchant",
+    event: "variant_reactivated",
+    decision: "n/a",
+    reason: `Merchant reactivated variant "${variant.sku}".`,
+  });
+
+  return updated;
+}
+
 /** Archives a product and every one of its variants rather than deleting them — past money_actions rows keep their reference, and archived products/variants stop appearing in the catalogue or accepting purchases. */
 export async function archiveProduct(merchantId: string, productId: string) {
   const existing = await requireOwnedProduct(merchantId, productId);

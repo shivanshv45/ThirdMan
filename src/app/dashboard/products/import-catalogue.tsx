@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { parseCsvPreview, extractPastedTextPreview, confirmImport } from "./import-actions";
 import type { ImportRowPreview } from "@/lib/catalogue-import";
+import { Surface } from "@/components/ui";
 
 type Source = "csv" | "pasted_text";
 type Status = "idle" | "parsing" | "previewing" | "confirming" | "done" | "error";
@@ -76,7 +77,10 @@ export function ImportCatalogue() {
 
   if (!open) {
     return (
-      <button onClick={() => setOpen(true)} className="text-sm px-3 py-2 rounded border hover:bg-gray-50">
+      <button
+        onClick={() => setOpen(true)}
+        className="text-sm px-3 py-2 rounded-[var(--radius)] bg-ink-overlay border border-ink-line text-on-ink hover:border-on-ink-faint transition-colors duration-[var(--dur-fast)]"
+      >
         Import catalogue
       </button>
     );
@@ -85,15 +89,15 @@ export function ImportCatalogue() {
   const errorCount = rows.filter((r) => r.error).length;
 
   return (
-    <section className="border rounded-lg p-4">
+    <Surface variant="raised" className="p-5">
       <div className="flex items-center justify-between mb-3">
-        <h2 className="text-lg font-semibold">Import catalogue</h2>
+        <h2 className="text-[var(--t-h4)] font-medium text-on-ink">Import catalogue</h2>
         <button
           onClick={() => {
             setOpen(false);
             reset();
           }}
-          className="text-sm text-gray-500 hover:text-gray-800"
+          className="text-sm text-on-ink-faint hover:text-on-ink transition-colors"
         >
           Close
         </button>
@@ -102,8 +106,8 @@ export function ImportCatalogue() {
       {status === "idle" && (
         <div className="space-y-4 text-sm">
           <div>
-            <label className="flex flex-col gap-1">
-              Upload a CSV
+            <label className="flex flex-col gap-1.5">
+              <span className="text-on-ink-dim font-medium">Upload a CSV</span>
               <input
                 type="file"
                 accept=".csv,text/csv"
@@ -111,73 +115,90 @@ export function ImportCatalogue() {
                   const file = e.target.files?.[0];
                   if (file) void handleCsvFile(file);
                 }}
-                className="text-sm"
+                className="text-sm text-on-ink-dim file:mr-3 file:py-1.5 file:px-3 file:rounded-[var(--radius)] file:border file:border-ink-line file:bg-ink-overlay file:text-on-ink file:text-sm"
               />
             </label>
-            <p className="text-xs text-gray-400 mt-1">Columns are matched by name (e.g. &quot;price&quot;, &quot;Price (INR)&quot;, &quot;SKU&quot;). Parsed in code, never sent to a model.</p>
+            <p className="text-xs text-on-ink-faint mt-1.5">
+              Columns are matched by name (e.g. &quot;price&quot;, &quot;Price (INR)&quot;, &quot;SKU&quot;). Parsed in code, never sent to a model.
+            </p>
           </div>
 
-          <div className="border-t pt-4">
-            <label className="flex flex-col gap-1">
-              Or paste a product list
+          <div className="border-t border-ink-line pt-4">
+            <label className="flex flex-col gap-1.5">
+              <span className="text-on-ink-dim font-medium">Or paste a product list</span>
               <textarea
                 rows={5}
                 value={pastedText}
                 onChange={(e) => setPastedText(e.target.value)}
                 placeholder="Paste a product list from your website, a supplier email, or anywhere else..."
-                className="border rounded px-3 py-2"
+                className="w-full rounded-[var(--radius)] bg-ink-overlay border border-ink-line px-3 py-2 text-sm text-on-ink placeholder:text-on-ink-faint outline-none focus:border-accent focus:ring-1 focus:ring-accent/40"
                 maxLength={20_000}
               />
             </label>
             <button
               onClick={handleExtractPasted}
               disabled={!pastedText.trim()}
-              className="mt-2 px-3 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 text-sm"
+              className="mt-2 px-3 py-2 rounded-[var(--radius)] bg-accent text-accent-ink hover:bg-accent-bright disabled:opacity-50 text-sm font-medium transition-colors duration-[var(--dur-fast)]"
             >
               Extract products
             </button>
-            <p className="text-xs text-gray-400 mt-1">A model reads this and proposes rows below — nothing is saved until you review and confirm.</p>
+            <p className="text-xs text-on-ink-faint mt-1.5">
+              A model reads this and proposes rows below — nothing is saved until you review and confirm.
+            </p>
           </div>
         </div>
       )}
 
-      {status === "parsing" && <p className="text-sm text-gray-500">Reading…</p>}
+      {status === "parsing" && (
+        <p className="text-sm text-on-ink-dim flex items-center gap-2">
+          <span className="h-3 w-3 rounded-full border-2 border-current border-t-transparent animate-spin" aria-hidden="true" />
+          Reading…
+        </p>
+      )}
 
       {(status === "previewing" || status === "confirming") && (
         <div className="space-y-3">
           {unmappedColumns.length > 0 && (
-            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+            <p className="text-xs text-escalate-bright bg-escalate-wash border border-escalate-line rounded-[var(--radius)] px-3 py-2">
               Unmapped columns (ignored): {unmappedColumns.join(", ")}
             </p>
           )}
           {errorCount > 0 && (
-            <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">
+            <p className="text-xs text-deny-bright bg-deny-wash border border-deny-line rounded-[var(--radius)] px-3 py-2">
               {errorCount} row(s) have errors and will be skipped unless corrected below.
             </p>
           )}
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-on-ink-dim">
             {rows.length} row(s) parsed. Review — especially prices, shown in rupees — then confirm.
           </p>
-          <div className="overflow-x-auto border rounded">
-            <table className="w-full text-xs">
-              <thead className="bg-gray-50">
+          <div className="overflow-x-auto rounded-[var(--radius-lg)] border border-ink-line">
+            <table className="w-full text-xs border-collapse">
+              <thead className="bg-ink-overlay">
                 <tr>
-                  <th className="text-left p-2">Name</th>
-                  <th className="text-left p-2">SKU</th>
-                  <th className="text-left p-2">Price (₹)</th>
-                  <th className="text-left p-2">Cost (₹)</th>
-                  <th className="text-left p-2">Stock</th>
-                  <th className="text-left p-2">Status</th>
+                  <th className="text-left p-2 text-on-ink-faint font-medium uppercase tracking-[0.06em] text-[var(--t-label)]">Name</th>
+                  <th className="text-left p-2 text-on-ink-faint font-medium uppercase tracking-[0.06em] text-[var(--t-label)]">SKU</th>
+                  <th className="text-left p-2 text-on-ink-faint font-medium uppercase tracking-[0.06em] text-[var(--t-label)]">Price (₹)</th>
+                  <th className="text-left p-2 text-on-ink-faint font-medium uppercase tracking-[0.06em] text-[var(--t-label)]">Cost (₹)</th>
+                  <th className="text-left p-2 text-on-ink-faint font-medium uppercase tracking-[0.06em] text-[var(--t-label)]">Stock</th>
+                  <th className="text-left p-2 text-on-ink-faint font-medium uppercase tracking-[0.06em] text-[var(--t-label)]">Status</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row, i) => (
-                  <tr key={i} className={`border-t ${row.error ? "bg-red-50" : ""}`}>
+                  <tr key={i} className={`border-t border-ink-line-soft ${row.error ? "bg-deny-wash" : ""}`}>
                     <td className="p-1">
-                      <input value={row.name} onChange={(e) => updateRow(i, { name: e.target.value })} className="border rounded px-2 py-1 w-32" />
+                      <input
+                        value={row.name}
+                        onChange={(e) => updateRow(i, { name: e.target.value })}
+                        className="border border-ink-line bg-ink rounded-[var(--radius-sm)] px-2 py-1 w-32 text-on-ink outline-none focus:border-accent"
+                      />
                     </td>
                     <td className="p-1">
-                      <input value={row.sku} onChange={(e) => updateRow(i, { sku: e.target.value })} className="border rounded px-2 py-1 w-24" />
+                      <input
+                        value={row.sku}
+                        onChange={(e) => updateRow(i, { sku: e.target.value })}
+                        className="border border-ink-line bg-ink rounded-[var(--radius-sm)] px-2 py-1 w-24 text-on-ink outline-none focus:border-accent font-mono"
+                      />
                     </td>
                     <td className="p-1">
                       <input
@@ -185,7 +206,7 @@ export function ImportCatalogue() {
                         step="0.01"
                         value={row.priceRupees}
                         onChange={(e) => updateRow(i, { priceRupees: Number(e.target.value) })}
-                        className="border rounded px-2 py-1 w-20"
+                        className="border border-ink-line bg-ink rounded-[var(--radius-sm)] px-2 py-1 w-20 text-on-ink outline-none focus:border-accent font-mono tabular-nums"
                       />
                     </td>
                     <td className="p-1">
@@ -194,7 +215,7 @@ export function ImportCatalogue() {
                         step="0.01"
                         value={row.costRupees}
                         onChange={(e) => updateRow(i, { costRupees: Number(e.target.value) })}
-                        className="border rounded px-2 py-1 w-20"
+                        className="border border-ink-line bg-ink rounded-[var(--radius-sm)] px-2 py-1 w-20 text-on-ink outline-none focus:border-accent font-mono tabular-nums"
                       />
                     </td>
                     <td className="p-1">
@@ -203,24 +224,29 @@ export function ImportCatalogue() {
                         step="1"
                         value={row.stock}
                         onChange={(e) => updateRow(i, { stock: Number(e.target.value) })}
-                        className="border rounded px-2 py-1 w-16"
+                        className="border border-ink-line bg-ink rounded-[var(--radius-sm)] px-2 py-1 w-16 text-on-ink outline-none focus:border-accent font-mono tabular-nums"
                       />
                     </td>
-                    <td className="p-1 text-red-700">{row.error ?? "OK"}</td>
+                    <td className="p-1 text-deny-bright font-mono">{row.error ?? "OK"}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <div className="flex gap-2">
+          {/* The confirm step stays structurally distinct from the preview above — a
+              separate, visually emphasised action, never folded into the same flow. */}
+          <div className="flex gap-2 pt-1">
             <button
               onClick={handleConfirm}
               disabled={status === "confirming"}
-              className="px-3 py-2 rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50 text-sm"
+              className="px-4 py-2 rounded-[var(--radius)] bg-allow text-ink hover:bg-allow-bright disabled:opacity-50 text-sm font-medium transition-colors duration-[var(--dur-fast)]"
             >
-              {status === "confirming" ? "Importing…" : `Import ${rows.filter((r) => !r.error).length} row(s)`}
+              {status === "confirming" ? "Importing…" : `Confirm — import ${rows.filter((r) => !r.error).length} row(s)`}
             </button>
-            <button onClick={reset} className="px-3 py-2 rounded border text-sm hover:bg-gray-50">
+            <button
+              onClick={reset}
+              className="px-3 py-2 rounded-[var(--radius)] border border-ink-line text-on-ink-dim hover:text-on-ink text-sm transition-colors duration-[var(--dur-fast)]"
+            >
               Cancel
             </button>
           </div>
@@ -229,8 +255,11 @@ export function ImportCatalogue() {
 
       {status === "done" && (
         <div className="space-y-2">
-          <p className="text-sm text-green-700">{message}</p>
-          <button onClick={reset} className="text-sm px-3 py-2 rounded border hover:bg-gray-50">
+          <p className="text-sm text-allow-bright">{message}</p>
+          <button
+            onClick={reset}
+            className="text-sm px-3 py-2 rounded-[var(--radius)] border border-ink-line text-on-ink-dim hover:text-on-ink transition-colors duration-[var(--dur-fast)]"
+          >
             Import more
           </button>
         </div>
@@ -238,12 +267,15 @@ export function ImportCatalogue() {
 
       {status === "error" && (
         <div className="space-y-2">
-          <p className="text-sm text-red-700">{message}</p>
-          <button onClick={reset} className="text-sm px-3 py-2 rounded border hover:bg-gray-50">
+          <p className="text-sm text-deny-bright">{message}</p>
+          <button
+            onClick={reset}
+            className="text-sm px-3 py-2 rounded-[var(--radius)] border border-ink-line text-on-ink-dim hover:text-on-ink transition-colors duration-[var(--dur-fast)]"
+          >
             Try again
           </button>
         </div>
       )}
-    </section>
+    </Surface>
   );
 }

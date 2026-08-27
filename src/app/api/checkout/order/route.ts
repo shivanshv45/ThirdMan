@@ -7,6 +7,7 @@ import { acceptOffer } from "@/lib/discount";
 import { decrypt } from "@/lib/crypto";
 import { getOrCreateStorefrontAgent } from "@/lib/storefront";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
+import { resolveCartForCheckout, getConversationBySession, clearCart } from "@/lib/cart";
 
 const orderRequestSchema = z
   .object({
@@ -28,10 +29,17 @@ const orderRequestSchema = z
     // exclusive with productId/offerId — the negotiation already names
     // the variant, quantity, and agreed price.
     negotiationId: z.string().uuid().optional(),
+    // Layer 9-close-out: check out the buyer chat's real multi-item
+    // cart. Mutually exclusive with productId/offerId/negotiationId —
+    // the cart's own lines (cart_items) already name every variant and
+    // quantity being bought. Resolved from sessionToken (below), the
+    // same identity every other buyer-chat surface already uses, rather
+    // than exposing a separate conversationId to the client.
+    cart: z.literal(true).optional(),
     sessionToken: z.string().uuid().optional(),
   })
-  .refine((v) => v.productId !== undefined || v.offerId !== undefined || v.negotiationId !== undefined, {
-    message: "one of productId, offerId, or negotiationId is required",
+  .refine((v) => v.productId !== undefined || v.offerId !== undefined || v.negotiationId !== undefined || v.cart !== undefined, {
+    message: "one of productId, offerId, negotiationId, or cart is required",
   });
 
 // Public and unauthenticated — every allowed request creates a real
@@ -69,7 +77,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "invalid request body", details: parsed.error.flatten() }, { status: 400 });
   }
 
-  const { merchantId, productId, variantId, quantity, offerId, negotiationId, sessionToken } = parsed.data;
+  const { merchantId, productId, variantId, quantity, offerId, negotiationId, cart: wantsCart, sessionToken } = parsed.data;
 
   const [merchant] = await db
     .select({ keyIdEncrypted: schema.merchants.razorpayKeyIdEncrypted })
@@ -171,6 +179,54 @@ export async function POST(req: NextRequest) {
       razorpayKeyId: decrypt(merchant.keyIdEncrypted),
       amountPaise,
       productName: "Negotiated price",
+    });
+  }
+
+  // Layer 9-close-out: buy the buyer chat's real multi-item cart. The
+  // gate (via cart.ts's resolveCartForCheckout) re-derives the total and
+  // every line's price/stock fresh from the live catalogue — this route
+  // never computes or trusts a cart total itself, same discipline as the
+  // offerId/negotiationId branches above.
+  if (wantsCart) {
+    if (!sessionToken) {
+      return NextResponse.json({ error: "sessionToken is required to check out a cart" }, { status: 400 });
+    }
+
+    const conversation = await getConversationBySession(merchantId, sessionToken);
+    if (!conversation) {
+      return NextResponse.json({ error: "cart not found" }, { status: 404 });
+    }
+
+    const { cart, failure } = await resolveCartForCheckout(merchantId, conversation.id);
+    if (failure) {
+      return NextResponse.json({ error: failure.reason }, { status: 200 });
+    }
+
+    const result = await attemptMoneyAction({
+      agentId: storefrontAgent.id,
+      merchantId,
+      type: "order_create",
+      amountPaise: cart!.amountPaise,
+      context: `Storefront checkout: cart (${cart!.lines.length} item${cart!.lines.length === 1 ? "" : "s"})`,
+      cartConversationId: conversation.id,
+    });
+
+    if (result.decision !== "allow" || !result.razorpayOrderId) {
+      return NextResponse.json({ error: result.reason }, { status: 200 });
+    }
+
+    // The cart is cleared only once the order is genuinely allowed — a
+    // denied attempt leaves the cart intact so the buyer can retry or
+    // adjust it, same as every other path here never mutating state on
+    // a denial.
+    await clearCart(conversation.id);
+
+    return NextResponse.json({
+      moneyActionId: result.moneyActionId,
+      razorpayOrderId: result.razorpayOrderId,
+      razorpayKeyId: decrypt(merchant.keyIdEncrypted),
+      amountPaise: cart!.amountPaise,
+      productName: `Cart (${cart!.lines.length} item${cart!.lines.length === 1 ? "" : "s"})`,
     });
   }
 

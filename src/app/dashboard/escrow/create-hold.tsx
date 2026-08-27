@@ -73,7 +73,7 @@ export function CreateHoldForm({ products }: { products: { id: string; name: str
         currency: "INR",
         name: `${order.productName} (held, not captured)`,
         order_id: order.razorpayOrderId,
-        theme: { color: "#7c3aed" },
+        theme: { color: "#4fd1c5" },
         modal: { ondismiss: () => setStatus("idle") },
         handler: async (response) => {
           try {
@@ -110,14 +110,18 @@ export function CreateHoldForm({ products }: { products: { id: string; name: str
   }
 
   if (products.length === 0) {
-    return <p className="text-sm text-gray-500">Add a product first to demo a hold.</p>;
+    return <p className="text-sm text-on-ink-dim">Add a product first to demo a hold.</p>;
   }
 
   return (
-    <div className="flex flex-wrap items-end gap-2 text-sm">
-      <label className="flex flex-col gap-1">
-        Product
-        <select value={productId} onChange={(e) => setProductId(e.target.value)} className="border rounded px-2 py-1.5">
+    <div className="flex flex-wrap items-end gap-2">
+      <label className="flex flex-col gap-1.5 text-sm">
+        <span className="text-on-ink-dim font-medium">Product</span>
+        <select
+          value={productId}
+          onChange={(e) => setProductId(e.target.value)}
+          className="rounded-[var(--radius)] bg-ink-overlay border border-ink-line px-3 py-2 text-sm text-on-ink outline-none focus:border-accent focus:ring-1 focus:ring-accent/40"
+        >
           {products.map((p) => (
             <option key={p.id} value={p.id}>
               {p.name}
@@ -128,11 +132,14 @@ export function CreateHoldForm({ products }: { products: { id: string; name: str
       <button
         onClick={handleCreateHold}
         disabled={status === "working"}
-        className="px-3 py-2 rounded bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50"
+        className="px-3.5 py-2 rounded-[var(--radius)] bg-accent text-accent-ink hover:bg-accent-bright disabled:opacity-50 text-sm font-medium transition-colors duration-[var(--dur-fast)] inline-flex items-center gap-1.5"
       >
-        {status === "working" ? "Authorising..." : "Create hold (test payment)"}
+        {status === "working" && (
+          <span className="h-3 w-3 rounded-full border-2 border-current border-t-transparent animate-spin" aria-hidden="true" />
+        )}
+        {status === "working" ? "Authorising…" : "Create hold (test payment)"}
       </button>
-      {message && <p className="text-xs text-red-700 w-full">{message}</p>}
+      {message && <p className="text-xs text-deny-bright w-full">{message}</p>}
     </div>
   );
 }

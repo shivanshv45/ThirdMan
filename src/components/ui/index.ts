@@ -9,4 +9,6 @@ export { DetailsToggle } from "./details-toggle";
 export { Table, Thead, Tr, Th, Td } from "./table";
 export { Reveal } from "./reveal";
 export { DecisionComposition } from "./decision-composition";
+export { ReadinessGauge } from "./readiness-gauge";
+export { AmbientField } from "./ambient-field";
 export { formatPaiseGrouped, splitPaiseForDisplay } from "./format";

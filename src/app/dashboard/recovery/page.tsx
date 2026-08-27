@@ -3,7 +3,7 @@ import { getSessionMerchant } from "@/lib/auth";
 import { getRecoveryStats, getFailureQueue } from "@/lib/recovery/attribution";
 import { loadDemoBatchAction, runRecoveryBatchAction } from "./actions";
 import { FailureQueue } from "./failure-queue";
-import { formatPaise as rupees } from "@/lib/money";
+import { PageHeader, Surface, MoneyStat, Stat, Button, formatPaiseGrouped } from "@/components/ui";
 
 const RULE_LABELS: Record<string, string> = {
   already_resolved: "Already resolved",
@@ -25,67 +25,71 @@ export default async function RecoveryPage() {
   const attemptsDeclinedTotal = stoppedByRuleEntries.reduce((sum, [, count]) => sum + count, 0);
 
   return (
-    <main className="max-w-5xl mx-auto p-6 space-y-8">
-      <header>
-        <h1 className="text-2xl font-semibold">Revenue recovery</h1>
-        <p className="text-sm text-gray-500">Failed payments, diagnosis, and bounded automatic recovery</p>
-      </header>
+    <div className="space-y-8">
+      <PageHeader title="Revenue recovery" description="Failed payments, diagnosis, and bounded automatic recovery." />
 
-      <section className="border rounded-lg p-5 bg-gray-50">
-        <div className="flex flex-wrap items-baseline gap-x-8 gap-y-2">
-          <div>
-            <p className="text-3xl font-semibold">
-              {rupees(stats.recoveredPaise)}{" "}
-              <span className="text-lg text-gray-500 font-normal">
-                of {rupees(stats.totalFailedPaise)} recovered — {stats.recoveryRatePercent}%
-              </span>
-            </p>
-          </div>
-          <div className="text-sm text-gray-600">
-            {attemptsDeclinedTotal} attempt{attemptsDeclinedTotal === 1 ? "" : "s"} deliberately not made
-          </div>
+      <Surface variant="raised" className="p-6">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-6">
+          <MoneyStat
+            label="Recovered"
+            paise={stats.recoveredPaise}
+            tone="allow"
+            caption={`of ${formatPaiseGrouped(stats.totalFailedPaise)} failed — ${stats.recoveryRatePercent}%`}
+          />
+          <Stat
+            label="Deliberately not attempted"
+            value={attemptsDeclinedTotal}
+            tone="escalate"
+            caption="A stopping rule fired before money was spent chasing it"
+          />
+          <Stat label="Money-moving attempts made" value={stats.attemptsMade} />
         </div>
 
-        <div className="flex flex-wrap gap-4 mt-3 text-sm text-gray-600">
-          <span>{stats.failureCount} total failures</span>
-          <span>{stats.recoveredCount} recovered</span>
-          <span>{stats.recoveringCount} recovering</span>
-          <span>{stats.writtenOffCount} written off</span>
-          <span>{stats.attemptsMade} money-moving attempts made</span>
+        <div className="flex flex-wrap gap-4 mt-5 pt-4 border-t border-ink-line-soft text-xs font-mono">
+          <span className="text-on-ink-dim">
+            <span className="text-on-ink">{stats.failureCount}</span> total failures
+          </span>
+          <span className="text-on-ink-dim">
+            <span className="text-allow-bright">{stats.recoveredCount}</span> recovered
+          </span>
+          <span className="text-on-ink-dim">
+            <span className="text-escalate-bright">{stats.recoveringCount}</span> recovering
+          </span>
+          <span className="text-on-ink-dim">
+            <span className="text-on-ink-faint">{stats.writtenOffCount}</span> written off
+          </span>
         </div>
 
         {stoppedByRuleEntries.length > 0 && (
-          <div className="mt-3 text-xs text-gray-500">
+          <p className="mt-3 text-xs text-on-ink-faint">
             Stopped by rule:{" "}
-            {stoppedByRuleEntries
-              .map(([rule, count]) => `${RULE_LABELS[rule] ?? rule} (${count})`)
-              .join(", ")}
-          </div>
+            {stoppedByRuleEntries.map(([rule, count]) => `${RULE_LABELS[rule] ?? rule} (${count})`).join(", ")}
+          </p>
         )}
 
-        <div className="flex gap-2 mt-4">
+        <div className="flex gap-2 mt-5">
           <form action={loadDemoBatchAction}>
-            <button type="submit" className="text-sm px-3 py-1.5 rounded border hover:bg-white">
+            <Button type="submit" size="sm" pendingLabel="Loading…">
               Load demo failure batch
-            </button>
+            </Button>
           </form>
           <form action={runRecoveryBatchAction}>
-            <button type="submit" className="text-sm px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700">
+            <Button type="submit" variant="primary" size="sm" pendingLabel="Running…">
               Run recovery on all pending
-            </button>
+            </Button>
           </form>
         </div>
-        <p className="text-xs text-gray-400 mt-2">
+        <p className="text-xs text-on-ink-faint mt-2 max-w-[var(--measure)]">
           The demo batch loads labelled simulated failures — no real payment failed. Every recovery attempt made
           against them is real: it passes through the same spend-cap gate as any other agent purchase, creates a
           real Razorpay order, and is verified before anything counts as recovered.
         </p>
-      </section>
+      </Surface>
 
       <section>
-        <h2 className="text-lg font-semibold mb-3">Failure queue</h2>
+        <h2 className="text-[var(--t-h3)] font-[family-name:var(--font-display)] text-on-ink mb-3">Failure queue</h2>
         <FailureQueue initialQueue={queue} initialStats={stats} />
       </section>
-    </main>
+    </div>
   );
 }

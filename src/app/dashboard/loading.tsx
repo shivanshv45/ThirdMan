@@ -1,12 +1,20 @@
 export default function DashboardLoading() {
   return (
-    <main className="max-w-5xl mx-auto p-6">
-      <div className="animate-pulse space-y-4">
-        <div className="h-6 w-48 bg-gray-200 rounded" />
-        <div className="h-4 w-72 bg-gray-100 rounded" />
-        <div className="h-24 bg-gray-100 rounded mt-6" />
-        <div className="h-24 bg-gray-100 rounded" />
+    <div className="space-y-8">
+      <div className="animate-pulse space-y-2">
+        <div className="h-8 w-56 bg-ink-overlay rounded-[var(--radius)]" />
+        <div className="h-4 w-96 max-w-full bg-ink-overlay rounded-[var(--radius)]" />
       </div>
-    </main>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-6 animate-pulse">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="h-24 bg-ink-raised border border-ink-line rounded-[var(--radius-lg)]" />
+        ))}
+      </div>
+      <div className="space-y-2 animate-pulse">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <div key={i} className="h-14 bg-ink-raised border border-ink-line rounded-[var(--radius-lg)]" />
+        ))}
+      </div>
+    </div>
   );
 }

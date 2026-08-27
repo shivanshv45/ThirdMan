@@ -4,18 +4,22 @@ import { useState, useTransition } from "react";
 import { formatPaise } from "@/lib/money";
 import { getTranscript, type TranscriptTurn } from "./actions";
 import type { NegotiationRow } from "@/lib/dashboard";
+import { DecisionBadge, type Decision } from "@/components/ui";
 
 function formatDate(d: Date | string): string {
   return new Date(d).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
 }
 
-const statusStyles: Record<string, { text: string; border: string }> = {
-  agreed: { text: "text-green-700", border: "border-green-500" },
-  redeemed: { text: "text-green-700", border: "border-green-500" },
-  refused_turns_exhausted: { text: "text-red-700", border: "border-red-500" },
-  open: { text: "text-amber-700", border: "border-amber-500" },
-  expired: { text: "text-gray-500", border: "border-gray-300" },
-};
+function formatTime(d: Date | string): string {
+  return new Date(d).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function statusToDecision(status: string): Decision {
+  if (status === "agreed" || status === "redeemed") return "allow";
+  if (status === "refused_turns_exhausted") return "deny";
+  if (status === "open") return "escalate";
+  return "n/a";
+}
 
 export function NegotiationList({ negotiations, statusLabels }: { negotiations: NegotiationRow[]; statusLabels: Record<string, string> }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -39,36 +43,68 @@ export function NegotiationList({ negotiations, statusLabels }: { negotiations: 
   return (
     <ul className="space-y-2">
       {negotiations.map((n) => {
-        const style = statusStyles[n.status] ?? { text: "text-gray-500", border: "border-gray-300" };
         const expanded = expandedId === n.id;
+        const loading = isPending && expanded && !transcripts[n.id];
 
         return (
-          <li key={n.id} className={`border-l-4 ${style.border} border rounded px-3 py-2 text-sm`}>
-            <div className="flex items-center justify-between">
-              <span>
-                <span className="font-medium">{n.variantSku}</span> x{n.quantity} —{" "}
-                <span className={style.text}>{statusLabels[n.status] ?? n.status}</span>
-              </span>
-              <span className="text-xs text-gray-400">{formatDate(n.resolvedAt ?? n.createdAt)}</span>
+          <li key={n.id} className="rounded-[var(--radius-lg)] border border-ink-line bg-ink-raised px-4 py-3">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="flex items-center gap-2 text-sm">
+                <DecisionBadge decision={statusToDecision(n.status)} label={statusLabels[n.status] ?? n.status} />
+                <span className="font-medium text-on-ink font-mono">
+                  {n.variantSku} ×{n.quantity}
+                </span>
+              </div>
+              <span className="text-xs text-on-ink-faint font-mono">{formatDate(n.resolvedAt ?? n.createdAt)}</span>
             </div>
-            <p className="mt-1 text-gray-600">
+            <p className="mt-1.5 text-sm text-on-ink-dim font-mono">
               Catalogue {formatPaise(n.catalogueUnitPricePaise)}/unit, floor {formatPaise(n.floorUnitPricePaise)}/unit
               {n.agreedUnitPricePaise !== null && <> — agreed at {formatPaise(n.agreedUnitPricePaise)}/unit</>}
-              {" "}({n.buyerTurnCount} counter-offer{n.buyerTurnCount === 1 ? "" : "s"})
+              {" "}
+              <span className="text-on-ink-faint">
+                ({n.buyerTurnCount} counter-offer{n.buyerTurnCount === 1 ? "" : "s"})
+              </span>
             </p>
-            <button type="button" onClick={() => toggle(n.id)} className="text-xs text-blue-600 hover:underline mt-1">
+            <button type="button" onClick={() => toggle(n.id)} className="text-xs text-accent hover:text-accent-bright mt-1.5 transition-colors">
               {expanded ? "Hide transcript" : "Show transcript"}
             </button>
             {expanded && (
-              <div className="mt-2 border-t pt-2 space-y-1">
-                {isPending && !transcripts[n.id] && <p className="text-xs text-gray-400">Loading…</p>}
-                {transcripts[n.id]?.map((turn, i) => (
-                  <p key={i} className="text-xs">
-                    <span className="font-medium">{turn.speaker === "buyer" ? "Buyer" : "Merchant's agent"}:</span>{" "}
-                    {turn.message}
-                    {turn.offeredUnitPricePaise !== null && <span className="text-gray-500"> ({formatPaise(turn.offeredUnitPricePaise)}/unit)</span>}
+              <div className="mt-3 border-t border-ink-line-soft pt-3">
+                {loading && (
+                  <p className="text-xs text-on-ink-faint flex items-center gap-2">
+                    <span className="h-2.5 w-2.5 rounded-full border-2 border-current border-t-transparent animate-spin" aria-hidden="true" />
+                    Loading transcript…
                   </p>
-                ))}
+                )}
+                {/* Every turn is a real negotiation_turns row with its own real
+                    createdAt — no invented pacing, no sample dialogue. */}
+                <div className="space-y-2">
+                  {transcripts[n.id]?.map((turn, i) => {
+                    const isBuyer = turn.speaker === "buyer";
+                    return (
+                      <div key={i} className={`flex ${isBuyer ? "justify-start" : "justify-end"}`}>
+                        <div
+                          className={`max-w-[80%] rounded-[var(--radius)] px-3 py-2 text-xs ${
+                            isBuyer
+                              ? "bg-ink-overlay text-on-ink"
+                              : "bg-accent-wash text-on-ink border border-accent/20"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className={`font-medium ${isBuyer ? "text-on-ink-dim" : "text-accent-bright"}`}>
+                              {isBuyer ? "Buyer" : "Merchant's agent"}
+                            </span>
+                            <span className="text-on-ink-faint font-mono">{formatTime(turn.createdAt)}</span>
+                          </div>
+                          <p>{turn.message}</p>
+                          {turn.offeredUnitPricePaise !== null && (
+                            <p className="mt-1 font-mono font-medium">{formatPaise(turn.offeredUnitPricePaise)}/unit</p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </li>

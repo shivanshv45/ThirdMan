@@ -4,6 +4,7 @@ import { getRecentNegotiations, getNegotiableVariants } from "@/lib/dashboard";
 import { formatPaise } from "@/lib/money";
 import { setNegotiationFloor } from "./actions";
 import { NegotiationList } from "./negotiation-list";
+import { PageHeader, Surface, Stat, DetailsToggle, Input, Button, EmptyState } from "@/components/ui";
 
 const STATUS_LABELS: Record<string, string> = {
   open: "Open",
@@ -32,86 +33,85 @@ export default async function NegotiationsPage({
   const agreedCount = negotiations.filter((n) => n.status === "agreed" || n.status === "redeemed").length;
 
   return (
-    <main className="max-w-3xl mx-auto p-6 space-y-8">
-      <header>
-        <h1 className="text-2xl font-semibold">Negotiation</h1>
-        <p className="text-sm text-gray-500">
-          A buyer — an AI agent or a person in chat — can ask for a better price on any variant you&apos;ve set a floor for. Your agent will counter, but never below the floor you set here. A refusal below is evidence the floor held, not a gap.
+    <div className="space-y-8">
+      <PageHeader
+        title="Negotiation"
+        description="A buyer — an AI agent or a person in chat — can ask for a better price on any variant you've set a floor for. Your agent will counter, but never below the floor you set here. A refusal below is evidence the floor held, not a gap."
+      />
+
+      {error && (
+        <p className="text-sm text-deny-bright bg-deny-wash border border-deny-line rounded-[var(--radius)] px-3 py-2">
+          {error}
         </p>
-      </header>
+      )}
 
-      {error && <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</p>}
-
-      <section className="border rounded-lg p-4">
-        <div className="grid grid-cols-3 gap-3 text-center">
+      <Surface variant="raised" className="p-6">
+        <div className="grid grid-cols-3 gap-6">
           <Stat label="Total negotiations" value={negotiations.length} />
-          <Stat label="Agreed" value={agreedCount} />
-          <Stat label="Refused — floor held" value={refusedCount} emphasize />
+          <Stat label="Agreed" value={agreedCount} tone="allow" />
+          <Stat label="Refused — floor held" value={refusedCount} tone="deny" />
         </div>
-      </section>
+      </Surface>
 
-      <section className="border rounded-lg p-4">
-        <h2 className="text-lg font-semibold mb-3">Negotiation floors</h2>
-        <p className="text-xs text-gray-500 mb-3">
+      <Surface variant="raised" className="p-5">
+        <h2 className="text-[var(--t-h4)] font-medium text-on-ink mb-1.5">Negotiation floors</h2>
+        <p className="text-xs text-on-ink-faint mb-3 max-w-[var(--measure)]">
           A variant with no floor set is not negotiable at all — that&apos;s the default, never a permissive one. Set a floor to allow negotiation on it.
         </p>
         <ul className="space-y-2">
           {variants.map((v) => (
-            <li key={v.variantId} className="border rounded px-3 py-2 text-sm flex items-center justify-between gap-3">
-              <div>
-                <span className="font-medium">{v.productName}</span>
-                <span className="text-gray-500 ml-2">
+            <li
+              key={v.variantId}
+              className="rounded-[var(--radius)] border border-ink-line bg-ink-overlay px-3 py-2.5 flex items-center justify-between gap-3 flex-wrap"
+            >
+              <div className="text-sm">
+                <span className="font-medium text-on-ink">{v.productName}</span>
+                <span className="text-on-ink-dim ml-2 font-mono">
                   {v.sku} — catalogue {formatPaise(v.pricePaise)}
                   {v.floorPricePaise !== null && <> — floor {formatPaise(v.floorPricePaise)}</>}
-                  {v.belowCostFloorAcknowledged && <span className="ml-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">below cost, acknowledged</span>}
                 </span>
+                {v.belowCostFloorAcknowledged && (
+                  <span className="ml-2 text-xs text-escalate-bright bg-escalate-wash border border-escalate-line rounded-full px-1.5 py-0.5">
+                    below cost, acknowledged
+                  </span>
+                )}
               </div>
-              <details>
-                <summary className="text-xs text-blue-600 hover:underline cursor-pointer">
-                  {v.floorPricePaise === null ? "Set floor" : "Edit floor"}
-                </summary>
-                <form action={setNegotiationFloor} className="flex items-center gap-2 mt-2">
+              <DetailsToggle summary={v.floorPricePaise === null ? "Set floor" : "Edit floor"}>
+                <form action={setNegotiationFloor} className="flex items-center gap-2 font-sans">
                   <input type="hidden" name="variantId" value={v.variantId} />
-                  <input
+                  <Input
                     name="floorPriceRupees"
                     type="number"
                     step="0.01"
                     min="0"
                     placeholder="Leave blank to clear"
                     defaultValue={v.floorPricePaise !== null ? (v.floorPricePaise / 100).toFixed(2) : ""}
-                    className="border rounded px-2 py-1 w-32"
+                    className="w-32"
                   />
-                  <label className="flex items-center gap-1 text-xs">
+                  <label className="flex items-center gap-1.5 text-xs text-on-ink-dim whitespace-nowrap">
                     <input type="checkbox" name="belowCostAcknowledged" defaultChecked={v.belowCostFloorAcknowledged} />
                     Below cost, OK
                   </label>
-                  <button type="submit" className="text-xs px-2 py-1 rounded border hover:bg-gray-50">
+                  <Button type="submit" size="sm" pendingLabel="Saving…">
                     Save
-                  </button>
+                  </Button>
                 </form>
-              </details>
+              </DetailsToggle>
             </li>
           ))}
         </ul>
-      </section>
+      </Surface>
 
-      <section className="border rounded-lg p-4">
-        <h2 className="text-lg font-semibold mb-3">Recent negotiations</h2>
+      <section>
+        <h2 className="text-[var(--t-h3)] font-[family-name:var(--font-display)] text-on-ink mb-3">
+          Recent negotiations
+        </h2>
         {negotiations.length === 0 ? (
-          <p className="text-sm text-gray-500">No negotiations yet.</p>
+          <EmptyState title="No negotiations yet" description="They appear here as buyers open them, over MCP or the chat widget." />
         ) : (
           <NegotiationList negotiations={negotiations} statusLabels={STATUS_LABELS} />
         )}
       </section>
-    </main>
-  );
-}
-
-function Stat({ label, value, emphasize }: { label: string; value: number; emphasize?: boolean }) {
-  return (
-    <div className={`rounded border px-2 py-3 text-center ${emphasize ? "bg-amber-50 border-amber-200" : "bg-gray-50"}`}>
-      <div className="text-xl font-semibold">{value}</div>
-      <div className="text-xs text-gray-500">{label}</div>
     </div>
   );
 }

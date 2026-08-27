@@ -87,7 +87,18 @@ export async function getPublicProduct(merchantId: string, productId: string): P
   return result ?? null;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * A malformed id in the URL (a stray path, a bot probe) previously threw
+ * a raw Postgres "invalid input syntax for type uuid" error instead of
+ * the same clean 404 a genuinely-absent-but-valid id already produces —
+ * checking the shape first here folds both into one honest not-found
+ * path rather than leaking a database error to a public route.
+ */
 export async function getMerchantStorefrontInfo(merchantId: string) {
+  if (!UUID_RE.test(merchantId)) return null;
+
   const [merchant] = await db
     .select({ id: schema.merchants.id, name: schema.merchants.name, connected: schema.merchants.razorpayKeyIdEncrypted })
     .from(schema.merchants)

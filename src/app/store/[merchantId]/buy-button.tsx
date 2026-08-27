@@ -50,6 +50,7 @@ export function BuyButton({
   variantId,
   offerId,
   negotiationId,
+  cart,
   sessionToken,
   productName,
   quantity = 1,
@@ -57,7 +58,7 @@ export function BuyButton({
   onSuccess,
 }: {
   merchantId: string;
-  /** Exactly one of productId, offerId, or negotiationId — mutually exclusive. */
+  /** Exactly one of productId, offerId, negotiationId, or cart — mutually exclusive. */
   productId?: string;
   /** Layer 5-7: when the buyer chat resolved a specific variant, pass it so checkout buys exactly what was in the cart rather than the product's default variant. */
   variantId?: string;
@@ -65,6 +66,8 @@ export function BuyButton({
   offerId?: string;
   /** Layer 8: buy at an agreed negotiated price instead of a single product or a bundle offer. Requires sessionToken. */
   negotiationId?: string;
+  /** Layer 9-close-out: buy the buyer chat's real multi-item cart (resolved server-side from sessionToken) instead of a single product/offer/negotiation. Requires sessionToken. */
+  cart?: boolean;
   sessionToken?: string;
   productName: string;
   quantity?: number;
@@ -84,7 +87,7 @@ export function BuyButton({
       const orderRes = await fetch("/api/checkout/order", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ merchantId, productId, variantId, quantity, offerId, negotiationId, sessionToken }),
+        body: JSON.stringify({ merchantId, productId, variantId, quantity, offerId, negotiationId, cart, sessionToken }),
       });
       const order = await orderRes.json();
 
@@ -102,7 +105,7 @@ export function BuyButton({
         currency: "INR",
         name: productName,
         order_id: order.razorpayOrderId,
-        theme: { color: "#2563eb" },
+        theme: { color: "#4fd1c5" },
         modal: {
           ondismiss: () => {
             if (status !== "success") {
@@ -149,22 +152,27 @@ export function BuyButton({
   }
 
   if (status === "success") {
-    return <p className="text-sm text-green-700">{message}</p>;
+    return <p className="text-sm text-allow-bright">{message}</p>;
   }
 
+  const busy = status === "loading" || status === "paying" || status === "verifying";
+
   return (
-    <div className="space-y-1">
+    <div className="space-y-1.5">
       <button
         onClick={handleBuy}
-        disabled={disabled || status === "loading" || status === "paying" || status === "verifying"}
-        className="w-full px-3 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+        disabled={disabled || busy}
+        className="w-full px-3 py-2 rounded-[var(--radius)] bg-accent text-accent-ink hover:bg-accent-bright disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium transition-colors duration-[var(--dur-fast)] inline-flex items-center justify-center gap-1.5"
       >
-        {status === "loading" && "Starting..."}
-        {status === "paying" && "Waiting for payment..."}
-        {status === "verifying" && "Verifying..."}
+        {busy && (
+          <span className="h-3 w-3 rounded-full border-2 border-current border-t-transparent animate-spin" aria-hidden="true" />
+        )}
+        {status === "loading" && "Starting…"}
+        {status === "paying" && "Waiting for payment…"}
+        {status === "verifying" && "Verifying…"}
         {(status === "idle" || status === "error") && (disabled ? "Unavailable" : "Buy now")}
       </button>
-      {message && status === "error" && <p className="text-xs text-red-700">{message}</p>}
+      {message && status === "error" && <p className="text-xs text-deny-bright">{message}</p>}
     </div>
   );
 }

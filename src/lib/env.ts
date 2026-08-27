@@ -28,6 +28,10 @@ const envSchema = z.object({
     .refine((val) => Buffer.from(val, "base64").length === 32, {
       message: "ENCRYPTION_KEY must be base64 decoding to exactly 32 bytes (generate with: openssl rand -base64 32)",
     }),
+  // Platform-injected by Vercel's own build environment, not a secret
+  // this app configures — optional, used only to resolve the real
+  // production domain for social-share image URLs (see layout.tsx).
+  VERCEL_URL: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

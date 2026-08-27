@@ -341,6 +341,16 @@ export const moneyActions = pgTable(
     // Layer 5-1 and Layer 6-1 both used. Forward reference via a closure,
     // same as offerId above — negotiations is declared later in this file.
     negotiationId: uuid("negotiation_id").references((): typeof negotiations.id => negotiations.id),
+    // Layer 9-close-out: a genuine multi-item cart purchase (multiple
+    // distinct variants, one order). Set together with a
+    // cart_purchase_items snapshot (below) recording exactly which
+    // variant/quantity/price lines this money action covers — cart_items
+    // itself is live and mutable (a buyer can keep shopping after
+    // checking out), so a money_actions row must never point at it
+    // directly; it needs its own frozen record of what was actually
+    // bought, the same reason negotiations freezes catalogueUnitPricePaise
+    // at open time instead of re-reading product_variants later.
+    cartId: uuid("cart_id").references((): typeof cartPurchases.id => cartPurchases.id),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -522,16 +532,70 @@ export const conversations = pgTable("conversations", {
     .notNull()
     .references(() => merchants.id),
   sessionToken: text("session_token").notNull().unique(),
-  cartProductId: uuid("cart_product_id").references(() => products.id),
-  // The specific variant selected (Layer 5-7) — nullable for the same
-  // reason as money_actions.variantId: a pre-Layer-5-7 conversation row
-  // has a product but no resolved variant. When set, this (not
-  // cartProductId) is what price/stock/checkout actually resolve against.
-  cartVariantId: uuid("cart_variant_id").references(() => productVariants.id),
-  cartQuantity: integer("cart_quantity").notNull().default(1),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
+});
+
+// The buyer chat's cart (Layer 9-close-out: replaces the single-line
+// cartProductId/cartVariantId/cartQuantity columns previously on
+// conversations). One row per distinct variant in the cart — a real
+// multi-item cart, not the single-line placeholder Layer 5-7 shipped.
+// Written exclusively by code (src/lib/chat.ts's applyIntent), never
+// directly by the model, same discipline the single-line columns had.
+// Deleting a row (quantity reaches 0, or the item is explicitly removed)
+// is how a line leaves the cart — there is no "quantity: 0" row state.
+export const cartItems = pgTable(
+  "cart_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    conversationId: uuid("conversation_id")
+      .notNull()
+      .references(() => conversations.id),
+    variantId: uuid("variant_id")
+      .notNull()
+      .references(() => productVariants.id),
+    quantity: integer("quantity").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [uniqueIndex("cart_items_conversation_variant_idx").on(table.conversationId, table.variantId)],
+);
+
+// A frozen snapshot of a cart at the moment a purchase was attempted
+// through the gate (Layer 9-close-out) — referenced by
+// money_actions.cartId. cart_items itself is live (the buyer can keep
+// shopping after checkout), so this is what "what did money_actions row
+// X actually buy" resolves against, permanently, the same freezing
+// reason negotiations copies catalogueUnitPricePaise at open time rather
+// than re-reading product_variants later.
+export const cartPurchases = pgTable("cart_purchases", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  merchantId: uuid("merchant_id")
+    .notNull()
+    .references(() => merchants.id),
+  conversationId: uuid("conversation_id")
+    .notNull()
+    .references(() => conversations.id),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const cartPurchaseItems = pgTable("cart_purchase_items", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  cartPurchaseId: uuid("cart_purchase_id")
+    .notNull()
+    .references(() => cartPurchases.id),
+  variantId: uuid("variant_id")
+    .notNull()
+    .references(() => productVariants.id),
+  quantity: integer("quantity").notNull(),
+  // The catalogue price at the moment of purchase, frozen here for the
+  // same reason every other snapshot in this schema freezes a price —
+  // product_variants.pricePaise can change after this row is written.
+  unitPricePaise: integer("unit_price_paise").notNull(),
 });
 
 // One row per chat turn. content is the only field the model ever

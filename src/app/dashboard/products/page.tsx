@@ -3,9 +3,19 @@ import Link from "next/link";
 import { getSessionMerchant } from "@/lib/auth";
 import { getProducts } from "@/lib/dashboard";
 import { formatPaise as rupees } from "@/lib/money";
-import { createProduct, updateProduct, archiveProduct, reactivateProduct } from "./actions";
+import {
+  createProduct,
+  updateProduct,
+  archiveProduct,
+  reactivateProduct,
+  addVariant,
+  updateVariant,
+  archiveVariant,
+  reactivateVariant,
+} from "./actions";
 import { StorefrontLink } from "./storefront-link";
 import { ImportCatalogue } from "./import-catalogue";
+import { PageHeader, Surface, Button, Field, Input, EmptyState, DetailsToggle } from "@/components/ui";
 
 export default async function ProductsPage({
   searchParams,
@@ -19,171 +29,293 @@ export default async function ProductsPage({
   const products = await getProducts(merchant.id);
 
   return (
-    <main className="max-w-4xl mx-auto p-6 space-y-8">
-      <header>
-        <h1 className="text-2xl font-semibold">Products</h1>
-        <p className="text-sm text-gray-500">
-          Your catalogue. Agents can only buy products listed here, at the price and stock shown — never a price they name themselves.
-        </p>
-      </header>
+    <div className="space-y-8">
+      <PageHeader
+        title="Products"
+        description="Your catalogue. Agents can only buy products listed here, at the price and stock shown — never a price they name themselves."
+      />
 
-      <div className="border rounded-lg p-4 flex items-center justify-between text-sm">
+      <Surface variant="raised" className="p-4 flex items-center justify-between flex-wrap gap-3">
         <div>
-          <p className="font-medium">Your storefront</p>
-          <p className="text-gray-500">Real, human-payable checkout for active products.</p>
+          <p className="font-medium text-on-ink text-sm">Your storefront</p>
+          <p className="text-on-ink-dim text-sm">Real, human-payable checkout for active products.</p>
         </div>
-        <div className="flex items-center gap-2">
-          <Link href={`/store/${merchant.id}`} target="_blank" className="text-blue-700 underline">
+        <div className="flex items-center gap-3">
+          <Link
+            href={`/store/${merchant.id}`}
+            target="_blank"
+            className="text-sm text-accent hover:text-accent-bright underline underline-offset-2"
+          >
             Open store
           </Link>
           <StorefrontLink merchantId={merchant.id} />
         </div>
-      </div>
+      </Surface>
 
       {error && (
-        <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</p>
+        <p className="text-sm text-deny-bright bg-deny-wash border border-deny-line rounded-[var(--radius)] px-3 py-2">
+          {error}
+        </p>
       )}
 
       <ImportCatalogue />
 
-      <section className="border rounded-lg p-4">
-        <h2 className="text-lg font-semibold mb-3">Add a product</h2>
-        <form action={createProduct} className="grid grid-cols-2 gap-3 text-sm">
-          <label className="flex flex-col gap-1 col-span-2">
-            Name
-            <input name="name" required className="border rounded px-3 py-2" />
-          </label>
-          <label className="flex flex-col gap-1 col-span-2">
-            Description
-            <textarea name="description" rows={2} className="border rounded px-3 py-2" />
-          </label>
-          <label className="flex flex-col gap-1 col-span-2">
-            SKU <span className="text-xs text-gray-400">(optional — generated if left blank)</span>
-            <input name="sku" className="border rounded px-3 py-2" />
-          </label>
-          <label className="flex flex-col gap-1">
-            Price (₹)
-            <input name="priceRupees" type="number" step="0.01" min="0" required className="border rounded px-3 py-2" />
-          </label>
-          <label className="flex flex-col gap-1">
-            Cost (₹)
-            <input name="costRupees" type="number" step="0.01" min="0" required className="border rounded px-3 py-2" />
-            <span className="text-xs text-gray-400">Internal only — never shown to buyers.</span>
-          </label>
-          <label className="flex flex-col gap-1">
-            Stock
-            <input name="stock" type="number" step="1" min="0" required className="border rounded px-3 py-2" />
-          </label>
+      <Surface variant="raised" className="p-5">
+        <h2 className="text-[var(--t-h4)] font-medium text-on-ink mb-3">Add a product</h2>
+        <form action={createProduct} className="grid grid-cols-2 gap-3">
           <div className="col-span-2">
-            <button type="submit" className="px-3 py-2 rounded bg-blue-600 text-white hover:bg-blue-700">
+            <Field label="Name">
+              <Input name="name" required />
+            </Field>
+          </div>
+          <div className="col-span-2">
+            <Field label="Description">
+              <textarea
+                name="description"
+                rows={2}
+                className="w-full rounded-[var(--radius)] bg-ink-overlay border border-ink-line px-3 py-2 text-sm text-on-ink outline-none focus:border-accent focus:ring-1 focus:ring-accent/40"
+              />
+            </Field>
+          </div>
+          <div className="col-span-2">
+            <Field label="SKU" help="Optional — generated if left blank">
+              <Input name="sku" />
+            </Field>
+          </div>
+          <Field label="Price (₹)">
+            <Input name="priceRupees" type="number" step="0.01" min="0" required />
+          </Field>
+          <Field label="Cost (₹)" help="Internal only — never shown to buyers">
+            <Input name="costRupees" type="number" step="0.01" min="0" required />
+          </Field>
+          <Field label="Stock">
+            <Input name="stock" type="number" step="1" min="0" required />
+          </Field>
+          <div className="col-span-2">
+            <Button type="submit" variant="primary" pendingLabel="Adding…">
               Add product
-            </button>
+            </Button>
           </div>
         </form>
-      </section>
+      </Surface>
 
       <section>
-        <h2 className="text-lg font-semibold mb-3">Catalogue {products.length > 0 && `(${products.length})`}</h2>
+        <h2 className="text-[var(--t-h3)] font-[family-name:var(--font-display)] text-on-ink mb-3">
+          Catalogue {products.length > 0 && <span className="text-on-ink-faint font-mono text-base">({products.length})</span>}
+        </h2>
         {products.length === 0 ? (
-          <p className="text-sm text-gray-500">No products yet — add one above.</p>
+          <EmptyState title="No products yet" description="Add one above, or import a CSV." />
         ) : (
           <div className="space-y-4">
             {products.map((product) => {
-              // The dashboard's fast path is one variant per product — a
-              // merchant selling one thing edits it inline here without a
-              // variant matrix. Multiple variants per product (sizes,
-              // colours) still exist in the schema (Layer 5-1) but this
-              // page only manages the first one; see plans/layer-5-agent-readable-catalog.md.
-              const variant = product.variants[0];
+              const primaryVariant = product.variants[0];
+              const hasMultipleVariants = product.variants.length > 1;
               return (
-                <div key={product.id} className="border rounded-lg p-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <span className="font-medium">{product.name}</span>{" "}
+                <Surface key={product.id} variant="raised" className="p-4">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-on-ink">{product.name}</span>
                       <span
-                        className={`text-xs px-2 py-0.5 rounded ${
-                          product.status === "active" ? "bg-green-100 text-green-800" : "bg-gray-200 text-gray-600"
+                        className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                          product.status === "active"
+                            ? "bg-allow-wash text-allow-bright"
+                            : "bg-ink-overlay text-on-ink-faint"
                         }`}
                       >
                         {product.status}
                       </span>
+                      {hasMultipleVariants && (
+                        <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-accent-wash text-accent-bright">
+                          {product.variants.length} variants
+                        </span>
+                      )}
                     </div>
                     <form action={product.status === "active" ? archiveProduct : reactivateProduct}>
                       <input type="hidden" name="productId" value={product.id} />
-                      <button type="submit" className="text-sm px-3 py-1 rounded border hover:bg-gray-50">
+                      <Button type="submit" size="sm" variant="secondary">
                         {product.status === "active" ? "Archive" : "Reactivate"}
-                      </button>
+                      </Button>
                     </form>
                   </div>
-                  <p className="text-sm text-gray-500 mt-1">{product.description}</p>
-                  {variant && (
-                    <div className="flex gap-4 text-sm text-gray-700 mt-2">
-                      <span>{rupees(variant.pricePaise)}</span>
-                      <span>Stock {variant.stock}</span>
-                      <span className="text-gray-400">SKU {variant.sku}</span>
+                  <p className="text-sm text-on-ink-dim mt-1">{product.description}</p>
+                  {primaryVariant && !hasMultipleVariants && (
+                    <div className="flex gap-4 text-sm mt-2 font-mono tabular-nums">
+                      <span className="text-on-ink">{rupees(primaryVariant.pricePaise)}</span>
+                      <span className="text-on-ink-dim">Stock {primaryVariant.stock}</span>
+                      <span className="text-on-ink-faint">SKU {primaryVariant.sku}</span>
                     </div>
                   )}
 
-                  {variant && (
-                    <details className="mt-3">
-                      <summary className="text-sm text-blue-700 cursor-pointer">Edit</summary>
-                      <form action={updateProduct} className="grid grid-cols-2 gap-3 text-sm mt-3">
+                  {hasMultipleVariants && (
+                    <div className="mt-3 space-y-2">
+                      {product.variants.map((variant) => (
+                        <div key={variant.id} className="rounded-[var(--radius)] border border-ink-line bg-ink-overlay/50 p-3">
+                          <div className="flex items-center justify-between flex-wrap gap-2">
+                            <div className="flex gap-3 text-sm font-mono tabular-nums items-center">
+                              <span className="text-on-ink">{rupees(variant.pricePaise)}</span>
+                              <span className="text-on-ink-dim">Stock {variant.stock}</span>
+                              <span className="text-on-ink-faint">SKU {variant.sku}</span>
+                              {Object.entries(variant.attributes as Record<string, string>).map(([k, v]) => (
+                                <span key={k} className="text-xs px-1.5 py-0.5 rounded bg-ink-line text-on-ink-dim">
+                                  {k}: {v}
+                                </span>
+                              ))}
+                              <span
+                                className={`text-xs px-1.5 py-0.5 rounded ${
+                                  variant.status === "active" ? "bg-allow-wash text-allow-bright" : "bg-ink-line text-on-ink-faint"
+                                }`}
+                              >
+                                {variant.status}
+                              </span>
+                            </div>
+                            <form action={variant.status === "active" ? archiveVariant : reactivateVariant}>
+                              <input type="hidden" name="variantId" value={variant.id} />
+                              <Button type="submit" size="sm" variant="secondary">
+                                {variant.status === "active" ? "Archive" : "Reactivate"}
+                              </Button>
+                            </form>
+                          </div>
+                          <div className="mt-2">
+                            <DetailsToggle summary="Edit variant">
+                              <VariantEditForm variant={variant} />
+                            </DetailsToggle>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {!hasMultipleVariants && primaryVariant && (
+                    <div className="mt-3">
+                      <DetailsToggle summary="Edit">
+                        <form action={updateProduct} className="grid grid-cols-2 gap-3 mt-2 font-sans">
+                          <input type="hidden" name="productId" value={product.id} />
+                          <input type="hidden" name="variantId" value={primaryVariant.id} />
+                          <div className="col-span-2">
+                            <Field label="Name">
+                              <Input name="name" defaultValue={product.name} required />
+                            </Field>
+                          </div>
+                          <div className="col-span-2">
+                            <Field label="Description">
+                              <textarea
+                                name="description"
+                                rows={2}
+                                defaultValue={product.description}
+                                className="w-full rounded-[var(--radius)] bg-ink-overlay border border-ink-line px-3 py-2 text-sm text-on-ink outline-none focus:border-accent focus:ring-1 focus:ring-accent/40"
+                              />
+                            </Field>
+                          </div>
+                          <div className="col-span-2">
+                            <Field label="SKU">
+                              <Input name="sku" defaultValue={primaryVariant.sku} required />
+                            </Field>
+                          </div>
+                          <Field label="Price (₹)">
+                            <Input
+                              name="priceRupees"
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              defaultValue={(primaryVariant.pricePaise / 100).toFixed(2)}
+                              required
+                            />
+                          </Field>
+                          <Field label="Cost (₹)">
+                            <Input
+                              name="costRupees"
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              defaultValue={(primaryVariant.costPaise / 100).toFixed(2)}
+                              required
+                            />
+                          </Field>
+                          <Field label="Stock">
+                            <Input name="stock" type="number" step="1" min="0" defaultValue={primaryVariant.stock} required />
+                          </Field>
+                          <div className="col-span-2">
+                            <Button type="submit" variant="primary" size="sm" pendingLabel="Saving…">
+                              Save
+                            </Button>
+                          </div>
+                        </form>
+                      </DetailsToggle>
+                    </div>
+                  )}
+
+                  <div className="mt-3">
+                    <DetailsToggle summary="Add a variant (size, colour, ...)">
+                      <form action={addVariant} className="grid grid-cols-2 gap-3 mt-2 font-sans">
                         <input type="hidden" name="productId" value={product.id} />
-                        <input type="hidden" name="variantId" value={variant.id} />
-                        <label className="flex flex-col gap-1 col-span-2">
-                          Name
-                          <input name="name" defaultValue={product.name} required className="border rounded px-3 py-2" />
-                        </label>
-                        <label className="flex flex-col gap-1 col-span-2">
-                          Description
-                          <textarea name="description" rows={2} defaultValue={product.description} className="border rounded px-3 py-2" />
-                        </label>
-                        <label className="flex flex-col gap-1 col-span-2">
-                          SKU
-                          <input name="sku" defaultValue={variant.sku} required className="border rounded px-3 py-2" />
-                        </label>
-                        <label className="flex flex-col gap-1">
-                          Price (₹)
-                          <input
-                            name="priceRupees"
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            defaultValue={(variant.pricePaise / 100).toFixed(2)}
-                            required
-                            className="border rounded px-3 py-2"
-                          />
-                        </label>
-                        <label className="flex flex-col gap-1">
-                          Cost (₹)
-                          <input
-                            name="costRupees"
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            defaultValue={(variant.costPaise / 100).toFixed(2)}
-                            required
-                            className="border rounded px-3 py-2"
-                          />
-                        </label>
-                        <label className="flex flex-col gap-1">
-                          Stock
-                          <input name="stock" type="number" step="1" min="0" defaultValue={variant.stock} required className="border rounded px-3 py-2" />
-                        </label>
+                        <Field label="SKU" help="Optional — generated if left blank">
+                          <Input name="sku" />
+                        </Field>
+                        <div />
+                        <Field label="Attribute name" help="e.g. size">
+                          <Input name="attributeKey" placeholder="size" />
+                        </Field>
+                        <Field label="Attribute value" help="e.g. 1kg">
+                          <Input name="attributeValue" placeholder="1kg" />
+                        </Field>
+                        <Field label="Price (₹)">
+                          <Input name="priceRupees" type="number" step="0.01" min="0" required />
+                        </Field>
+                        <Field label="Cost (₹)" help="Internal only — never shown to buyers">
+                          <Input name="costRupees" type="number" step="0.01" min="0" required />
+                        </Field>
+                        <Field label="Stock">
+                          <Input name="stock" type="number" step="1" min="0" required />
+                        </Field>
                         <div className="col-span-2">
-                          <button type="submit" className="px-3 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 text-sm">
-                            Save
-                          </button>
+                          <Button type="submit" variant="secondary" size="sm" pendingLabel="Adding…">
+                            Add variant
+                          </Button>
                         </div>
                       </form>
-                    </details>
-                  )}
-                </div>
+                    </DetailsToggle>
+                  </div>
+                </Surface>
               );
             })}
           </div>
         )}
       </section>
-    </main>
+    </div>
+  );
+}
+
+function VariantEditForm({ variant }: { variant: { id: string; sku: string; pricePaise: number; costPaise: number; stock: number; attributes: unknown } }) {
+  const attrs = variant.attributes as Record<string, string>;
+  const [firstKey, firstValue] = Object.entries(attrs)[0] ?? ["", ""];
+  return (
+    <form action={updateVariant} className="grid grid-cols-2 gap-3 mt-2 font-sans">
+      <input type="hidden" name="variantId" value={variant.id} />
+      <div className="col-span-2">
+        <Field label="SKU">
+          <Input name="sku" defaultValue={variant.sku} required />
+        </Field>
+      </div>
+      <Field label="Attribute name">
+        <Input name="attributeKey" defaultValue={firstKey} placeholder="size" />
+      </Field>
+      <Field label="Attribute value">
+        <Input name="attributeValue" defaultValue={firstValue} placeholder="1kg" />
+      </Field>
+      <Field label="Price (₹)">
+        <Input name="priceRupees" type="number" step="0.01" min="0" defaultValue={(variant.pricePaise / 100).toFixed(2)} required />
+      </Field>
+      <Field label="Cost (₹)">
+        <Input name="costRupees" type="number" step="0.01" min="0" defaultValue={(variant.costPaise / 100).toFixed(2)} required />
+      </Field>
+      <Field label="Stock">
+        <Input name="stock" type="number" step="1" min="0" defaultValue={variant.stock} required />
+      </Field>
+      <div className="col-span-2">
+        <Button type="submit" variant="primary" size="sm" pendingLabel="Saving…">
+          Save
+        </Button>
+      </div>
+    </form>
   );
 }

@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getSessionMerchant } from "@/lib/auth";
 import { getRazorpayConnectionStatus } from "@/lib/dashboard";
 import { connectRazorpay, disconnectRazorpay } from "./actions";
+import { PageHeader, Surface, Field, Input, Button } from "@/components/ui";
 
 export default async function SettingsPage({
   searchParams,
@@ -15,56 +16,60 @@ export default async function SettingsPage({
   const status = await getRazorpayConnectionStatus(merchant.id);
 
   return (
-    <main className="max-w-2xl mx-auto p-6 space-y-8">
-      <header>
-        <h1 className="text-2xl font-semibold">Settings</h1>
-        <p className="text-sm text-gray-500">Connect your own Razorpay test account. Every purchase your agents make settles into this account.</p>
-      </header>
+    <div className="space-y-8">
+      <PageHeader
+        title="Settings"
+        description="Connect your own Razorpay test account. Every purchase your agents make settles into this account."
+      />
 
       {error && (
-        <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</p>
+        <p className="text-sm text-deny-bright bg-deny-wash border border-deny-line rounded-[var(--radius)] px-3 py-2">
+          {error}
+        </p>
       )}
       {connected && (
-        <p className="text-sm text-green-700 bg-green-50 border border-green-200 rounded px-3 py-2">Razorpay account connected.</p>
+        <p className="text-sm text-allow-bright bg-allow-wash border border-allow-line rounded-[var(--radius)] px-3 py-2">
+          Razorpay account connected.
+        </p>
       )}
 
-      <section className="border rounded-lg p-4 space-y-4">
-        <h2 className="text-lg font-semibold">Razorpay account</h2>
+      <Surface variant="raised" className="p-5 space-y-4">
+        <h2 className="text-[var(--t-h4)] font-medium text-on-ink">Razorpay account</h2>
 
         {status.connected ? (
-          <div className="space-y-3">
-            <p className="text-sm text-gray-700">
-              Connected — <span className="font-mono">{status.maskedKeyId}</span>
+          <div className="space-y-1.5">
+            <p className="text-sm text-on-ink">
+              Connected — <span className="font-mono text-on-ink-dim">{status.maskedKeyId}</span>
             </p>
-            <p className="text-xs text-gray-500">To use a different account, paste new credentials below — they replace the current ones after Razorpay confirms they work.</p>
+            <p className="text-xs text-on-ink-faint">
+              To use a different account, paste new credentials below — they replace the current ones after Razorpay confirms they work.
+            </p>
           </div>
         ) : (
-          <p className="text-sm text-gray-500">Not connected. Agents cannot transact until you connect a Razorpay test account.</p>
+          <p className="text-sm text-on-ink-dim">Not connected. Agents cannot transact until you connect a Razorpay test account.</p>
         )}
 
-        <form action={connectRazorpay} className="space-y-3">
-          <label className="flex flex-col gap-1 text-sm">
-            Key ID
-            <input name="keyId" placeholder="rzp_test_..." required className="border rounded px-3 py-2 font-mono" />
-          </label>
-          <label className="flex flex-col gap-1 text-sm">
-            Key Secret
-            <input name="keySecret" type="password" required className="border rounded px-3 py-2 font-mono" />
-          </label>
-          <p className="text-xs text-gray-500">From your Razorpay dashboard → Settings → API Keys. Make sure Test Mode is on.</p>
-          <button type="submit" className="px-3 py-2 rounded bg-blue-600 text-white hover:bg-blue-700">
+        <form action={connectRazorpay} className="space-y-3 max-w-sm">
+          <Field label="Key ID">
+            <Input name="keyId" placeholder="rzp_test_..." required className="font-mono" />
+          </Field>
+          <Field label="Key Secret">
+            <Input name="keySecret" type="password" required className="font-mono" />
+          </Field>
+          <p className="text-xs text-on-ink-faint">From your Razorpay dashboard → Settings → API Keys. Make sure Test Mode is on.</p>
+          <Button type="submit" variant="primary" pendingLabel="Connecting…">
             {status.connected ? "Replace credentials" : "Connect"}
-          </button>
+          </Button>
         </form>
 
         {status.connected && (
           <form action={disconnectRazorpay}>
-            <button type="submit" className="text-sm px-3 py-1 rounded border border-red-300 text-red-700 hover:bg-red-50">
+            <Button type="submit" variant="destructive" size="sm" pendingLabel="Disconnecting…">
               Disconnect
-            </button>
+            </Button>
           </form>
         )}
-      </section>
-    </main>
+      </Surface>
+    </div>
   );
 }

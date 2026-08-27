@@ -18,7 +18,11 @@ export function StorefrontLink({ merchantId }: { merchantId: string }) {
   }
 
   return (
-    <button type="button" onClick={copy} className="text-sm px-3 py-1 rounded border hover:bg-gray-50">
+    <button
+      type="button"
+      onClick={copy}
+      className="text-sm px-3 py-1.5 rounded-[var(--radius)] bg-ink-overlay border border-ink-line text-on-ink hover:border-on-ink-faint transition-colors duration-[var(--dur-fast)]"
+    >
       {copied ? "Copied" : "Copy link"}
     </button>
   );

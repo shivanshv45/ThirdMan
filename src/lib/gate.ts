@@ -6,6 +6,7 @@ import { decrypt } from "@/lib/crypto";
 import { computeRiskSignals, assessRisk } from "@/lib/risk";
 import { resolveOffer, loadOfferItems, type ResolvedOffer } from "@/lib/discount";
 import { resolveNegotiation, markNegotiationRedeemed, type ResolvedNegotiation } from "@/lib/negotiation";
+import { resolveCartForCheckout, snapshotCartPurchase, loadCartPurchaseItems, type ResolvedCart } from "@/lib/cart";
 
 /**
  * Loads and decrypts a merchant's own Razorpay credentials. The gate is
@@ -125,6 +126,16 @@ export interface MoneyActionRequest {
     reason: (typeof schema.rewardLedgerReasonEnum.enumValues)[number];
     identity: { agentId?: string; sessionToken?: string };
   };
+  /**
+   * Layer 9-close-out: check out a genuine multi-item cart (multiple
+   * distinct variants, one order) instead of a single variantId. Names a
+   * conversationId — the gate re-derives the total and every line's
+   * price/stock fresh from cart.ts's resolveCartForCheckout, never from
+   * anything the caller asserted. Mutually exclusive with
+   * variantId/offerId/negotiationId — a cart already names every variant
+   * and quantity it covers.
+   */
+  cartConversationId?: string;
 }
 
 export interface GateResult {
@@ -157,6 +168,8 @@ interface BoundCheckSuccess {
   offer?: ResolvedOffer;
   /** Present only when the request named a negotiationId and it resolved cleanly (Layer 8). */
   negotiation?: ResolvedNegotiation;
+  /** Present only when the request named a cartConversationId and it resolved cleanly (Layer 9-close-out). */
+  cart?: ResolvedCart;
 }
 
 /**
@@ -311,20 +324,46 @@ async function resolveNegotiationForRequest(
 }
 
 /**
+ * Resolves a cartConversationId into what the gate will actually charge
+ * and reserve (Layer 9-close-out): cart.ts does the live re-read of
+ * every line's price and stock; this only adds the check every money
+ * action needs regardless of how the amount was derived — the caller's
+ * asserted amountPaise must match the freshly-computed cart total
+ * exactly. Mirrors resolveOfferForRequest's shape and ordering.
+ */
+async function resolveCartForRequest(
+  request: MoneyActionRequest,
+): Promise<{ cart?: ResolvedCart; failure?: BoundCheckFailure }> {
+  const { cart, failure } = await resolveCartForCheckout(request.merchantId, request.cartConversationId!);
+  if (failure) return { failure };
+
+  if (request.amountPaise !== cart!.amountPaise) {
+    return {
+      failure: {
+        reason: `Denied — caller asserted ₹${(request.amountPaise / 100).toFixed(2)} for the cart, but the catalogue total is ₹${(cart!.amountPaise / 100).toFixed(2)}. Price comes from the catalogue, never the caller.`,
+        boundApplied: `cart_price_match:${cart!.conversationId}`,
+      },
+    };
+  }
+
+  return { cart };
+}
+
+/**
  * The deterministic checks, in order, short-circuiting on the first
  * failure. Returns the resolved product (if any) when every check passes.
  */
 async function checkBounds(
   request: MoneyActionRequest,
 ): Promise<BoundCheckFailure | BoundCheckSuccess> {
-  // A request naming more than one of variantId/offerId/negotiationId is
-  // ambiguous about what it's actually buying — a bug or a probe, not
-  // something to resolve by precedence (plans/layer-8-negotiation.md,
-  // fact 4).
-  const namedTargets = [request.variantId, request.offerId, request.negotiationId].filter(Boolean).length;
+  // A request naming more than one of variantId/offerId/negotiationId/
+  // cartConversationId is ambiguous about what it's actually buying — a
+  // bug or a probe, not something to resolve by precedence
+  // (plans/layer-8-negotiation.md, fact 4; extended Layer 9-close-out).
+  const namedTargets = [request.variantId, request.offerId, request.negotiationId, request.cartConversationId].filter(Boolean).length;
   if (namedTargets > 1) {
     return {
-      reason: "Denied — request named more than one of variantId, offerId, and negotiationId. Exactly one may be present.",
+      reason: "Denied — request named more than one of variantId, offerId, negotiationId, and cartConversationId. Exactly one may be present.",
       boundApplied: "purchase_target_ambiguous",
     };
   }
@@ -423,6 +462,12 @@ async function checkBounds(
     const { negotiation, failure } = await resolveNegotiationForRequest(request);
     if (failure) return failure;
     return { negotiation };
+  }
+
+  if (request.cartConversationId) {
+    const { cart, failure } = await resolveCartForRequest(request);
+    if (failure) return failure;
+    return { cart };
   }
 
   if (request.variantId) {
@@ -555,6 +600,9 @@ async function insertMoneyActionOrReplay(
     }
     if (values.offerId) {
       await releaseOfferStock(await loadOfferItems(values.offerId));
+    }
+    if (values.cartId) {
+      await releaseOfferStock(await loadCartPurchaseItems(values.cartId));
     }
     const [existing] = await db
       .select()
@@ -830,7 +878,7 @@ export async function attemptMoneyAction(
       });
       return { decision: "deny", reason: boundsResult.reason };
     }
-    const { variant, offer, negotiation } = boundsResult;
+    const { variant, offer, negotiation, cart } = boundsResult;
 
     // Re-fetch rather than thread the cap through from checkBounds, so
     // the reservation's WHERE clause is the sole source of truth on balance.
@@ -929,6 +977,31 @@ export async function attemptMoneyAction(
         return { decision: "deny", reason };
       }
     }
+    // Frozen once stock is successfully reserved — money_actions.cartId
+    // will point at this snapshot rather than the live (still-editable)
+    // cart_items rows. See schema.ts's comment on cart_purchases.
+    let cartPurchaseId: string | undefined;
+    if (cart) {
+      // Same all-or-nothing multi-item reservation an offer's bundle
+      // uses — a cart is just an ad-hoc, buyer-authored set of variant
+      // lines rather than a merchant-authored one.
+      const stockReserved = await reserveOfferStock(cart.lines);
+      if (!stockReserved) {
+        await releaseBudget(cap.id, request.amountPaise);
+        const reason = `Denied — another request consumed the remaining stock for an item in the cart between check and reservation.`;
+        await logAuditEntry({
+          merchantId: request.merchantId,
+          actor: "agent",
+          event: `money_action_attempt:${request.type}`,
+          decision: "deny",
+          reason,
+          boundApplied: "cart_item_stock",
+          metadata: { agentId: request.agentId, amountPaise: request.amountPaise },
+        });
+        return { decision: "deny", reason };
+      }
+      cartPurchaseId = await snapshotCartPurchase(request.merchantId, cart);
+    }
 
     // Budget (and stock, if a variant) is reserved. The risk layer runs next: it can only downgrade
     // this to pending_escalation, never turn a passed bound check into a
@@ -945,6 +1018,7 @@ export async function attemptMoneyAction(
         variantId: variant?.id ?? negotiation?.variantId,
         offerId: offer?.offerId,
         negotiationId: negotiation?.negotiationId,
+        cartId: cartPurchaseId,
         quantity,
         type: request.type,
         amountPaise: request.amountPaise,
@@ -984,6 +1058,7 @@ export async function attemptMoneyAction(
       variantId: variant?.id ?? negotiation?.variantId,
       offerId: offer?.offerId,
       negotiationId: negotiation?.negotiationId,
+      cartId: cartPurchaseId,
       quantity,
       holdOnly: request.holdOnly ?? false,
       type: request.type,
@@ -1000,9 +1075,11 @@ export async function attemptMoneyAction(
         ? `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for offer ${offer.offerId}'s bundle is within this agent's remaining cap`
         : negotiation
           ? `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for negotiation ${negotiation.negotiationId}'s agreed price is within this agent's remaining cap`
-          : variant
-            ? `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for "${request.context}" x${quantity} is within this agent's remaining cap`
-            : `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for "${request.context}" is within this agent's remaining cap`;
+          : cart
+            ? `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for a ${cart.lines.length}-item cart is within this agent's remaining cap`
+            : variant
+              ? `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for "${request.context}" x${quantity} is within this agent's remaining cap`
+              : `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for "${request.context}" is within this agent's remaining cap`;
 
     const result = await executeAndSettle({
       merchantId: request.merchantId,
@@ -1014,7 +1091,7 @@ export async function attemptMoneyAction(
       actor: "agent",
       allowReasonPrefix,
       variantId: variant?.id ?? negotiation?.variantId,
-      offerItems: offer?.items,
+      offerItems: offer?.items ?? cart?.lines,
       quantity,
       holdOnly: request.holdOnly ?? false,
       paymentLink: request.paymentLink,
@@ -1103,12 +1180,15 @@ export async function resolveEscalation(
     if (moneyAction.offerId) {
       await releaseOfferStock(await loadOfferItems(moneyAction.offerId));
     }
+    if (moneyAction.cartId) {
+      await releaseOfferStock(await loadCartPurchaseItems(moneyAction.cartId));
+    }
     await db
       .update(schema.moneyActions)
       .set({ status: "failed" })
       .where(eq(schema.moneyActions.id, moneyAction.id));
 
-    const releasedWhat = moneyAction.variantId || moneyAction.offerId ? "budget and stock" : "budget";
+    const releasedWhat = moneyAction.variantId || moneyAction.offerId || moneyAction.cartId ? "budget and stock" : "budget";
     const reason = `Rejected by merchant — ${escalation.riskReason} Reserved ${releasedWhat} released.`;
     await logAuditEntry({
       merchantId: moneyAction.merchantId,
@@ -1133,7 +1213,11 @@ export async function resolveEscalation(
     actor: "merchant",
     allowReasonPrefix: `Approved by merchant — ₹${(moneyAction.amountPaise / 100).toFixed(2)} previously escalated (${escalation.riskReason})`,
     variantId: moneyAction.variantId ?? undefined,
-    offerItems: moneyAction.offerId ? await loadOfferItems(moneyAction.offerId) : undefined,
+    offerItems: moneyAction.offerId
+      ? await loadOfferItems(moneyAction.offerId)
+      : moneyAction.cartId
+        ? await loadCartPurchaseItems(moneyAction.cartId)
+        : undefined,
     quantity: moneyAction.quantity,
   });
 
@@ -1421,6 +1505,9 @@ export async function issueRefund(
     if (moneyAction.offerId && isFullRefund) {
       await releaseOfferStock(await loadOfferItems(moneyAction.offerId));
     }
+    if (moneyAction.cartId && isFullRefund) {
+      await releaseOfferStock(await loadCartPurchaseItems(moneyAction.cartId));
+    }
 
     // A full refund means this action's money didn't end up spent —
     // same terminal state as a failed execution. A partial refund is
@@ -1436,7 +1523,7 @@ export async function issueRefund(
         .where(eq(schema.escrowHolds.moneyActionId, moneyActionId));
     }
 
-    const releasedWhat = (moneyAction.variantId || moneyAction.offerId) && isFullRefund ? "budget and stock" : "budget";
+    const releasedWhat = (moneyAction.variantId || moneyAction.offerId || moneyAction.cartId) && isFullRefund ? "budget and stock" : "budget";
     const reason = `Refunded — ₹${(refundAmountPaise / 100).toFixed(2)} of ₹${(moneyAction.amountPaise / 100).toFixed(2)} (refund ${refund.id}). ${isFullRefund ? `Full refund — reserved ${releasedWhat} released.` : "Partial refund — the sale stands, reduced by the refunded amount."}`;
     await logAuditEntry({
       merchantId,

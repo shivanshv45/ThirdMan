@@ -35,12 +35,17 @@ interface Message {
   content: string;
 }
 
-interface Cart {
-  // "id" is the resolved variant's own id (Layer 5-7 — chat.ts's
-  // ChatProduct is variant-level); "productId" is the parent product,
-  // which BuyButton's checkout call needs alongside it.
-  product: { id: string; productId: string; name: string; pricePaise: number };
+interface CartLine {
+  variantId: string;
+  productId: string;
+  name: string;
   quantity: number;
+  unitPricePaise: number;
+  subtotalPaise: number;
+}
+
+interface Cart {
+  lines: CartLine[];
   subtotalPaise: number;
 }
 
@@ -67,7 +72,7 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
   // the effect-based setState React's own lint rule warns against.
   const [sessionToken] = useState<string>(() => getOrCreateSessionToken());
   const [messages, setMessages] = useState<Message[]>([]);
-  const [cart, setCart] = useState<Cart | null>(null);
+  const [cart, setCart] = useState<Cart>({ lines: [], subtotalPaise: 0 });
   const [offer, setOffer] = useState<Offer | null>(null);
   const [decliningOffer, setDecliningOffer] = useState(false);
   const [negotiation, setNegotiation] = useState<Negotiation | null>(null);
@@ -77,7 +82,7 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [messages]);
+  }, [messages, sending]);
 
   async function send() {
     const message = input.trim();
@@ -129,7 +134,7 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
     return (
       <button
         onClick={() => setOpen(true)}
-        className="fixed bottom-6 right-6 px-4 py-3 rounded-full bg-blue-600 text-white shadow-lg hover:bg-blue-700 text-sm font-medium"
+        className="fixed bottom-6 right-6 px-4 py-3 rounded-full bg-accent text-accent-ink shadow-lg hover:bg-accent-bright text-sm font-medium transition-colors duration-[var(--dur-fast)]"
       >
         Chat with us
       </button>
@@ -137,32 +142,48 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
   }
 
   return (
-    <div className="fixed bottom-6 right-6 w-full max-w-sm h-[32rem] bg-white border rounded-lg shadow-xl flex flex-col">
-      <div className="flex items-center justify-between px-4 py-3 border-b">
-        <span className="font-medium text-sm">Ask about our products</span>
-        <button onClick={() => setOpen(false)} className="text-gray-400 hover:text-gray-700 text-sm">
+    <div className="fixed bottom-6 right-6 w-full max-w-sm h-[32rem] bg-ink-raised border border-ink-line rounded-[var(--radius-lg)] shadow-2xl flex flex-col overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-ink-line shrink-0">
+        <span className="font-medium text-sm text-on-ink flex items-center gap-2">
+          <span className="h-1.5 w-1.5 rounded-full bg-allow" aria-hidden="true" />
+          Ask about our products
+        </span>
+        <button onClick={() => setOpen(false)} className="text-on-ink-faint hover:text-on-ink text-sm transition-colors">
           Close
         </button>
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-2">
         {messages.length === 0 && (
-          <p className="text-sm text-gray-400">Ask what we sell, get a recommendation, or say what you&apos;d like to buy.</p>
+          <p className="text-sm text-on-ink-faint">Ask what we sell, get a recommendation, or say what you&apos;d like to buy.</p>
         )}
         {messages.map((m, i) => (
-          <div key={i} className={`text-sm max-w-[85%] rounded-lg px-3 py-2 ${m.role === "customer" ? "ml-auto bg-blue-600 text-white" : "bg-gray-100 text-gray-800"}`}>
+          <div
+            key={i}
+            className={`text-sm max-w-[85%] rounded-[var(--radius)] px-3 py-2 ${
+              m.role === "customer" ? "ml-auto bg-accent text-accent-ink" : "bg-ink-overlay text-on-ink"
+            }`}
+          >
             {m.content}
           </div>
         ))}
-        {sending && <div className="text-sm text-gray-400">Thinking…</div>}
+        {/* Real: only shown while the /api/chat round-trip is actually in
+            flight (fact 9 — never a decorative "thinking" state). */}
+        {sending && (
+          <div className="flex items-center gap-1.5 px-3 py-2 text-on-ink-faint" aria-live="polite">
+            <span className="h-1.5 w-1.5 rounded-full bg-on-ink-faint animate-bounce [animation-delay:0ms]" />
+            <span className="h-1.5 w-1.5 rounded-full bg-on-ink-faint animate-bounce [animation-delay:120ms]" />
+            <span className="h-1.5 w-1.5 rounded-full bg-on-ink-faint animate-bounce [animation-delay:240ms]" />
+          </div>
+        )}
       </div>
 
       {offer && (
-        <div className="border-t px-3 py-2 bg-amber-50">
-          <p className="text-sm text-amber-900 mb-2">{offer.reasonText}</p>
+        <div className="border-t border-ink-line px-3 py-2.5 bg-escalate-wash shrink-0">
+          <p className="text-sm text-escalate-bright mb-2">{offer.reasonText}</p>
           <div className="flex items-center justify-between text-sm mb-2">
-            <span className="font-medium">{offer.bundleName}</span>
-            <span className="font-medium">{rupees(offer.amountPaise)}</span>
+            <span className="font-medium text-on-ink">{offer.bundleName}</span>
+            <span className="font-medium font-mono text-on-ink">{rupees(offer.amountPaise)}</span>
           </div>
           <div className="flex gap-2">
             <BuyButton
@@ -172,13 +193,13 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
               productName={offer.bundleName}
               onSuccess={() => {
                 setOffer(null);
-                setCart(null);
+                setCart({ lines: [], subtotalPaise: 0 });
               }}
             />
             <button
               onClick={declineOffer}
               disabled={decliningOffer}
-              className="px-3 py-2 rounded border text-sm text-gray-600 hover:bg-gray-100 disabled:opacity-50"
+              className="px-3 py-2 rounded-[var(--radius)] border border-ink-line text-sm text-on-ink-dim hover:text-on-ink disabled:opacity-50 transition-colors duration-[var(--dur-fast)]"
             >
               No thanks
             </button>
@@ -186,61 +207,84 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
         </div>
       )}
 
-      {negotiation && negotiation.status === "agreed" && cart && (
-        <div className="border-t px-3 py-2 bg-green-50">
-          <p className="text-sm text-green-900 mb-2">
-            Agreed at {rupees(negotiation.agreedUnitPricePaise!)} per unit.
+      {negotiation && negotiation.status === "agreed" && (
+        <div className="border-t border-ink-line px-3 py-2.5 bg-allow-wash shrink-0">
+          <p className="text-sm text-allow-bright mb-2">
+            Agreed at <span className="font-mono">{rupees(negotiation.agreedUnitPricePaise!)}</span> per unit.
           </p>
           <BuyButton
             merchantId={merchantId}
             negotiationId={negotiation.negotiationId}
             sessionToken={sessionToken}
-            productName={cart.product.name}
+            productName="Negotiated price"
             onSuccess={() => {
               setNegotiation(null);
-              setCart(null);
+              setCart({ lines: [], subtotalPaise: 0 });
             }}
           />
         </div>
       )}
 
       {negotiation && negotiation.status === "open" && (
-        <div className="border-t px-3 py-2 bg-amber-50">
-          <p className="text-xs text-amber-900">
-            Negotiating — {negotiation.buyerTurnsUsed}/{negotiation.buyerTurnsAllowed} counter-offers used. Propose a price in the message box below (e.g. &ldquo;would you do ₹9 each?&rdquo;).
+        <div className="border-t border-ink-line px-3 py-2.5 bg-escalate-wash shrink-0">
+          <div className="flex items-center justify-between mb-1">
+            <p className="text-xs font-medium text-escalate-bright">Negotiating</p>
+            <p className="text-xs text-escalate-bright font-mono">
+              {negotiation.buyerTurnsUsed}/{negotiation.buyerTurnsAllowed} counter-offers
+            </p>
+          </div>
+          <div className="w-full h-1 rounded-full bg-ink-overlay overflow-hidden mb-1.5">
+            <div
+              className="h-full bg-escalate transition-[width] duration-[var(--dur-slow)] ease-[var(--ease-out)]"
+              style={{ width: `${(negotiation.buyerTurnsUsed / negotiation.buyerTurnsAllowed) * 100}%` }}
+            />
+          </div>
+          <p className="text-xs text-on-ink-dim">
+            Propose a price in the message box below (e.g. &ldquo;would you do ₹9 each?&rdquo;).
           </p>
         </div>
       )}
 
-      {cart && !(negotiation && negotiation.status === "agreed") && (
-        <div className="border-t px-3 py-2 bg-gray-50">
-          <div className="flex items-center justify-between text-sm mb-2">
-            <span>
-              {cart.quantity} x {cart.product.name}
-            </span>
-            <span className="font-medium">{rupees(cart.subtotalPaise)}</span>
+      {cart.lines.length > 0 && !(negotiation && negotiation.status === "agreed") && (
+        <div className="border-t border-ink-line px-3 py-2.5 bg-ink-overlay shrink-0">
+          <div className="space-y-1 mb-2">
+            {cart.lines.map((line) => (
+              <div key={line.variantId} className="flex items-center justify-between text-sm">
+                <span className="text-on-ink-dim">
+                  {line.quantity} × {line.name}
+                </span>
+                <span className="font-mono text-on-ink-dim">{rupees(line.subtotalPaise)}</span>
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center justify-between text-sm mb-2 pt-1 border-t border-ink-line/50">
+            <span className="font-medium text-on-ink">Total</span>
+            <span className="font-medium font-mono text-on-ink">{rupees(cart.subtotalPaise)}</span>
           </div>
           <BuyButton
             merchantId={merchantId}
-            productId={cart.product.productId}
-            variantId={cart.product.id}
-            productName={cart.product.name}
-            quantity={cart.quantity}
-            onSuccess={() => setCart(null)}
+            cart
+            sessionToken={sessionToken}
+            productName={`Cart (${cart.lines.length} item${cart.lines.length === 1 ? "" : "s"})`}
+            onSuccess={() => setCart({ lines: [], subtotalPaise: 0 })}
           />
         </div>
       )}
 
-      <div className="border-t p-2 flex gap-2">
+      <div className="border-t border-ink-line p-2 flex gap-2 shrink-0">
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && send()}
           placeholder="Type a message…"
-          className="flex-1 border rounded px-3 py-2 text-sm"
+          className="flex-1 rounded-[var(--radius)] bg-ink-overlay border border-ink-line px-3 py-2 text-sm text-on-ink placeholder:text-on-ink-faint outline-none focus:border-accent focus:ring-1 focus:ring-accent/40"
           disabled={sending}
         />
-        <button onClick={send} disabled={sending || !input.trim()} className="px-3 py-2 rounded bg-blue-600 text-white text-sm disabled:opacity-50">
+        <button
+          onClick={send}
+          disabled={sending || !input.trim()}
+          className="px-3 py-2 rounded-[var(--radius)] bg-accent text-accent-ink text-sm font-medium hover:bg-accent-bright disabled:opacity-50 transition-colors duration-[var(--dur-fast)]"
+        >
           Send
         </button>
       </div>

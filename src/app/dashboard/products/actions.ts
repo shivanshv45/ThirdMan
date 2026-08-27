@@ -66,3 +66,59 @@ export async function reactivateProduct(formData: FormData) {
   await mutations.reactivateProduct(merchant.id, String(formData.get("productId")));
   revalidatePath("/dashboard/products");
 }
+
+export async function addVariant(formData: FormData) {
+  const merchant = await requireSessionMerchant();
+
+  try {
+    await mutations.addVariant({
+      merchantId: merchant.id,
+      productId: String(formData.get("productId")),
+      sku: String(formData.get("sku") ?? ""),
+      priceRupees: Number(formData.get("priceRupees")),
+      costRupees: Number(formData.get("costRupees")),
+      stock: Number(formData.get("stock")),
+      attributeKey: String(formData.get("attributeKey") ?? ""),
+      attributeValue: String(formData.get("attributeValue") ?? ""),
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Could not add variant.";
+    redirect(`/dashboard/products?error=${encodeURIComponent(message)}`);
+  }
+
+  revalidatePath("/dashboard/products");
+}
+
+export async function updateVariant(formData: FormData) {
+  const merchant = await requireSessionMerchant();
+
+  try {
+    await mutations.updateVariant({
+      merchantId: merchant.id,
+      variantId: String(formData.get("variantId")),
+      sku: String(formData.get("sku") ?? ""),
+      priceRupees: Number(formData.get("priceRupees")),
+      costRupees: Number(formData.get("costRupees")),
+      stock: Number(formData.get("stock")),
+      attributeKey: String(formData.get("attributeKey") ?? ""),
+      attributeValue: String(formData.get("attributeValue") ?? ""),
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Could not update variant.";
+    redirect(`/dashboard/products?error=${encodeURIComponent(message)}`);
+  }
+
+  revalidatePath("/dashboard/products");
+}
+
+export async function archiveVariant(formData: FormData) {
+  const merchant = await requireSessionMerchant();
+  await mutations.archiveVariant(merchant.id, String(formData.get("variantId")));
+  revalidatePath("/dashboard/products");
+}
+
+export async function reactivateVariant(formData: FormData) {
+  const merchant = await requireSessionMerchant();
+  await mutations.reactivateVariant(merchant.id, String(formData.get("variantId")));
+  revalidatePath("/dashboard/products");
+}

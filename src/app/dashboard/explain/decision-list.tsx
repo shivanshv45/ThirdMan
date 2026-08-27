@@ -8,9 +8,9 @@ function formatDate(d: Date | string): string {
   return new Date(d).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
 }
 
-const kindStyles: Record<string, { border: string; text: string; label: string }> = {
-  refusal: { border: "border-red-500", text: "text-red-700", label: "Refused" },
-  deferral: { border: "border-amber-500", text: "text-amber-700", label: "Deferred to you" },
+const kindStyles: Record<string, { borderColor: string; text: string; label: string }> = {
+  refusal: { borderColor: "var(--deny)", text: "text-deny-bright", label: "Refused" },
+  deferral: { borderColor: "var(--escalate)", text: "text-escalate-bright", label: "Deferred to you" },
 };
 
 const sourceLabels: Record<string, string> = {
@@ -18,6 +18,7 @@ const sourceLabels: Record<string, string> = {
   offer_engine: "Offer engine",
   recovery: "Recovery",
   risk_escalation: "Risk escalation",
+  negotiation: "Negotiation",
 };
 
 export function DecisionList({ decisions }: { decisions: UnifiedDecision[] }) {
@@ -29,38 +30,48 @@ export function DecisionList({ decisions }: { decisions: UnifiedDecision[] }) {
         const style = kindStyles[d.kind];
         const isExpanded = expandedId === d.id;
         return (
-          <li key={d.id} className={`border-l-4 ${style.border} bg-white border rounded-r px-4 py-3`}>
+          <li
+            key={d.id}
+            className="rounded-r-[var(--radius-lg)] bg-ink-raised border border-ink-line px-4 py-3"
+            style={{ borderLeftColor: style.borderColor, borderLeftWidth: "3px" }}
+          >
             <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="flex items-center gap-2 text-xs">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-xs flex-wrap">
                   <span className={`font-medium ${style.text}`}>{style.label}</span>
-                  <span className="text-gray-400">·</span>
-                  <span className="text-gray-500">{sourceLabels[d.source]}</span>
-                  <span className="text-gray-400">·</span>
-                  <span className={d.determinism === "deterministic" ? "text-gray-500" : "text-indigo-600"}>
+                  <span className="text-on-ink-faint">·</span>
+                  <span className="text-on-ink-dim">{sourceLabels[d.source] ?? d.source}</span>
+                  <span className="text-on-ink-faint">·</span>
+                  <span
+                    className={`px-1.5 py-0.5 rounded font-medium ${
+                      d.determinism === "deterministic"
+                        ? "bg-allow-wash text-allow-bright"
+                        : "bg-accent-wash text-accent-bright"
+                    }`}
+                  >
                     {d.determinism === "deterministic" ? "Arithmetic, no model" : "A model's judgment"}
                   </span>
                 </div>
-                <div className="font-medium text-sm mt-1">{d.boundLabel}</div>
-                <p className="text-sm text-gray-700 mt-1">{d.reason}</p>
+                <div className="font-medium text-sm mt-1.5 text-on-ink">{d.boundLabel}</div>
+                <p className="text-sm text-on-ink-dim mt-1">{d.reason}</p>
                 {d.arithmetic.length > 0 && (
-                  <dl className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs text-gray-500">
+                  <dl className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs">
                     {d.arithmetic.map((a) => (
                       <div key={a.label} className="flex gap-1">
-                        <dt>{a.label}:</dt>
-                        <dd className="font-medium text-gray-700">{a.value}</dd>
+                        <dt className="text-on-ink-faint">{a.label}:</dt>
+                        <dd className="font-mono text-on-ink">{a.value}</dd>
                       </div>
                     ))}
                   </dl>
                 )}
               </div>
-              <span className="text-xs text-gray-400 whitespace-nowrap">{formatDate(d.createdAt)}</span>
+              <span className="text-xs text-on-ink-faint whitespace-nowrap font-mono">{formatDate(d.createdAt)}</span>
             </div>
 
             <button
               type="button"
               onClick={() => setExpandedId(isExpanded ? null : d.id)}
-              className="text-xs text-gray-500 underline mt-2"
+              className="text-xs text-accent hover:text-accent-bright mt-2 transition-colors"
             >
               {isExpanded ? "Hide details" : "Show details"}
             </button>
@@ -85,13 +96,25 @@ function ExpandedDetails({ decision }: { decision: UnifiedDecision }) {
   }
 
   return (
-    <div className="mt-3 pt-3 border-t text-xs text-gray-500 space-y-2">
-      <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-        <div>Source table: <span className="font-mono">{decision.sourceRef.table}</span></div>
-        <div>Row id: <span className="font-mono">{decision.sourceRef.id}</span></div>
-        {decision.boundRaw && <div>Raw bound: <span className="font-mono">{decision.boundRaw}</span></div>}
-        {decision.agentName && <div>Agent: {decision.agentName}</div>}
-        {decision.sessionToken && <div>Session: <span className="font-mono">{decision.sessionToken.slice(0, 12)}…</span></div>}
+    <div className="mt-3 pt-3 border-t border-ink-line-soft text-xs text-on-ink-dim space-y-2">
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono">
+        <div>
+          Source table: <span className="text-on-ink">{decision.sourceRef.table}</span>
+        </div>
+        <div>
+          Row id: <span className="text-on-ink">{decision.sourceRef.id}</span>
+        </div>
+        {decision.boundRaw && (
+          <div>
+            Raw bound: <span className="text-on-ink">{decision.boundRaw}</span>
+          </div>
+        )}
+        {decision.agentName && <div className="font-sans">Agent: {decision.agentName}</div>}
+        {decision.sessionToken && (
+          <div>
+            Session: <span className="text-on-ink">{decision.sessionToken.slice(0, 12)}…</span>
+          </div>
+        )}
       </div>
 
       {!explanation && (
@@ -99,21 +122,22 @@ function ExpandedDetails({ decision }: { decision: UnifiedDecision }) {
           type="button"
           onClick={handleExplain}
           disabled={isPending}
-          className="text-xs px-2 py-1 rounded border hover:bg-gray-50 disabled:opacity-50"
+          className="text-xs px-2.5 py-1.5 rounded-[var(--radius)] bg-ink-overlay border border-ink-line text-on-ink hover:border-on-ink-faint disabled:opacity-50 transition-colors font-sans inline-flex items-center gap-1.5"
         >
+          {isPending && <span className="h-2.5 w-2.5 rounded-full border-2 border-current border-t-transparent animate-spin" aria-hidden="true" />}
           {isPending ? "Asking…" : "Explain this in plain language"}
         </button>
       )}
 
       {explanation && (
-        <div className="bg-indigo-50 border border-indigo-200 rounded px-3 py-2">
-          <div className="text-indigo-700 font-medium mb-1">
+        <div className="bg-accent-wash border border-accent/25 rounded-[var(--radius)] px-3 py-2 font-sans">
+          <div className="text-accent-bright font-medium mb-1 text-xs">
             {explanation.available ? "Generated explanation" : "Explanation unavailable"}
           </div>
           {explanation.available ? (
-            <p className="text-gray-700">{explanation.text}</p>
+            <p className="text-on-ink-dim">{explanation.text}</p>
           ) : (
-            <p className="text-gray-500">
+            <p className="text-on-ink-faint">
               The plain-language explainer is unavailable right now. The recorded reason above is the complete record — it hasn&apos;t changed and doesn&apos;t need the explainer to be trusted.
             </p>
           )}

@@ -8,24 +8,25 @@ import {
   type RecoveryStatsResult,
 } from "./actions";
 import { formatPaise as rupees } from "@/lib/money";
+import { EmptyState } from "@/components/ui";
 
 function formatDate(d: Date | string): string {
   return new Date(d).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
 }
 
 const statusStyles: Record<string, { bg: string; text: string; label: string }> = {
-  new: { bg: "bg-gray-100", text: "text-gray-700", label: "New" },
-  diagnosed: { bg: "bg-blue-100", text: "text-blue-800", label: "Diagnosed" },
-  recovering: { bg: "bg-amber-100", text: "text-amber-800", label: "Recovering" },
-  recovered: { bg: "bg-green-100", text: "text-green-800", label: "Recovered" },
-  written_off: { bg: "bg-gray-200", text: "text-gray-600", label: "Written off" },
+  new: { bg: "bg-ink-overlay", text: "text-on-ink-dim", label: "New" },
+  diagnosed: { bg: "bg-accent-wash", text: "text-accent-bright", label: "Diagnosed" },
+  recovering: { bg: "bg-escalate-wash", text: "text-escalate-bright", label: "Recovering" },
+  recovered: { bg: "bg-allow-wash", text: "text-allow-bright", label: "Recovered" },
+  written_off: { bg: "bg-ink-overlay", text: "text-on-ink-faint", label: "Written off" },
 };
 
 const outcomeStyles: Record<string, string> = {
-  pending: "text-gray-500",
-  succeeded: "text-green-700",
-  failed: "text-red-700",
-  abandoned: "text-gray-500",
+  pending: "text-on-ink-faint",
+  succeeded: "text-allow-bright",
+  failed: "text-deny-bright",
+  abandoned: "text-on-ink-faint",
 };
 
 export function FailureQueue({
@@ -61,21 +62,21 @@ export function FailureQueue({
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <p className="text-sm text-gray-500">
+        <p className="text-sm text-on-ink-dim">
           {stats.failureCount} failure{stats.failureCount === 1 ? "" : "s"} on record
         </p>
         <button
           type="button"
           onClick={refresh}
           disabled={isPending}
-          className="text-sm px-3 py-1 rounded border hover:bg-gray-50 disabled:opacity-50"
+          className="text-sm px-3 py-1.5 rounded-[var(--radius)] bg-ink-overlay border border-ink-line text-on-ink hover:border-on-ink-faint disabled:opacity-50 transition-colors duration-[var(--dur-fast)]"
         >
           {isPending ? "Refreshing…" : "Refresh"}
         </button>
       </div>
 
       {queue.length === 0 && (
-        <p className="text-sm text-gray-500">No failures yet — load the demo batch or wait for a real webhook event.</p>
+        <EmptyState title="No failures yet" description="Load the demo batch or wait for a real webhook event." />
       )}
 
       {queue.map(({ failure, attempts }) => {
@@ -84,43 +85,53 @@ export function FailureQueue({
         const diagnosis = failure.diagnosis as
           | { rootCause: string; category: string; recoverable: boolean; confidence: string; source: string }
           | null;
+        const isDone = failure.status === "recovered" || failure.status === "written_off";
+        const isRunning = runningId === failure.id;
 
         return (
-          <div key={failure.id} className="border rounded-lg p-4">
+          <div key={failure.id} className="rounded-[var(--radius-lg)] border border-ink-line bg-ink-raised p-4">
             <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="font-medium">{rupees(failure.amountPaise)}</span>
-                  <span className={`text-xs px-2 py-0.5 rounded ${style.bg} ${style.text}`}>{style.label}</span>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-medium text-on-ink font-mono">{rupees(failure.amountPaise)}</span>
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${style.bg} ${style.text}`}>
+                    {style.label}
+                  </span>
                   {failure.source === "simulated" && (
-                    <span className="text-xs px-2 py-0.5 rounded bg-purple-100 text-purple-700" title="This failure was loaded from the demo batch, not a real Razorpay decline.">
+                    <span
+                      className="text-xs px-2 py-0.5 rounded-full bg-ink-overlay text-on-ink-faint"
+                      title="This failure was loaded from the demo batch, not a real Razorpay decline."
+                    >
                       Simulated
                     </span>
                   )}
                 </div>
-                <p className="text-sm text-gray-600 mt-1">
+                <p className="text-sm text-on-ink-dim mt-1.5">
                   {failure.declineCode}
                   {failure.declineDescription && ` — ${failure.declineDescription}`}
                 </p>
-                {diagnosis && <p className="text-sm text-gray-800 mt-1">{diagnosis.rootCause}</p>}
-                <p className="text-xs text-gray-400 mt-1">{formatDate(failure.failedAt)}</p>
+                {diagnosis && <p className="text-sm text-on-ink mt-1">{diagnosis.rootCause}</p>}
+                <p className="text-xs text-on-ink-faint mt-1 font-mono">{formatDate(failure.failedAt)}</p>
               </div>
               <div className="flex flex-col gap-2 items-end shrink-0">
-                {failure.status !== "recovered" && failure.status !== "written_off" && (
+                {!isDone && (
                   <button
                     type="button"
                     onClick={() => runOne(failure.id)}
-                    disabled={runningId === failure.id}
-                    className="text-sm px-3 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                    disabled={isRunning}
+                    className="text-sm px-3 py-1.5 rounded-[var(--radius)] bg-accent text-accent-ink hover:bg-accent-bright disabled:opacity-50 font-medium transition-colors duration-[var(--dur-fast)] inline-flex items-center gap-1.5"
                   >
-                    {runningId === failure.id ? "Running…" : "Run recovery"}
+                    {isRunning && (
+                      <span className="h-3 w-3 rounded-full border-2 border-current border-t-transparent animate-spin" aria-hidden="true" />
+                    )}
+                    {isRunning ? "Running…" : "Run recovery"}
                   </button>
                 )}
                 {attempts.length > 0 && (
                   <button
                     type="button"
                     onClick={() => setExpandedId(expanded ? null : failure.id)}
-                    className="text-xs text-blue-600 hover:underline"
+                    className="text-xs text-accent hover:text-accent-bright transition-colors"
                   >
                     {expanded ? "Hide attempts" : `Show attempts (${attempts.length})`}
                   </button>
@@ -129,26 +140,26 @@ export function FailureQueue({
             </div>
 
             {expanded && (
-              <div className="mt-3 space-y-2 border-t pt-3">
+              <div className="mt-3 space-y-2.5 border-t border-ink-line-soft pt-3">
                 {attempts.map((attempt) => (
-                  <div key={attempt.id} className="text-sm border-l-2 pl-3 border-gray-300">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium">Attempt {attempt.attemptNumber}</span>
-                      <span className="text-xs text-gray-500">{attempt.strategy}</span>
+                  <div key={attempt.id} className="text-sm pl-3 border-l-2 border-ink-line">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-medium text-on-ink">Attempt {attempt.attemptNumber}</span>
+                      <span className="text-xs text-on-ink-faint font-mono">{attempt.strategy}</span>
                       <span className={`text-xs font-semibold uppercase ${outcomeStyles[attempt.outcome]}`}>
                         {attempt.outcome}
                       </span>
                       {attempt.recoveredPaise > 0 && (
-                        <span className="text-xs text-green-700">+{rupees(attempt.recoveredPaise)}</span>
+                        <span className="text-xs text-allow-bright font-mono">+{rupees(attempt.recoveredPaise)}</span>
                       )}
                     </div>
-                    <p className="text-gray-700 mt-0.5">{attempt.reason}</p>
+                    <p className="text-on-ink-dim mt-0.5">{attempt.reason}</p>
                     {attempt.paymentLinkUrl && attempt.outcome === "pending" && (
                       <a
                         href={attempt.paymentLinkUrl}
                         target="_blank"
                         rel="noreferrer"
-                        className="text-xs text-blue-600 hover:underline break-all"
+                        className="text-xs text-accent hover:text-accent-bright break-all font-mono"
                       >
                         {attempt.paymentLinkUrl}
                       </a>
