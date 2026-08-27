@@ -39,7 +39,9 @@ async function main() {
   console.log("Fallback pattern check PASSED.");
 }
 
-main().catch((err) => {
-  console.error("Fallback check FAILED:", err);
-  process.exit(1);
-});
+main()
+  .then(() => process.exit(0))
+  .catch((err) => {
+    console.error("Fallback check FAILED:", err);
+    process.exit(1);
+  });

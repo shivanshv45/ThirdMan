@@ -25,7 +25,9 @@ async function main() {
   console.log("Error wrapping check passed.");
 }
 
-main().catch((err) => {
-  console.error("Error wrapping check FAILED:", err);
-  process.exit(1);
-});
+main()
+  .then(() => process.exit(0))
+  .catch((err) => {
+    console.error("Error wrapping check FAILED:", err);
+    process.exit(1);
+  });

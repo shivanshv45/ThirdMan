@@ -2,6 +2,7 @@
 
 import { useActionState } from "react";
 import { createAgentAction, rotateAgentKeyAction, type AgentKeyActionState } from "./actions";
+import { Button, Input, Field } from "@/components/ui";
 
 const initialState: AgentKeyActionState = null;
 
@@ -20,15 +21,16 @@ export function CreateAgentForm() {
   }
 
   return (
-    <form action={action} className="flex items-end gap-2 text-sm">
-      <label className="flex flex-col">
-        Agent name
-        <input name="name" required className="border rounded px-2 py-1" placeholder="e.g. Restock Bot" />
-      </label>
-      <button type="submit" disabled={pending} className="px-3 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
-        {pending ? "Creating…" : "Create agent"}
-      </button>
-      {state?.error && <p className="text-red-600 text-xs ml-2">{state.error}</p>}
+    <form action={action} className="flex items-end gap-2">
+      <div className="w-56">
+        <Field label="Agent name">
+          <Input name="name" required placeholder="e.g. Restock Bot" />
+        </Field>
+      </div>
+      <Button type="submit" variant="primary" disabled={pending} pendingLabel="Creating…">
+        Create agent
+      </Button>
+      {state?.error && <p className="text-deny-bright text-xs">{state.error}</p>}
     </form>
   );
 }
@@ -43,20 +45,22 @@ export function RotateKeyButton({ agentId }: { agentId: string }) {
   return (
     <form action={action}>
       <input type="hidden" name="agentId" value={agentId} />
-      <button type="submit" disabled={pending} className="text-sm px-3 py-1 rounded border hover:bg-gray-50 disabled:opacity-50">
-        {pending ? "Rotating…" : "Rotate key"}
-      </button>
-      {state?.error && <p className="text-red-600 text-xs mt-1">{state.error}</p>}
+      <Button type="submit" size="sm" disabled={pending} pendingLabel="Rotating…">
+        Rotate key
+      </Button>
+      {state?.error && <p className="text-deny-bright text-xs mt-1">{state.error}</p>}
     </form>
   );
 }
 
 function RevealedKey({ name, rawKey }: { name: string; rawKey: string }) {
   return (
-    <div className="border border-amber-300 bg-amber-50 rounded-lg p-3 text-sm space-y-1">
-      <p className="font-medium">New key for &quot;{name}&quot;</p>
-      <p className="font-mono text-xs break-all bg-white border rounded px-2 py-1">{rawKey}</p>
-      <p className="text-xs text-amber-800">
+    <div className="rounded-[var(--radius-lg)] border border-escalate-line bg-escalate-wash p-3 text-sm space-y-1.5">
+      <p className="font-medium text-on-ink">New key for &quot;{name}&quot;</p>
+      <p className="font-mono text-xs break-all bg-ink border border-ink-line rounded-[var(--radius)] px-2 py-1.5 text-on-ink">
+        {rawKey}
+      </p>
+      <p className="text-xs text-escalate-bright">
         This will not be shown again. Copy it now and hand it to the agent out-of-band — reloading this page hides it for good.
       </p>
     </div>

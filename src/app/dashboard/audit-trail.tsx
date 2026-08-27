@@ -3,21 +3,22 @@
 import { useState, useTransition } from "react";
 import { refreshAuditTrail, type AuditEntry } from "./actions";
 import { formatPaise as rupees } from "@/lib/money";
+import { DecisionBadge, type Decision, Button, EmptyState } from "@/components/ui";
 
 function formatDate(d: Date | string): string {
   return new Date(d).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
 }
 
-const decisionStyles: Record<string, { border: string; text: string; label: string }> = {
-  allow: { border: "border-green-500", text: "text-green-700", label: "Allowed" },
-  deny: { border: "border-red-500", text: "text-red-700", label: "Denied" },
-  escalate: { border: "border-amber-500", text: "text-amber-700", label: "Escalated" },
-};
-
-function decisionStyle(decision: string) {
-  return decisionStyles[decision] ?? { border: "border-gray-300", text: "text-gray-500", label: "Event" };
+function asDecision(d: string): Decision {
+  return d === "allow" || d === "deny" || d === "escalate" ? d : "n/a";
 }
 
+/**
+ * The decision stream — the product's centrepiece (plans/layer-9,
+ * fact 2/9). Real rows only: initialEntries is server-rendered from
+ * the real audit_log, and Refresh calls the real refreshAuditTrail()
+ * Server Action rather than a client-side interval faking "live."
+ */
 export function AuditTrail({ initialEntries }: { initialEntries: AuditEntry[] }) {
   const [entries, setEntries] = useState(initialEntries);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -35,68 +36,67 @@ export function AuditTrail({ initialEntries }: { initialEntries: AuditEntry[] })
   return (
     <section>
       <div className="flex items-center justify-between mb-3">
-        <h2 className="text-lg font-semibold">Audit trail</h2>
-        <div className="flex items-center gap-2">
+        <h2 className="text-[var(--t-h3)] font-[family-name:var(--font-display)] text-on-ink">Decision stream</h2>
+        <div className="flex items-center gap-3">
           {lastRefreshed && (
-            <span className="text-xs text-gray-400">Updated {formatDate(lastRefreshed)}</span>
+            <span className="text-xs text-on-ink-faint font-mono">Updated {formatDate(lastRefreshed)}</span>
           )}
-          <button
-            type="button"
-            onClick={handleRefresh}
-            disabled={isPending}
-            className="text-sm px-3 py-1 rounded border hover:bg-gray-50 disabled:opacity-50"
-          >
-            {isPending ? "Refreshing…" : "Refresh"}
-          </button>
+          <Button type="button" onClick={handleRefresh} disabled={isPending} size="sm" pendingLabel="Refreshing…">
+            Refresh
+          </Button>
         </div>
       </div>
 
-      <div className="space-y-1">
-        {entries.length === 0 && <p className="text-sm text-gray-500">No entries yet.</p>}
-        {entries.map((entry) => {
-          const style = decisionStyle(entry.decision);
-          const expanded = expandedId === entry.id;
+      {entries.length === 0 ? (
+        <EmptyState title="No decisions yet" description="Every allow, deny, and escalation will appear here as it happens." />
+      ) : (
+        <div className="rounded-[var(--radius-lg)] border border-ink-line divide-y divide-ink-line-soft">
+          {entries.map((entry) => {
+            const expanded = expandedId === entry.id;
 
-          return (
-            <div key={entry.id} className={`border-l-4 pl-3 py-2 text-sm ${style.border}`}>
-              <div className="flex items-center gap-2">
-                <span className={`text-xs font-semibold uppercase ${style.text}`}>{style.label}</span>
-                <span className="text-xs text-gray-400 ml-auto">{formatDate(entry.createdAt)}</span>
-              </div>
-              <p className="text-gray-800">{entry.reason}</p>
-
-              {(entry.boundApplied || entry.moneyAction || entry.event) && (
-                <button
-                  type="button"
-                  onClick={() => setExpandedId(expanded ? null : entry.id)}
-                  className="text-xs text-blue-600 hover:underline mt-1"
-                >
-                  {expanded ? "Hide details" : "Show details"}
-                </button>
-              )}
-
-              {expanded && (
-                <div className="mt-1 space-y-0.5 bg-gray-50 border rounded px-2 py-1.5">
-                  <p className="text-xs text-gray-500">
-                    Event: <span className="font-mono">{entry.event}</span>
-                  </p>
-                  {entry.boundApplied && (
-                    <p className="text-xs text-gray-500">
-                      Bound: <span className="font-mono">{entry.boundApplied}</span>
-                    </p>
-                  )}
-                  {entry.moneyAction && (
-                    <p className="text-xs text-gray-500">
-                      {entry.moneyAction.type} — {rupees(entry.moneyAction.amountPaise)} — {entry.moneyAction.status}
-                      {entry.moneyAction.razorpayEntityId && ` — ${entry.moneyAction.razorpayEntityId}`}
-                    </p>
-                  )}
+            return (
+              <div key={entry.id} className="px-4 py-3">
+                <div className="flex items-start gap-3">
+                  <DecisionBadge decision={asDecision(entry.decision)} />
+                  <p className="text-sm text-on-ink flex-1 min-w-0">{entry.reason}</p>
+                  <span className="text-xs text-on-ink-faint font-mono whitespace-nowrap shrink-0">
+                    {formatDate(entry.createdAt)}
+                  </span>
                 </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+
+                {(entry.boundApplied || entry.moneyAction || entry.event) && (
+                  <button
+                    type="button"
+                    onClick={() => setExpandedId(expanded ? null : entry.id)}
+                    className="text-xs text-accent hover:text-accent-bright mt-1.5 transition-colors"
+                  >
+                    {expanded ? "Hide details" : "Show details"}
+                  </button>
+                )}
+
+                {expanded && (
+                  <div className="mt-2 space-y-1 bg-ink-overlay border border-ink-line-soft rounded-[var(--radius)] px-3 py-2 font-mono text-xs text-on-ink-dim">
+                    <p>
+                      event: <span className="text-on-ink">{entry.event}</span>
+                    </p>
+                    {entry.boundApplied && (
+                      <p>
+                        bound: <span className="text-on-ink">{entry.boundApplied}</span>
+                      </p>
+                    )}
+                    {entry.moneyAction && (
+                      <p>
+                        {entry.moneyAction.type} — {rupees(entry.moneyAction.amountPaise)} — {entry.moneyAction.status}
+                        {entry.moneyAction.razorpayEntityId && ` — ${entry.moneyAction.razorpayEntityId}`}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }

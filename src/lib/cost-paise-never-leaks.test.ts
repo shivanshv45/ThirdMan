@@ -9,6 +9,9 @@ import { GET as agentProductsGET } from "@/app/api/agent/products/route";
 import { POST as mcpPOST } from "@/app/api/mcp/route";
 import { GET as manifestGET } from "@/app/store/[merchantId]/manifest.json/route";
 import { runOfferEngine } from "@/lib/offer-engine";
+import { getUnifiedDecisions, getDecisionStats, getDecisionById } from "@/lib/explainability";
+import { explainDecision } from "@/lib/explain-decision";
+import { MAX_BUYER_COUNTERS } from "@/lib/negotiation";
 
 /**
  * L5-8's required consolidated check: costPaise is internal-only
@@ -153,4 +156,126 @@ describe("costPaise never leaks into any agent-facing or public surface", () => 
       await db.delete(schema.products).where(eq(schema.products.id, secondProduct.id));
     }
   }, 20_000);
+
+  it("the L7 explainability surface (getUnifiedDecisions/getDecisionStats/getDecisionById, and the decision explainer) — a real margin-floor refusal never exposes its cost figure through any of them", async () => {
+    const { merchant, product, agent } = await setupMerchantWithAgent();
+    const [cartVariant] = await db.select().from(schema.productVariants).where(eq(schema.productVariants.productId, product.id));
+
+    // A SEPARATE upsell variant, priced at exactly its own cost — a
+    // bundle whose only item is the cart's own variant is never eligible
+    // at all (offer-engine.ts's own filter), so this needs a second real
+    // variant to reach the margin-floor check rather than the
+    // eligibility check. Same zero-margin shape
+    // scripts/demo-failure-upsell-refused.ts (L6-7) already proved out.
+    // No live model dependency, so this can't flake on Groq quota the
+    // way a live-ranking call could.
+    const [explainSecondProduct] = await db
+      .insert(schema.products)
+      .values({ merchantId: merchant.id, name: "Cost Leak Explain Upsell Product", description: "test", status: "active" })
+      .returning();
+    const [explainUpsellVariant] = await db
+      .insert(schema.productVariants)
+      .values({
+        productId: explainSecondProduct.id,
+        merchantId: merchant.id,
+        sku: `COST-LEAK-EXPLAIN-${Date.now()}`,
+        pricePaise: COST_PAISE_MARKER,
+        costPaise: COST_PAISE_MARKER,
+        stock: 5,
+        status: "active",
+      })
+      .returning();
+
+    const [bundle] = await db
+      .insert(schema.bundles)
+      .values({ merchantId: merchant.id, name: "__cost_leak_explain_bundle__", bundlePricePaise: COST_PAISE_MARKER, status: "active" })
+      .returning();
+    await db.insert(schema.bundleItems).values({ bundleId: bundle.id, variantId: explainUpsellVariant.id, quantity: 1 });
+
+    try {
+      await runOfferEngine(merchant.id, cartVariant.id, { agentId: agent.id });
+
+      const decisions = await getUnifiedDecisions(merchant.id, { limit: 50, source: "offer_engine" });
+      expect(JSON.stringify(decisions)).not.toMatch(String(COST_PAISE_MARKER));
+
+      const stats = await getDecisionStats(merchant.id);
+      expect(JSON.stringify(stats)).not.toMatch(String(COST_PAISE_MARKER));
+
+      const refusal = decisions.find((d) => d.source === "offer_engine");
+      expect(refusal).toBeDefined();
+
+      const byId = await getDecisionById(merchant.id, refusal!.id);
+      expect(JSON.stringify(byId)).not.toMatch(String(COST_PAISE_MARKER));
+
+      const explanation = await explainDecision(refusal!);
+      expect(explanation.explanation).not.toMatch(String(COST_PAISE_MARKER));
+    } finally {
+      await db.delete(schema.offerDecisions).where(eq(schema.offerDecisions.merchantId, merchant.id));
+      await db.delete(schema.offers).where(eq(schema.offers.merchantId, merchant.id));
+      await db.delete(schema.bundleItems).where(eq(schema.bundleItems.bundleId, bundle.id));
+      await db.delete(schema.bundles).where(eq(schema.bundles.id, bundle.id));
+      await db.delete(schema.productVariants).where(eq(schema.productVariants.id, explainUpsellVariant.id));
+      await db.delete(schema.products).where(eq(schema.products.id, explainSecondProduct.id));
+    }
+  }, 20_000);
+
+  it("negotiation (Layer 8) — costPaise never reaches the MCP negotiate tool's output, the negotiation refusal record, or the unified explainability surface", async () => {
+    const { merchant, rawKey, product } = await setupMerchantWithAgent();
+
+    // The variant's costPaise carries the marker; its negotiation floor
+    // is a completely separate, ordinary number — the whole point of
+    // DECISIONS.md's "floor is a merchant-authored price, not a derived
+    // margin" choice is that a negotiation never needs to touch cost at
+    // all, so this is really asserting that nothing in the negotiation
+    // path accidentally serializes the variant row whole.
+    const [variant] = await db.select().from(schema.productVariants).where(eq(schema.productVariants.productId, product.id));
+    await db.update(schema.productVariants).set({ floorPricePaise: 40_000 }).where(eq(schema.productVariants.id, variant.id));
+
+    try {
+      // Open via the real MCP tool call, same path a real agent uses.
+      const openReq = new NextRequest("http://localhost/api/mcp", {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${rawKey}` },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "negotiate", arguments: { sku: variant.sku } } }),
+      });
+      const openRes = await mcpPOST(openReq);
+      const openBody = await openRes.json();
+      expect(JSON.stringify(openBody)).not.toMatch(String(COST_PAISE_MARKER));
+
+      const negotiationId = JSON.parse(openBody.result.content[0].text).negotiationId;
+
+      // Exhaust the turn budget with a lowball counter, forcing a real
+      // recorded refusal, then check every surface that could leak cost.
+      let counterBody;
+      for (let i = 0; i < MAX_BUYER_COUNTERS; i++) {
+        const counterReq = new NextRequest("http://localhost/api/mcp", {
+          method: "POST",
+          headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${rawKey}` },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "negotiate", arguments: { negotiationId, offerUnitPricePaise: 100 } } }),
+        });
+        const counterRes = await mcpPOST(counterReq);
+        counterBody = await counterRes.json();
+        expect(JSON.stringify(counterBody)).not.toMatch(String(COST_PAISE_MARKER));
+      }
+
+      const decisions = await getUnifiedDecisions(merchant.id, { limit: 50, source: "negotiation" });
+      expect(JSON.stringify(decisions)).not.toMatch(String(COST_PAISE_MARKER));
+
+      const stats = await getDecisionStats(merchant.id);
+      expect(JSON.stringify(stats)).not.toMatch(String(COST_PAISE_MARKER));
+
+      const refusal = decisions.find((d) => d.source === "negotiation");
+      expect(refusal).toBeDefined();
+      const explanation = await explainDecision(refusal!);
+      expect(explanation.explanation).not.toMatch(String(COST_PAISE_MARKER));
+    } finally {
+      await db.delete(schema.negotiationTurns).where(
+        inArray(
+          schema.negotiationTurns.negotiationId,
+          db.select({ id: schema.negotiations.id }).from(schema.negotiations).where(eq(schema.negotiations.merchantId, merchant.id)),
+        ),
+      );
+      await db.delete(schema.negotiations).where(eq(schema.negotiations.merchantId, merchant.id));
+    }
+  }, 30_000);
 });

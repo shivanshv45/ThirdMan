@@ -24,10 +24,14 @@ const orderRequestSchema = z
     // product/variant. Mutually exclusive with productId — the offer
     // already names what's being bought and at what price.
     offerId: z.string().uuid().optional(),
+    // Layer 8: buy at an agreed negotiated price instead. Mutually
+    // exclusive with productId/offerId — the negotiation already names
+    // the variant, quantity, and agreed price.
+    negotiationId: z.string().uuid().optional(),
     sessionToken: z.string().uuid().optional(),
   })
-  .refine((v) => v.productId !== undefined || v.offerId !== undefined, {
-    message: "either productId or offerId is required",
+  .refine((v) => v.productId !== undefined || v.offerId !== undefined || v.negotiationId !== undefined, {
+    message: "one of productId, offerId, or negotiationId is required",
   });
 
 // Public and unauthenticated — every allowed request creates a real
@@ -65,7 +69,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "invalid request body", details: parsed.error.flatten() }, { status: 400 });
   }
 
-  const { merchantId, productId, variantId, quantity, offerId, sessionToken } = parsed.data;
+  const { merchantId, productId, variantId, quantity, offerId, negotiationId, sessionToken } = parsed.data;
 
   const [merchant] = await db
     .select({ keyIdEncrypted: schema.merchants.razorpayKeyIdEncrypted })
@@ -125,6 +129,48 @@ export async function POST(req: NextRequest) {
       razorpayKeyId: decrypt(merchant.keyIdEncrypted),
       amountPaise: bundle.bundlePricePaise,
       productName: bundle.name,
+    });
+  }
+
+  // Layer 8: buy at an agreed negotiated price. The gate (via
+  // negotiation.ts's resolveNegotiation) re-derives the amount from the
+  // negotiation's own agreed price — this route never computes or trusts
+  // a price itself, same discipline as the offerId branch above.
+  if (negotiationId) {
+    if (!sessionToken) {
+      return NextResponse.json({ error: "sessionToken is required to redeem a negotiated price" }, { status: 400 });
+    }
+
+    const [negotiation] = await db.select().from(schema.negotiations).where(eq(schema.negotiations.id, negotiationId));
+    if (!negotiation || negotiation.merchantId !== merchantId) {
+      return NextResponse.json({ error: "negotiation not found" }, { status: 404 });
+    }
+    if (negotiation.status !== "agreed" || negotiation.agreedUnitPricePaise === null) {
+      return NextResponse.json({ error: `Negotiation is "${negotiation.status}", not agreed.` }, { status: 200 });
+    }
+
+    const amountPaise = negotiation.agreedUnitPricePaise * negotiation.quantity;
+
+    const result = await attemptMoneyAction({
+      agentId: storefrontAgent.id,
+      merchantId,
+      type: "order_create",
+      amountPaise,
+      context: `Storefront checkout: negotiated price for variant ${negotiation.variantId}`,
+      negotiationId,
+      sessionToken,
+    });
+
+    if (result.decision !== "allow" || !result.razorpayOrderId) {
+      return NextResponse.json({ error: result.reason }, { status: 200 });
+    }
+
+    return NextResponse.json({
+      moneyActionId: result.moneyActionId,
+      razorpayOrderId: result.razorpayOrderId,
+      razorpayKeyId: decrypt(merchant.keyIdEncrypted),
+      amountPaise,
+      productName: "Negotiated price",
     });
   }
 

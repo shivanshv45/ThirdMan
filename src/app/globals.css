@@ -1,26 +1,243 @@
 @import "tailwindcss";
 
+/* =============================================================
+   Design system — tokens
+   Character: calm, precise, slightly severe — a system that is
+   clearly counting, and clearly willing to say no. Every token
+   below traces back to that sentence (see DECISIONS.md, "Design
+   character, palette, and typography").
+
+   Dark-only, deliberately (not a partial light theme) — decided,
+   not drifted into. A cool, low-saturation surface reads calm;
+   the decision triad (allow/deny/escalate) is the palette's real
+   spine, not a single generic accent, because that triad is what
+   this product actually does.
+   ============================================================= */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* ---- Surface ---- */
+  --ink: #0a0d0f;
+  --ink-raised: #10151a;
+  --ink-overlay: #161d24;
+  --ink-line: #232c34;
+  --ink-line-soft: #1a2129;
+
+  /* ---- Type colour ---- */
+  --on-ink: #eef2f4;
+  --on-ink-dim: #93a1ac;
+  --on-ink-faint: #5c6870;
+
+  /* ---- Accent — the one actionable colour, used sparingly ---- */
+  --accent: #4fd1c5;
+  --accent-bright: #6ee7db;
+  --accent-ink: #04211d;
+  --accent-wash: rgba(79, 209, 197, 0.12);
+  --accent-wash-strong: rgba(79, 209, 197, 0.22);
+
+  /* ---- Decision triad — the palette's real spine ---- */
+  --allow: #3ecf8e;
+  --allow-bright: #6ee7ac;
+  --allow-wash: rgba(62, 207, 142, 0.13);
+  --allow-line: rgba(62, 207, 142, 0.35);
+
+  --deny: #f2545b;
+  --deny-bright: #ff7b81;
+  --deny-wash: rgba(242, 84, 91, 0.13);
+  --deny-line: rgba(242, 84, 91, 0.35);
+
+  --escalate: #e8a13d;
+  --escalate-bright: #ffc069;
+  --escalate-wash: rgba(232, 161, 61, 0.14);
+  --escalate-line: rgba(232, 161, 61, 0.35);
+
+  /* ---- Type ---- */
+  --font-display: var(--font-fraunces), ui-serif, Georgia, "Times New Roman", serif;
+  --font-body: var(--font-geist-sans), ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Fluid scale — clamp(min, fluid, max) */
+  --t-display: clamp(2.5rem, 5.2vw, 5.25rem);
+  --t-h1: clamp(2.1rem, 4vw, 3.5rem);
+  --t-h2: clamp(1.6rem, 2.6vw, 2.25rem);
+  --t-h3: clamp(1.25rem, 1.6vw, 1.5rem);
+  --t-h4: clamp(1.0625rem, 1.2vw, 1.1875rem);
+  --t-lead: clamp(1.0625rem, 1.3vw, 1.25rem);
+  --t-body: 0.9375rem;
+  --t-sm: 0.8437rem;
+  --t-xs: 0.75rem;
+  --t-label: 0.6875rem;
+
+  /* ---- Rhythm ---- */
+  --gutter: clamp(1.25rem, 3.5vw, 3rem);
+  --section-y: clamp(4rem, 9vw, 8rem);
+  --shell: 1400px;
+  --measure: 60ch;
+  --nav-h: 64px;
+  --sidebar-w: 248px;
+  --sidebar-w-collapsed: 72px;
+
+  /* ---- Motion ---- */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-fast: 150ms;
+  --dur: 260ms;
+  --dur-slow: 600ms;
+  --dur-hero: 1400ms;
+
+  --radius-sm: 4px;
+  --radius: 7px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+
+  /* Legacy Tailwind default tokens some scaffolding still references */
+  --background: var(--ink);
+  --foreground: var(--on-ink);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+
+  --color-ink: var(--ink);
+  --color-ink-raised: var(--ink-raised);
+  --color-ink-overlay: var(--ink-overlay);
+  --color-ink-line: var(--ink-line);
+  --color-ink-line-soft: var(--ink-line-soft);
+
+  --color-on-ink: var(--on-ink);
+  --color-on-ink-dim: var(--on-ink-dim);
+  --color-on-ink-faint: var(--on-ink-faint);
+
+  --color-accent: var(--accent);
+  --color-accent-bright: var(--accent-bright);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-wash: var(--accent-wash);
+
+  --color-allow: var(--allow);
+  --color-allow-bright: var(--allow-bright);
+  --color-allow-wash: var(--allow-wash);
+  --color-allow-line: var(--allow-line);
+
+  --color-deny: var(--deny);
+  --color-deny-bright: var(--deny-bright);
+  --color-deny-wash: var(--deny-wash);
+  --color-deny-line: var(--deny-line);
+
+  --color-escalate: var(--escalate);
+  --color-escalate-bright: var(--escalate-bright);
+  --color-escalate-wash: var(--escalate-wash);
+  --color-escalate-line: var(--escalate-line);
+
+  --font-sans: var(--font-body);
+  --font-display: var(--font-display);
+  --font-mono: var(--font-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* =============================================================
+   Reset
+   ============================================================= */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+  color-scheme: dark;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--ink);
+  color: var(--on-ink);
+  font-family: var(--font-body);
+  font-size: var(--t-body);
+  line-height: 1.55;
+  font-synthesis-weight: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+h1, h2, h3, h4 {
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.08;
+  text-wrap: balance;
+}
+
+p {
+  text-wrap: pretty;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+/* Numbers: money, ids, SKUs, percentages, counts — always tabular,
+   never the proportional body face. See DECISIONS.md. */
+.num,
+.font-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "zero" 1;
+}
+
+::selection {
+  background: var(--accent-wash-strong);
+  color: var(--on-ink);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* =============================================================
+   Reveal — one page-wide IntersectionObserver flips these once.
+   Reduced motion: everything is immediately visible, never
+   permanently hidden because the observer never fired.
+   ============================================================= */
+
+[data-reveal] {
+  opacity: 0;
+  transform: translateY(14px);
+  transition: opacity var(--dur-slow) var(--ease-out), transform var(--dur-slow) var(--ease-out);
+}
+
+[data-reveal="in"] {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+[data-rise] {
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity var(--dur) var(--ease-out), transform var(--dur) var(--ease-out);
+}
+
+[data-rise="in"] {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-reveal],
+  [data-rise] {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
 }

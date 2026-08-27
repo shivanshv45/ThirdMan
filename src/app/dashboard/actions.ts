@@ -34,6 +34,7 @@ export async function setSpendCap(formData: FormData) {
     windowHours: Number(formData.get("windowHours")),
   });
   revalidatePath("/dashboard");
+  revalidatePath("/dashboard/agents");
 }
 
 export type AgentKeyActionState =
@@ -51,6 +52,7 @@ export async function createAgentAction(
   try {
     const { agent, rawKey } = await mutations.createAgent(merchant.id, name);
     revalidatePath("/dashboard");
+    revalidatePath("/dashboard/agents");
     return { rawKey, agentName: agent.name };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Could not create agent." };
@@ -67,6 +69,7 @@ export async function rotateAgentKeyAction(
   try {
     const { agent, rawKey } = await mutations.rotateAgentKey(merchant.id, agentId);
     revalidatePath("/dashboard");
+    revalidatePath("/dashboard/agents");
     return { rawKey, agentName: agent.name };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Could not rotate key." };
@@ -77,12 +80,14 @@ export async function revokeAgent(formData: FormData) {
   const merchant = await requireSessionMerchant();
   await mutations.revokeAgent(merchant.id, String(formData.get("agentId")));
   revalidatePath("/dashboard");
+  revalidatePath("/dashboard/agents");
 }
 
 export async function reactivateAgent(formData: FormData) {
   const merchant = await requireSessionMerchant();
   await mutations.reactivateAgent(merchant.id, String(formData.get("agentId")));
   revalidatePath("/dashboard");
+  revalidatePath("/dashboard/agents");
 }
 
 export async function approveEscalation(formData: FormData) {

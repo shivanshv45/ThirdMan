@@ -358,6 +358,75 @@ export async function updateProduct(input: UpdateProductInput) {
   return { product, variant };
 }
 
+export interface SetNegotiationFloorInput {
+  merchantId: string;
+  variantId: string;
+  /** Null clears the floor — the variant becomes not negotiable, a real absence rather than a permissive default (see negotiation.ts). */
+  floorPriceRupees: number | null;
+  belowCostAcknowledged: boolean;
+}
+
+/**
+ * Sets (or clears) one variant's negotiation floor (Layer 8) — the
+ * merchant-authored minimum negotiate.ts's engine is bounded by. Setting
+ * one below the variant's own costPaise requires explicit acknowledgment,
+ * mirroring bundles.ts's createBundle belowCostAcknowledged discipline. A
+ * floor above the catalogue price is rejected outright — "negotiate up"
+ * is not a real request this feature serves.
+ */
+export async function setVariantNegotiationFloor(input: SetNegotiationFloorInput) {
+  const variant = await requireOwnedVariant(input.merchantId, input.variantId);
+
+  if (input.floorPriceRupees === null) {
+    const [updated] = await db
+      .update(schema.productVariants)
+      .set({ floorPricePaise: null, belowCostFloorAcknowledged: false })
+      .where(eq(schema.productVariants.id, input.variantId))
+      .returning();
+
+    await logAuditEntry({
+      merchantId: input.merchantId,
+      actor: "merchant",
+      event: "negotiation_floor_cleared",
+      decision: "n/a",
+      reason: `Merchant made "${variant.sku}" not negotiable — cleared its floor price.`,
+    });
+
+    return updated;
+  }
+
+  const floorPricePaise = rupeesToPaise(input.floorPriceRupees);
+  if (floorPricePaise <= 0) throw new Error("Floor price must be positive");
+
+  if (floorPricePaise > variant.pricePaise) {
+    throw new Error(
+      `Floor price ₹${input.floorPriceRupees.toFixed(2)} is above "${variant.sku}"'s own catalogue price of ₹${(variant.pricePaise / 100).toFixed(2)}. A floor cannot exceed the listed price.`,
+    );
+  }
+
+  if (floorPricePaise < variant.costPaise && !input.belowCostAcknowledged) {
+    throw new Error(
+      `Floor price ₹${input.floorPriceRupees.toFixed(2)} is below "${variant.sku}"'s cost of ₹${(variant.costPaise / 100).toFixed(2)}. Confirm to allow negotiating at a loss deliberately.`,
+    );
+  }
+
+  const [updated] = await db
+    .update(schema.productVariants)
+    .set({ floorPricePaise, belowCostFloorAcknowledged: floorPricePaise < variant.costPaise })
+    .where(eq(schema.productVariants.id, input.variantId))
+    .returning();
+
+  await logAuditEntry({
+    merchantId: input.merchantId,
+    actor: "merchant",
+    event: "negotiation_floor_set",
+    decision: "n/a",
+    reason: `Merchant set "${variant.sku}"'s negotiation floor to ₹${input.floorPriceRupees.toFixed(2)} (catalogue price ₹${(variant.pricePaise / 100).toFixed(2)}, max discount ${(100 - (floorPricePaise / variant.pricePaise) * 100).toFixed(0)}%)${updated.belowCostFloorAcknowledged ? ", below cost — acknowledged as a deliberate loss" : ""}.`,
+  });
+
+  return updated;
+}
+
 /** Archives a product and every one of its variants rather than deleting them — past money_actions rows keep their reference, and archived products/variants stop appearing in the catalogue or accepting purchases. */
 export async function archiveProduct(merchantId: string, productId: string) {
   const existing = await requireOwnedProduct(merchantId, productId);

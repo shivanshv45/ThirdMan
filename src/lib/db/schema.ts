@@ -228,6 +228,17 @@ export const productVariants = pgTable(
     // A URL only. No image upload/hosting — see DECISIONS.md.
     imageUrl: text("image_url"),
     status: productStatusEnum("status").notNull().default("active"),
+    // Layer 8: the merchant's stated minimum unit price for negotiation.
+    // Null means this variant is not negotiable at all — a real absence,
+    // never a default that silently permits negotiation (same discipline
+    // as merchant_policies/merchant_reward_settings having no row at all
+    // meaning "off"). Deliberately a merchant-authored price, not derived
+    // from costPaise at negotiation time — see DECISIONS.md, "The
+    // negotiation floor is a merchant-authored price, not a margin."
+    floorPricePaise: integer("floor_price_paise"),
+    // True only if the merchant explicitly acknowledged floorPricePaise
+    // sits below costPaise — mirrors bundles.belowCostAcknowledged.
+    belowCostFloorAcknowledged: boolean("below_cost_floor_acknowledged").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -323,6 +334,13 @@ export const moneyActions = pgTable(
     // in this file — drizzle resolves table references lazily via
     // closures, so the forward reference is fine.
     offerId: uuid("offer_id").references((): typeof offers.id => offers.id),
+    // Layer 8: when a purchase redeems an agreed negotiated price, the
+    // gate resolves the amount from this row, never from anything the
+    // caller asserted (see gate.ts's resolveNegotiation). New column,
+    // never repurposing productId/variantId/offerId — same discipline
+    // Layer 5-1 and Layer 6-1 both used. Forward reference via a closure,
+    // same as offerId above — negotiations is declared later in this file.
+    negotiationId: uuid("negotiation_id").references((): typeof negotiations.id => negotiations.id),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -743,6 +761,93 @@ export const rewardCoinLedger = pgTable("reward_coin_ledger", {
   moneyActionId: uuid("money_action_id")
     .notNull()
     .references(() => moneyActions.id),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// --- Layer 8: bounded autonomous negotiation (§4) ---
+
+// Only "refused_turns_exhausted" is ever actually reached — a
+// negotiation only fails once the buyer's counters run out while still
+// below the floor; there is no separate "floor breached but turns
+// remain" terminal state, since submitBuyerCounter always offers another
+// counter round rather than giving up early. A second, distinct
+// "refused_floor" value was considered and dropped before any row ever
+// used it (verified live against the real DB) — see DECISIONS.md.
+export const negotiationStatusEnum = pgEnum("negotiation_status", [
+  "open",
+  "agreed",
+  "refused_turns_exhausted",
+  "expired",
+  "redeemed",
+]);
+
+export const negotiationTurnSpeakerEnum = pgEnum("negotiation_turn_speaker", ["buyer", "merchant_agent"]);
+
+// A negotiation is, itself, the artifact a purchase redeems once it
+// reaches "agreed" — there is no separate "agreed price" table, since an
+// agreed negotiation IS a merchant-authored price at that point, the same
+// way an accepted offers row IS a redeemable discount (DECISIONS.md,
+// "How an agreed negotiated price is represented"). agreedPricePaise is
+// null until status transitions to "agreed" and is never written any
+// other way — see negotiation.ts's concedeOrAgree.
+export const negotiations = pgTable("negotiations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  merchantId: uuid("merchant_id")
+    .notNull()
+    .references(() => merchants.id),
+  variantId: uuid("variant_id")
+    .notNull()
+    .references(() => productVariants.id),
+  quantity: integer("quantity").notNull().default(1),
+  // Nullable like offers.agentId/sessionToken: whichever identity is
+  // negotiating, never both — enforced in code.
+  agentId: uuid("agent_id").references(() => agents.id),
+  sessionToken: text("session_token"),
+  status: negotiationStatusEnum("status").notNull().default("open"),
+  // The catalogue price at negotiation start — the ceiling every counter
+  // and concession is measured against, frozen at open time so a
+  // mid-negotiation price change on the variant can't retroactively
+  // change what's being negotiated.
+  catalogueUnitPricePaise: integer("catalogue_unit_price_paise").notNull(),
+  // The floor this negotiation is bound by, copied from the variant's
+  // floorPricePaise at open time for the same freezing reason as
+  // catalogueUnitPricePaise — never re-read from product_variants after
+  // opening, so a merchant changing the floor mid-negotiation can't move
+  // the goalposts on an already-open one.
+  floorUnitPricePaise: integer("floor_unit_price_paise").notNull(),
+  // The most recent price on the table from each side, per unit. Updated
+  // every turn by negotiation.ts, never by a caller directly.
+  currentBuyerOfferPaise: integer("current_buyer_offer_paise"),
+  currentMerchantCounterPaise: integer("current_merchant_counter_paise"),
+  // Only set once status = "agreed" — see the table comment above.
+  agreedUnitPricePaise: integer("agreed_unit_price_paise"),
+  buyerTurnCount: integer("buyer_turn_count").notNull().default(0),
+  // A real, code-checked deterministic bound — an agreed price can't be
+  // redeemed, and an open negotiation can't be continued, once this
+  // passes. Same discipline as offers.expiresAt.
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// One row per exchange — the transcript a merchant reads end to end.
+// Cannot live in audit_log: logAuditEntry never throws into a money path
+// and a failed write is swallowed (audit.ts), so it's not a reliable home
+// for a record that must be reconstructable turn-by-turn.
+export const negotiationTurns = pgTable("negotiation_turns", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  negotiationId: uuid("negotiation_id")
+    .notNull()
+    .references(() => negotiations.id),
+  speaker: negotiationTurnSpeakerEnum("speaker").notNull(),
+  // Null on a merchant_agent turn generated by the deterministic-degrade
+  // path (no model call made) — see negotiation.ts's fail-closed comment.
+  offeredUnitPricePaise: integer("offered_unit_price_paise"),
+  message: text("message").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

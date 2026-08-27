@@ -36,7 +36,9 @@ async function main() {
   console.log("All LLM wrapper checks passed.");
 }
 
-main().catch((err) => {
-  console.error("LLM check FAILED:", err);
-  process.exit(1);
-});
+main()
+  .then(() => process.exit(0))
+  .catch((err) => {
+    console.error("LLM check FAILED:", err);
+    process.exit(1);
+  });

@@ -3,8 +3,9 @@ import { and, asc, eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { complete, completeStructured } from "@/lib/llm";
 import { getPublicCatalogue, type PublicProduct } from "@/lib/storefront-catalogue";
-import { formatPaise } from "@/lib/money";
+import { formatPaise, rupeesToPaise } from "@/lib/money";
 import { runOfferEngine, getOpenOfferForIdentity } from "@/lib/offer-engine";
+import { openNegotiation, submitBuyerCounter, getOpenNegotiationForIdentity, MAX_BUYER_COUNTERS } from "@/lib/negotiation";
 import { z } from "zod";
 
 /**
@@ -24,10 +25,19 @@ import { z } from "zod";
  */
 
 const intentSchema = z.object({
-  action: z.enum(["add_to_cart", "set_quantity", "remove_from_cart", "none"]),
+  action: z.enum(["add_to_cart", "set_quantity", "remove_from_cart", "counter_offer", "none"]),
   /** The product name as the customer referred to it — resolved against the real catalogue in code, never trusted as an id. */
   productName: z.string().nullable(),
   quantity: z.number().int().positive().nullable(),
+  /**
+   * Layer 8: only meaningful for action "counter_offer" — the per-unit
+   * rupee price the customer proposed ("would you do ₹9 each?"). Parsed
+   * by the model from natural language, but re-validated as a real
+   * integer against the real variant in code before it ever reaches the
+   * negotiation engine — the model proposes, code applies, same split
+   * applyIntent already uses for cart lines.
+   */
+  counterUnitPriceRupees: z.number().positive().nullable(),
 });
 
 type ChatIntent = z.infer<typeof intentSchema>;
@@ -37,6 +47,20 @@ export interface ChatTurnResult {
   cart: { product: ChatProduct; quantity: number; subtotalPaise: number } | null;
   /** Layer 6-3: at most one open upsell offer for this cart, if the engine found one. Never present without a cart. */
   offer: { offerId: string; bundleName: string; amountPaise: number; reasonText: string } | null;
+  /**
+   * Layer 8: the cart's variant's open negotiation, if one exists — the
+   * client reads this to know whether to show a "propose a price" UI and,
+   * once status is "agreed", a checkout button that buys at that exact
+   * price via negotiationId.
+   */
+  negotiation: {
+    negotiationId: string;
+    status: (typeof schema.negotiationStatusEnum.enumValues)[number];
+    catalogueUnitPricePaise: number;
+    agreedUnitPricePaise: number | null;
+    buyerTurnsUsed: number;
+    buyerTurnsAllowed: number;
+  } | null;
 }
 
 async function getOrCreateConversation(merchantId: string, sessionToken: string) {
@@ -159,16 +183,16 @@ async function classifyIntent(
 
   try {
     const { data } = await completeStructured({
-      prompt: `A customer is chatting with a coffee shop's storefront assistant. Given their latest message, decide if they want to add, change the quantity of, or remove an item from their cart, referring only to products in this real catalogue:\n${catalogueList}\n\n${cartContext}\n\nCustomer message: "${message}"\n\nIf they name a product not in this list, or their intent is unclear, respond with action "none". For set_quantity, productName may be null if it clearly refers to the current cart item.`,
+      prompt: `A customer is chatting with a coffee shop's storefront assistant. Given their latest message, decide if they want to add, change the quantity of, or remove an item from their cart, or propose a lower price for the item currently in their cart (a real, per-unit rupee counter-offer, e.g. "would you do ₹9 each?" or "I'll pay 8.50"), referring only to products in this real catalogue:\n${catalogueList}\n\n${cartContext}\n\nCustomer message: "${message}"\n\nIf they name a product not in this list, or their intent is unclear, respond with action "none". For set_quantity, productName may be null if it clearly refers to the current cart item. For counter_offer, counterUnitPriceRupees must be the exact per-unit rupee number they proposed — never invent one, and only use counter_offer if the cart already has an item and the customer named a specific price.`,
       schema: intentSchema,
-      schemaDescription: `{"action": "add_to_cart"|"set_quantity"|"remove_from_cart"|"none", "productName": string|null, "quantity": number|null}`,
+      schemaDescription: `{"action": "add_to_cart"|"set_quantity"|"remove_from_cart"|"counter_offer"|"none", "productName": string|null, "quantity": number|null, "counterUnitPriceRupees": number|null}`,
     });
     return data;
   } catch (err) {
     // A model failure on intent classification degrades to "did nothing"
     // — never guesses a purchase intent it couldn't actually classify.
     console.warn("[chat] intent classification failed, treating as no cart change:", err);
-    return { action: "none", productName: null, quantity: null };
+    return { action: "none", productName: null, quantity: null, counterUnitPriceRupees: null };
   }
 }
 
@@ -198,6 +222,9 @@ async function applyIntent(
       .set({ cartProductId: variant.productId, cartVariantId: variant.id, cartQuantity: quantity })
       .where(eq(schema.conversations.id, conversation.id));
   }
+
+  // counter_offer never touches the cart — negotiation.ts owns that
+  // state entirely, driven separately in handleChatTurn.
 }
 
 async function loadCart(conversation: typeof schema.conversations.$inferSelect, catalogue: ChatProduct[]) {
@@ -230,6 +257,47 @@ export async function handleChatTurn(
 
   const [updatedConversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, conversation.id));
   const cart = await loadCart(updatedConversation, catalogue);
+
+  // Layer 8: a counter_offer intent is handled entirely outside the
+  // generic reply-generation call below — negotiation.ts's
+  // submitBuyerCounter is the sole author of what's said about a price,
+  // exactly like the SYSTEM FACT discipline this file already applies to
+  // the cart (FAILURES.md's Layer 5-7 paraphrasing bug is the reason: a
+  // number this important must never pass through a second model call
+  // that could restate it differently). rupeesToPaise here is the same
+  // form-boundary conversion money.ts uses everywhere else — the model
+  // only ever supplies a rupee figure in natural language, never paise.
+  if (intent.action === "counter_offer" && intent.counterUnitPriceRupees && cart) {
+    const counterUnitPricePaise = rupeesToPaise(intent.counterUnitPriceRupees);
+
+    let negotiationRow = await getOpenNegotiationForIdentity(merchantId, cart.product.id, { sessionToken });
+    if (!negotiationRow) {
+      const opened = await openNegotiation(merchantId, cart.product.id, cart.quantity, { sessionToken });
+      if (!opened.negotiation) {
+        const reply = `Sorry — ${opened.refusalReason}`;
+        await db.insert(schema.chatMessages).values({ conversationId: conversation.id, role: "assistant", content: reply });
+        return { reply, cart, offer: null, negotiation: null };
+      }
+      negotiationRow = opened.negotiation;
+    }
+
+    const result = await submitBuyerCounter(negotiationRow.id, merchantId, { sessionToken }, counterUnitPricePaise);
+    await db.insert(schema.chatMessages).values({ conversationId: conversation.id, role: "assistant", content: result.message });
+
+    return {
+      reply: result.message,
+      cart,
+      offer: null,
+      negotiation: {
+        negotiationId: result.negotiation.id,
+        status: result.negotiation.status,
+        catalogueUnitPricePaise: result.negotiation.catalogueUnitPricePaise,
+        agreedUnitPricePaise: result.negotiation.agreedUnitPricePaise,
+        buyerTurnsUsed: result.negotiation.buyerTurnCount,
+        buyerTurnsAllowed: MAX_BUYER_COUNTERS,
+      },
+    };
+  }
 
   const history = await getHistory(conversation.id);
   const historyText = history.map((m) => `${m.role === "customer" ? "Customer" : "Assistant"}: ${m.content}`).join("\n");
@@ -276,20 +344,40 @@ export async function handleChatTurn(
     }
   }
 
-  return { reply, cart, offer };
+  // Surfaces an already-open (or already-agreed) negotiation even on a
+  // turn that wasn't itself a counter_offer, so the client can keep
+  // showing the merchant's last counter / the agreed-price checkout
+  // button across ordinary conversation turns.
+  let negotiation: ChatTurnResult["negotiation"] = null;
+  if (cart) {
+    const existingNegotiation = await getOpenNegotiationForIdentity(merchantId, cart.product.id, { sessionToken });
+    if (existingNegotiation) {
+      negotiation = {
+        negotiationId: existingNegotiation.id,
+        status: existingNegotiation.status,
+        catalogueUnitPricePaise: existingNegotiation.catalogueUnitPricePaise,
+        agreedUnitPricePaise: existingNegotiation.agreedUnitPricePaise,
+        buyerTurnsUsed: existingNegotiation.buyerTurnCount,
+        buyerTurnsAllowed: MAX_BUYER_COUNTERS,
+      };
+    }
+  }
+
+  return { reply, cart, offer, negotiation };
 }
 
 export async function getConversationState(merchantId: string, sessionToken: string): Promise<{
   messages: { role: "customer" | "assistant"; content: string }[];
   cart: { product: ChatProduct; quantity: number; subtotalPaise: number } | null;
   offer: ChatTurnResult["offer"];
+  negotiation: ChatTurnResult["negotiation"];
 }> {
   const [conversation] = await db
     .select()
     .from(schema.conversations)
     .where(and(eq(schema.conversations.merchantId, merchantId), eq(schema.conversations.sessionToken, sessionToken)));
 
-  if (!conversation) return { messages: [], cart: null, offer: null };
+  if (!conversation) return { messages: [], cart: null, offer: null, negotiation: null };
 
   const catalogue = toChatProducts(await getPublicCatalogue(merchantId));
   const [messages, cart] = await Promise.all([getHistory(conversation.id), loadCart(conversation, catalogue)]);
@@ -301,5 +389,20 @@ export async function getConversationState(merchantId: string, sessionToken: str
     if (bundle) offer = { offerId: existingOffer.id, bundleName: bundle.name, amountPaise: bundle.bundlePricePaise, reasonText: existingOffer.reasonText };
   }
 
-  return { messages: messages.map((m) => ({ role: m.role, content: m.content })), cart, offer };
+  let negotiation: ChatTurnResult["negotiation"] = null;
+  if (cart) {
+    const existingNegotiation = await getOpenNegotiationForIdentity(merchantId, cart.product.id, { sessionToken });
+    if (existingNegotiation) {
+      negotiation = {
+        negotiationId: existingNegotiation.id,
+        status: existingNegotiation.status,
+        catalogueUnitPricePaise: existingNegotiation.catalogueUnitPricePaise,
+        agreedUnitPricePaise: existingNegotiation.agreedUnitPricePaise,
+        buyerTurnsUsed: existingNegotiation.buyerTurnCount,
+        buyerTurnsAllowed: MAX_BUYER_COUNTERS,
+      };
+    }
+  }
+
+  return { messages: messages.map((m) => ({ role: m.role, content: m.content })), cart, offer, negotiation };
 }

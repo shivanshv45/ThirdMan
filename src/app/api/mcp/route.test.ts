@@ -98,11 +98,24 @@ describe("POST /api/mcp", () => {
     agentIds = [];
     productIds = [];
 
+    await db.delete(schema.auditLog).where(eq(schema.auditLog.merchantId, currentMerchantId));
+    await db.delete(schema.moneyActions).where(eq(schema.moneyActions.merchantId, currentMerchantId));
+
+    // Layer 8: negotiations/negotiation_turns FK into agents and
+    // product_variants — must go before both, and negotiation_turns
+    // before negotiations. Same FK-dependency-order discipline
+    // FAILURES.md documents elsewhere (L1-2/L3-6/L6-1).
+    const negotiationIds = (
+      await db.select({ id: schema.negotiations.id }).from(schema.negotiations).where(eq(schema.negotiations.merchantId, currentMerchantId))
+    ).map((n) => n.id);
+    if (negotiationIds.length > 0) {
+      await db.delete(schema.negotiationTurns).where(inArray(schema.negotiationTurns.negotiationId, negotiationIds));
+    }
+    await db.delete(schema.negotiations).where(eq(schema.negotiations.merchantId, currentMerchantId));
+
     if (currentAgentIds.length > 0) {
       await db.delete(schema.spendCaps).where(inArray(schema.spendCaps.agentId, currentAgentIds));
     }
-    await db.delete(schema.auditLog).where(eq(schema.auditLog.merchantId, currentMerchantId));
-    await db.delete(schema.moneyActions).where(eq(schema.moneyActions.merchantId, currentMerchantId));
     await db.delete(schema.agents).where(eq(schema.agents.merchantId, currentMerchantId));
     if (currentProductIds.length > 0) {
       await db.delete(schema.productVariants).where(inArray(schema.productVariants.productId, currentProductIds));
@@ -260,5 +273,63 @@ describe("POST /api/mcp", () => {
     const { toolResult } = await callTool(rawKey, "get_merchant_policy");
     expect(toolResult.published).toBe(false);
     expect(toolResult.summary).toMatch(/not published/i);
+  });
+
+  it("negotiate opens a negotiation only on a variant with a floor set — no floor means refused, not opened", async () => {
+    const merchant = await makeMerchant();
+    merchantId = merchant.id;
+    const { agent, rawKey } = await makeAgentWithCap(merchant.id);
+    agentIds.push(agent.id);
+    const { product, variant } = await makeProductWithVariant(merchant.id, `MCP-NEG-NOFLOOR-${Date.now()}`);
+    productIds.push(product.id);
+
+    const { toolResult } = await callTool(rawKey, "negotiate", { sku: variant.sku });
+    expect(toolResult.outcome).toBe("refused");
+    expect(toolResult.message).toMatch(/not negotiable/i);
+  });
+
+  it("negotiate over MCP: a real floor holds even under a lowball counter, and an agreed price redeems as a real purchase", async () => {
+    const merchant = await makeMerchant();
+    merchantId = merchant.id;
+    const { agent, rawKey } = await makeAgentWithCap(merchant.id);
+    agentIds.push(agent.id);
+    const { product, variant } = await makeProductWithVariant(merchant.id, `MCP-NEG-FLOOR-${Date.now()}`);
+    productIds.push(product.id);
+    await db.update(schema.productVariants).set({ floorPricePaise: 50_000 }).where(eq(schema.productVariants.id, variant.id));
+
+    const opened = await callTool(rawKey, "negotiate", { sku: variant.sku });
+    expect(opened.toolResult.outcome).toBe("opened");
+    const negotiationId = opened.toolResult.negotiationId;
+
+    // At exactly the floor, agreed immediately — deterministic, no model
+    // decision required for the accept path.
+    const countered = await callTool(rawKey, "negotiate", { negotiationId, offerUnitPricePaise: 50_000 });
+    expect(countered.toolResult.outcome).toBe("agreed");
+    expect(countered.toolResult.agreedUnitPricePaise).toBe(50_000);
+
+    const purchase = await callTool(rawKey, "purchase", { negotiationId });
+    expect(purchase.toolResult.decision).toBe("allow");
+
+    const [moneyAction] = await db.select().from(schema.moneyActions).where(eq(schema.moneyActions.negotiationId, negotiationId));
+    expect(moneyAction).toBeDefined();
+    expect(moneyAction.amountPaise).toBe(50_000);
+  }, 30_000);
+
+  it("negotiate is agent-scoped by enumeration — agent B cannot continue agent A's negotiation with its real id", async () => {
+    const merchantA = await makeMerchant();
+    merchantId = merchantA.id;
+    const { agent: agentA, rawKey: rawKeyA } = await makeAgentWithCap(merchantA.id);
+    agentIds.push(agentA.id);
+    const { agent: agentB, rawKey: rawKeyB } = await makeAgentWithCap(merchantA.id);
+    agentIds.push(agentB.id);
+    const { product, variant } = await makeProductWithVariant(merchantA.id, `MCP-NEG-ISOLATION-${Date.now()}`);
+    productIds.push(product.id);
+    await db.update(schema.productVariants).set({ floorPricePaise: 50_000 }).where(eq(schema.productVariants.id, variant.id));
+
+    const opened = await callTool(rawKeyA, "negotiate", { sku: variant.sku });
+    const negotiationId = opened.toolResult.negotiationId;
+
+    const crossAgentAttempt = await callTool(rawKeyB, "negotiate", { negotiationId, offerUnitPricePaise: 50_000 });
+    expect(crossAgentAttempt.toolResult.outcome).toBe("refused");
   });
 });

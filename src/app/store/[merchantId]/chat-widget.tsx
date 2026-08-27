@@ -51,6 +51,15 @@ interface Offer {
   reasonText: string;
 }
 
+interface Negotiation {
+  negotiationId: string;
+  status: string;
+  catalogueUnitPricePaise: number;
+  agreedUnitPricePaise: number | null;
+  buyerTurnsUsed: number;
+  buyerTurnsAllowed: number;
+}
+
 export function ChatWidget({ merchantId }: { merchantId: string }) {
   const [open, setOpen] = useState(false);
   // Lazy initializer runs once on mount, client-side only (this is a
@@ -61,6 +70,7 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
   const [cart, setCart] = useState<Cart | null>(null);
   const [offer, setOffer] = useState<Offer | null>(null);
   const [decliningOffer, setDecliningOffer] = useState(false);
+  const [negotiation, setNegotiation] = useState<Negotiation | null>(null);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -89,6 +99,7 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
         setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
         setCart(data.cart);
         setOffer(data.offer ?? null);
+        setNegotiation(data.negotiation ?? null);
       } else {
         setMessages((prev) => [...prev, { role: "assistant", content: "Sorry, something went wrong. Please try again." }]);
       }
@@ -175,7 +186,33 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
         </div>
       )}
 
-      {cart && (
+      {negotiation && negotiation.status === "agreed" && cart && (
+        <div className="border-t px-3 py-2 bg-green-50">
+          <p className="text-sm text-green-900 mb-2">
+            Agreed at {rupees(negotiation.agreedUnitPricePaise!)} per unit.
+          </p>
+          <BuyButton
+            merchantId={merchantId}
+            negotiationId={negotiation.negotiationId}
+            sessionToken={sessionToken}
+            productName={cart.product.name}
+            onSuccess={() => {
+              setNegotiation(null);
+              setCart(null);
+            }}
+          />
+        </div>
+      )}
+
+      {negotiation && negotiation.status === "open" && (
+        <div className="border-t px-3 py-2 bg-amber-50">
+          <p className="text-xs text-amber-900">
+            Negotiating — {negotiation.buyerTurnsUsed}/{negotiation.buyerTurnsAllowed} counter-offers used. Propose a price in the message box below (e.g. &ldquo;would you do ₹9 each?&rdquo;).
+          </p>
+        </div>
+      )}
+
+      {cart && !(negotiation && negotiation.status === "agreed") && (
         <div className="border-t px-3 py-2 bg-gray-50">
           <div className="flex items-center justify-between text-sm mb-2">
             <span>

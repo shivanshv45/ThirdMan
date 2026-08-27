@@ -10,6 +10,7 @@ import { formatPaise } from "@/lib/money";
 import { runOfferEngine, getOpenOfferForIdentity } from "@/lib/offer-engine";
 import { acceptOffer } from "@/lib/discount";
 import { getRewardBalance, redeemRewardCoins } from "@/lib/reward-actions";
+import { openNegotiation, submitBuyerCounter, getOpenNegotiationForIdentity, MAX_BUYER_COUNTERS } from "@/lib/negotiation";
 
 /**
  * This product's own MCP server (Layer 5-4) — the headline of the layer.
@@ -322,19 +323,120 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
   );
 
   server.registerTool(
+    "negotiate",
+    {
+      title: "Negotiate price",
+      description:
+        `Opens or continues a price negotiation on one SKU. Call with only "sku" (and optionally "quantity") to open — this tells you whether the variant is negotiable at all, and if so returns a negotiationId. Call again with that negotiationId and "offerUnitPricePaise" (your per-unit counter-offer, integer paise) to propose a price; the result is either "agreed" (you may now purchase at this exact price via purchase's negotiationId parameter), "countered" (the merchant's agent proposes a different price — call again with a new offer, or accept theirs by proposing exactly their counter), or "refused" (no further negotiation possible — the reason explains why, e.g. the turn limit was reached). You get at most ${MAX_BUYER_COUNTERS} counter-offers per negotiation, so use them purposefully rather than probing incrementally. Only one negotiation may be open per SKU at a time.`,
+      inputSchema: {
+        sku: z.string().min(1).optional().describe("Required to open a new negotiation. Omit when continuing one via negotiationId."),
+        quantity: z.number().int().positive().max(999).default(1).describe("Only used when opening a new negotiation."),
+        negotiationId: z.string().uuid().optional().describe("The id from a prior negotiate call, to continue an already-open negotiation."),
+        offerUnitPricePaise: z.number().int().positive().optional().describe("Your per-unit counter-offer, integer paise. Required when negotiationId is given."),
+      },
+    },
+    async ({ sku, quantity, negotiationId, offerUnitPricePaise }) => {
+      if (negotiationId) {
+        if (offerUnitPricePaise === undefined) {
+          return toolText(JSON.stringify({ outcome: "refused", message: "offerUnitPricePaise is required when continuing a negotiation." }));
+        }
+        try {
+          const result = await submitBuyerCounter(negotiationId, agent.merchantId, { agentId: agent.id }, offerUnitPricePaise);
+          return toolText(
+            JSON.stringify({
+              negotiationId: result.negotiation.id,
+              outcome: result.outcome,
+              message: result.message,
+              status: result.negotiation.status,
+              merchantCounterUnitPricePaise: result.negotiation.currentMerchantCounterPaise,
+              agreedUnitPricePaise: result.negotiation.agreedUnitPricePaise,
+              buyerTurnsUsed: result.negotiation.buyerTurnCount,
+              buyerTurnsAllowed: MAX_BUYER_COUNTERS,
+            }),
+          );
+        } catch (err) {
+          return toolText(JSON.stringify({ outcome: "refused", message: err instanceof Error ? err.message : String(err) }));
+        }
+      }
+
+      if (!sku) {
+        return toolText(JSON.stringify({ outcome: "refused", message: "sku is required to open a new negotiation." }));
+      }
+
+      const catalogue = await getPublicCatalogue(agent.merchantId);
+      const found = findVariantBySku(catalogue, sku);
+      if (!found) return toolText(JSON.stringify({ outcome: "refused", message: `No SKU "${sku}" found for this merchant.` }));
+
+      const existing = await getOpenNegotiationForIdentity(agent.merchantId, found.variant.id, { agentId: agent.id });
+      if (existing) {
+        return toolText(
+          JSON.stringify({
+            negotiationId: existing.id,
+            outcome: "reopened",
+            message: "A negotiation on this SKU is already open. Continue it with offerUnitPricePaise.",
+            catalogueUnitPricePaise: existing.catalogueUnitPricePaise,
+            buyerTurnsUsed: existing.buyerTurnCount,
+            buyerTurnsAllowed: MAX_BUYER_COUNTERS,
+          }),
+        );
+      }
+
+      const { negotiation, refusalReason } = await openNegotiation(agent.merchantId, found.variant.id, quantity, { agentId: agent.id });
+      if (!negotiation) {
+        return toolText(JSON.stringify({ outcome: "refused", message: refusalReason }));
+      }
+
+      return toolText(
+        JSON.stringify({
+          negotiationId: negotiation.id,
+          outcome: "opened",
+          message: `Negotiation opened on "${found.variant.sku}", listed at ${formatPaise(negotiation.catalogueUnitPricePaise)} per unit. Propose a per-unit price with offerUnitPricePaise.`,
+          catalogueUnitPricePaise: negotiation.catalogueUnitPricePaise,
+          buyerTurnsUsed: 0,
+          buyerTurnsAllowed: MAX_BUYER_COUNTERS,
+        }),
+      );
+    },
+  );
+
+  server.registerTool(
     "purchase",
     {
       title: "Purchase",
       description:
-        "Buys a specific variant by its SKU, at the catalogue's real price — you cannot set the price yourself. Quantity defaults to 1. Alternatively, pass offerId (from get_offers) instead of sku/quantity to buy an accepted bundle upsell at ITS real price — also never one you set. Subject to your own spend cap (see get_spend_status); a purchase that would exceed it, or a variant that's out of stock, comes back as a successful tool result describing exactly why it was refused, not a protocol error — read the result to see if you were allowed, denied, or escalated for human review.",
+        "Buys a specific variant by its SKU, at the catalogue's real price — you cannot set the price yourself. Quantity defaults to 1. Alternatively, pass offerId (from get_offers) to buy an accepted bundle upsell at ITS real price, or negotiationId (from negotiate, once its outcome is \"agreed\") to buy at that agreed price — in both cases the price is re-derived from the merchant's own record, never one you assert. Subject to your own spend cap (see get_spend_status); a purchase that would exceed it, or a variant that's out of stock, comes back as a successful tool result describing exactly why it was refused, not a protocol error — read the result to see if you were allowed, denied, or escalated for human review.",
       inputSchema: {
         sku: z.string().min(1).optional(),
         quantity: z.number().int().positive().max(999).default(1),
-        offerId: z.string().uuid().optional().describe("Buy a bundle offer from get_offers instead of a single SKU. Mutually exclusive with sku."),
+        offerId: z.string().uuid().optional().describe("Buy a bundle offer from get_offers instead of a single SKU. Mutually exclusive with sku and negotiationId."),
+        negotiationId: z.string().uuid().optional().describe("Buy at an agreed negotiated price from negotiate. Mutually exclusive with sku and offerId."),
         idempotencyKey: z.string().min(1).max(200).optional().describe("Optional. A repeated call with the same key returns the original outcome instead of buying twice."),
       },
     },
-    async ({ sku, quantity, offerId, idempotencyKey }) => {
+    async ({ sku, quantity, offerId, negotiationId, idempotencyKey }) => {
+      if (negotiationId) {
+        const [negotiation] = await db.select().from(schema.negotiations).where(eq(schema.negotiations.id, negotiationId));
+        if (!negotiation || negotiation.merchantId !== agent.merchantId) {
+          return toolText(JSON.stringify({ decision: "deny", reason: `No negotiation ${negotiationId} found for this merchant.` }));
+        }
+        if (negotiation.status !== "agreed" || negotiation.agreedUnitPricePaise === null) {
+          return toolText(JSON.stringify({ decision: "deny", reason: `Negotiation ${negotiationId} is "${negotiation.status}", not agreed.` }));
+        }
+
+        const amountPaise = negotiation.agreedUnitPricePaise * negotiation.quantity;
+        const result = await attemptMoneyAction({
+          agentId: agent.id,
+          merchantId: agent.merchantId,
+          type: "order_create",
+          amountPaise,
+          context: `MCP purchase: negotiated price for variant ${negotiation.variantId}`,
+          negotiationId,
+          idempotencyKey,
+        });
+
+        return toolText(JSON.stringify({ ...result, quantity: negotiation.quantity, amountFormatted: formatPaise(amountPaise) }, null, 2));
+      }
+
       if (offerId) {
         const [offer] = await db.select().from(schema.offers).where(eq(schema.offers.id, offerId));
         if (!offer || offer.merchantId !== agent.merchantId) {

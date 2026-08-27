@@ -5,6 +5,7 @@ import { createOrder, capturePayment, refundPayment, createPaymentLink, Razorpay
 import { decrypt } from "@/lib/crypto";
 import { computeRiskSignals, assessRisk } from "@/lib/risk";
 import { resolveOffer, loadOfferItems, type ResolvedOffer } from "@/lib/discount";
+import { resolveNegotiation, markNegotiationRedeemed, type ResolvedNegotiation } from "@/lib/negotiation";
 
 /**
  * Loads and decrypts a merchant's own Razorpay credentials. The gate is
@@ -92,11 +93,23 @@ export interface MoneyActionRequest {
    */
   offerId?: string;
   /**
-   * Identifies the buyer redeeming an offer when there is no agent
-   * identity to match against (the storefront/chat's session-based
-   * flows) — see discount.ts's resolveOffer identity check.
+   * Identifies the buyer redeeming an offer or negotiation when there is
+   * no agent identity to match against (the storefront/chat's
+   * session-based flows) — see discount.ts's resolveOffer and
+   * negotiation.ts's resolveNegotiation identity checks.
    */
   sessionToken?: string;
+  /**
+   * Layer 8: redeem an agreed negotiated price instead of a plain
+   * variant or a bundle offer. Mutually exclusive with variantId and
+   * offerId — a negotiation already names the variant, quantity, and
+   * agreed price it covers (negotiation.ts's resolveNegotiation). If
+   * amountPaise is also given and disagrees with the negotiation's own
+   * agreed amount, that is a deny — same discipline as variantId's
+   * price-match check and offerId's offer_price_match. The caller can
+   * only reference an agreed negotiation, never assert its price.
+   */
+  negotiationId?: string;
   /**
    * Layer 6-5: a reward-coin issuance or redemption. amountPaise is
    * still the coins' paise-equivalent value (reward-coins.ts computes
@@ -142,6 +155,8 @@ interface BoundCheckSuccess {
   variant?: ResolvedVariant;
   /** Present only when the request named an offerId and it resolved cleanly (Layer 6). */
   offer?: ResolvedOffer;
+  /** Present only when the request named a negotiationId and it resolved cleanly (Layer 8). */
+  negotiation?: ResolvedNegotiation;
 }
 
 /**
@@ -255,12 +270,65 @@ async function resolveOfferForRequest(
 }
 
 /**
+ * Resolves a negotiationId into what the gate will actually charge and
+ * reserve (Layer 8): negotiation.ts does the negotiation lookup, the
+ * agreed-status/expiry/identity checks, and re-derives the amount from
+ * the agreed price — never from anything the caller asserted. This only
+ * adds the two checks every money action needs regardless of how the
+ * amount was derived — the caller's asserted amountPaise must match
+ * exactly, and the variant must still have enough stock. Mirrors
+ * resolveOfferForRequest's shape and ordering exactly.
+ */
+async function resolveNegotiationForRequest(
+  request: MoneyActionRequest,
+): Promise<{ negotiation?: ResolvedNegotiation; failure?: BoundCheckFailure }> {
+  const { resolved, failure } = await resolveNegotiation(request.merchantId, request.negotiationId!, {
+    agentId: request.agentId,
+    sessionToken: request.sessionToken,
+  });
+  if (failure) return { failure };
+
+  if (request.amountPaise !== resolved!.amountPaise) {
+    return {
+      failure: {
+        reason: `Denied — caller asserted ₹${(request.amountPaise / 100).toFixed(2)} for negotiation ${resolved!.negotiationId}, but the agreed price is ₹${(resolved!.amountPaise / 100).toFixed(2)}. Price comes from the agreed negotiation, never the caller.`,
+        boundApplied: `negotiation_price_match:${resolved!.negotiationId}`,
+      },
+    };
+  }
+
+  const [variant] = await db.select().from(schema.productVariants).where(eq(schema.productVariants.id, resolved!.variantId));
+  if (!variant || variant.stock < resolved!.quantity) {
+    return {
+      failure: {
+        reason: `Denied — negotiation ${resolved!.negotiationId} needs ${resolved!.quantity} of "${variant?.sku ?? resolved!.variantId}", but only ${variant?.stock ?? 0} in stock.`,
+        boundApplied: "negotiation_stock",
+      },
+    };
+  }
+
+  return { negotiation: resolved };
+}
+
+/**
  * The deterministic checks, in order, short-circuiting on the first
  * failure. Returns the resolved product (if any) when every check passes.
  */
 async function checkBounds(
   request: MoneyActionRequest,
 ): Promise<BoundCheckFailure | BoundCheckSuccess> {
+  // A request naming more than one of variantId/offerId/negotiationId is
+  // ambiguous about what it's actually buying — a bug or a probe, not
+  // something to resolve by precedence (plans/layer-8-negotiation.md,
+  // fact 4).
+  const namedTargets = [request.variantId, request.offerId, request.negotiationId].filter(Boolean).length;
+  if (namedTargets > 1) {
+    return {
+      reason: "Denied — request named more than one of variantId, offerId, and negotiationId. Exactly one may be present.",
+      boundApplied: "purchase_target_ambiguous",
+    };
+  }
+
   if (!Number.isInteger(request.amountPaise) || request.amountPaise <= 0) {
     return {
       reason: `Denied — amount ${request.amountPaise} is not a positive integer number of paise.`,
@@ -349,6 +417,12 @@ async function checkBounds(
     const { offer, failure } = await resolveOfferForRequest(request);
     if (failure) return failure;
     return { offer };
+  }
+
+  if (request.negotiationId) {
+    const { negotiation, failure } = await resolveNegotiationForRequest(request);
+    if (failure) return failure;
+    return { negotiation };
   }
 
   if (request.variantId) {
@@ -756,7 +830,7 @@ export async function attemptMoneyAction(
       });
       return { decision: "deny", reason: boundsResult.reason };
     }
-    const { variant, offer } = boundsResult;
+    const { variant, offer, negotiation } = boundsResult;
 
     // Re-fetch rather than thread the cap through from checkBounds, so
     // the reservation's WHERE clause is the sole source of truth on balance.
@@ -797,7 +871,7 @@ export async function attemptMoneyAction(
       return { decision: "deny", reason };
     }
 
-    const quantity = request.quantity ?? 1;
+    const quantity = negotiation ? negotiation.quantity : (request.quantity ?? 1);
     if (variant) {
       const stockReserved = await reserveStock(variant.id, quantity);
       if (!stockReserved) {
@@ -813,6 +887,27 @@ export async function attemptMoneyAction(
           reason,
           boundApplied: "product_stock",
           metadata: { agentId: request.agentId, amountPaise: request.amountPaise, variantId: variant.id },
+        });
+        return { decision: "deny", reason };
+      }
+    }
+    if (negotiation) {
+      // Same single-variant reservation path as a plain variant purchase
+      // — a negotiated price is one variant at a quantity, not a bundle,
+      // so the all-or-nothing multi-item loop reserveOfferStock uses is
+      // not needed here (plans/layer-8-negotiation.md, L8-1).
+      const stockReserved = await reserveStock(negotiation.variantId, quantity);
+      if (!stockReserved) {
+        await releaseBudget(cap.id, request.amountPaise);
+        const reason = `Denied — another request consumed the remaining stock for negotiation ${negotiation.negotiationId}'s variant between check and reservation.`;
+        await logAuditEntry({
+          merchantId: request.merchantId,
+          actor: "agent",
+          event: `money_action_attempt:${request.type}`,
+          decision: "deny",
+          reason,
+          boundApplied: "negotiation_stock",
+          metadata: { agentId: request.agentId, amountPaise: request.amountPaise, negotiationId: negotiation.negotiationId },
         });
         return { decision: "deny", reason };
       }
@@ -847,8 +942,9 @@ export async function attemptMoneyAction(
         merchantId: request.merchantId,
         agentId: request.agentId,
         productId: variant?.productId,
-        variantId: variant?.id,
+        variantId: variant?.id ?? negotiation?.variantId,
         offerId: offer?.offerId,
+        negotiationId: negotiation?.negotiationId,
         quantity,
         type: request.type,
         amountPaise: request.amountPaise,
@@ -885,8 +981,9 @@ export async function attemptMoneyAction(
       merchantId: request.merchantId,
       agentId: request.agentId,
       productId: variant?.productId,
-      variantId: variant?.id,
+      variantId: variant?.id ?? negotiation?.variantId,
       offerId: offer?.offerId,
+      negotiationId: negotiation?.negotiationId,
       quantity,
       holdOnly: request.holdOnly ?? false,
       type: request.type,
@@ -901,11 +998,13 @@ export async function attemptMoneyAction(
       ? `Allowed — ${request.rewardLedger.reason === "purchase_issue" ? "issuing" : "redeeming"} ₹${(request.amountPaise / 100).toFixed(2)} in reward coins is within this agent's remaining cap`
       : offer
         ? `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for offer ${offer.offerId}'s bundle is within this agent's remaining cap`
-        : variant
-          ? `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for "${request.context}" x${quantity} is within this agent's remaining cap`
-          : `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for "${request.context}" is within this agent's remaining cap`;
+        : negotiation
+          ? `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for negotiation ${negotiation.negotiationId}'s agreed price is within this agent's remaining cap`
+          : variant
+            ? `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for "${request.context}" x${quantity} is within this agent's remaining cap`
+            : `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for "${request.context}" is within this agent's remaining cap`;
 
-    return executeAndSettle({
+    const result = await executeAndSettle({
       merchantId: request.merchantId,
       moneyActionId: moneyAction.id,
       capId: cap.id,
@@ -914,13 +1013,23 @@ export async function attemptMoneyAction(
       agentId: request.agentId,
       actor: "agent",
       allowReasonPrefix,
-      variantId: variant?.id,
+      variantId: variant?.id ?? negotiation?.variantId,
       offerItems: offer?.items,
       quantity,
       holdOnly: request.holdOnly ?? false,
       paymentLink: request.paymentLink,
       rewardLedger: request.rewardLedger,
     });
+
+    // A negotiation is redeemed at most once — marking it here, only on a
+    // genuine allow (never on a failure path, which leaves it "agreed"
+    // so it can be retried), stops a second purchase attempt from
+    // reusing the same agreed price after the first succeeds.
+    if (negotiation && result.decision === "allow") {
+      await markNegotiationRedeemed(negotiation.negotiationId);
+    }
+
+    return result;
   } catch (unexpectedErr) {
     // Fail closed: anything not already handled above still denies.
     const reason = `Denied — the gate could not evaluate this request: ${unexpectedErr instanceof Error ? unexpectedErr.message : String(unexpectedErr)}.`;
@@ -1014,7 +1123,7 @@ export async function resolveEscalation(
     return { decision: "deny", reason, moneyActionId: moneyAction.id };
   }
 
-  return executeAndSettle({
+  const approvedResult = await executeAndSettle({
     merchantId: moneyAction.merchantId,
     moneyActionId: moneyAction.id,
     capId: escalation.spendCapId,
@@ -1027,6 +1136,15 @@ export async function resolveEscalation(
     offerItems: moneyAction.offerId ? await loadOfferItems(moneyAction.offerId) : undefined,
     quantity: moneyAction.quantity,
   });
+
+  // A negotiated purchase that got escalated (plans/layer-8-negotiation.md,
+  // fact 6) still needs its negotiation marked redeemed once the merchant
+  // approves it — same discipline as attemptMoneyAction's direct-allow path.
+  if (moneyAction.negotiationId && approvedResult.decision === "allow") {
+    await markNegotiationRedeemed(moneyAction.negotiationId);
+  }
+
+  return approvedResult;
 }
 
 /** How long an escrow hold is allowed to sit unresolved before it's auto-refunded. See plans/layer-4-front-door.md's "a hold that is never resolved is money in limbo." */

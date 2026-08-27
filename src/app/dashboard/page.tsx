@@ -1,11 +1,20 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { getAgentsWithCaps, getAuditTrail, getPendingEscalations, getRazorpayConnectionStatus } from "@/lib/dashboard";
+import {
+  getAuditTrail,
+  getPendingEscalations,
+  getRazorpayConnectionStatus,
+  getAgentsWithCaps,
+  getMoneyMovedStats,
+  getDecisionCounts,
+} from "@/lib/dashboard";
+import { getRecoveryStats } from "@/lib/recovery/attribution";
+import { getDecisionStats } from "@/lib/explainability";
 import { getSessionMerchant } from "@/lib/auth";
-import { setSpendCap, revokeAgent, reactivateAgent, approveEscalation, rejectEscalation } from "./actions";
-import { CreateAgentForm, RotateKeyButton } from "./agent-key-reveal";
+import { approveEscalation, rejectEscalation } from "./actions";
 import { AuditTrail } from "./audit-trail";
 import { formatPaise as rupees } from "@/lib/money";
+import { PageHeader, Surface, MoneyStat, Stat, Button, DecisionComposition } from "@/components/ui";
 
 function formatDate(d: Date): string {
   return new Date(d).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
@@ -15,187 +24,159 @@ export default async function DashboardPage() {
   const merchant = await getSessionMerchant();
   if (!merchant) redirect("/login");
 
-  const [agents, auditTrail, escalations, razorpayStatus] = await Promise.all([
-    getAgentsWithCaps(merchant.id),
-    getAuditTrail(merchant.id, 100),
-    getPendingEscalations(merchant.id),
-    getRazorpayConnectionStatus(merchant.id),
-  ]);
+  const [auditTrail, escalations, razorpayStatus, agents, moneyMoved, decisionCounts, recoveryStats, decisionStats] =
+    await Promise.all([
+      getAuditTrail(merchant.id, 100),
+      getPendingEscalations(merchant.id),
+      getRazorpayConnectionStatus(merchant.id),
+      getAgentsWithCaps(merchant.id),
+      getMoneyMovedStats(merchant.id),
+      getDecisionCounts(merchant.id),
+      getRecoveryStats(merchant.id),
+      getDecisionStats(merchant.id),
+    ]);
 
   const hasAgentWithCap = agents.some((a) => a.cap !== null);
   const isFirstRun = !razorpayStatus.connected || agents.length === 0 || !hasAgentWithCap;
 
   return (
-    <main className="max-w-5xl mx-auto p-6 space-y-10">
-      <header>
-        <h1 className="text-2xl font-semibold">Overview</h1>
-        <p className="text-sm text-gray-500">Spend caps, escalations, and the audit trail</p>
-      </header>
+    <div>
+      <PageHeader
+        title="Overview"
+        description="What happened with your money, and what the system refused to do about it."
+      />
 
       {isFirstRun && (
-        <section className="border border-blue-200 bg-blue-50 rounded-lg p-5">
-          <h2 className="font-semibold mb-3">Get set up</h2>
+        <Surface variant="raised" className="p-5 mb-8 border-accent-wash">
+          <h2 className="font-medium text-on-ink mb-3 text-sm">Get set up</h2>
           <ol className="space-y-2 text-sm">
-            <li className="flex items-center gap-2">
-              <span className={razorpayStatus.connected ? "text-green-600" : "text-gray-400"}>
-                {razorpayStatus.connected ? "✓" : "○"}
-              </span>
+            <li className="flex items-center gap-2.5">
+              <StepMark done={razorpayStatus.connected} />
               {razorpayStatus.connected ? (
-                <span>Connected to Razorpay ({razorpayStatus.maskedKeyId})</span>
+                <span className="text-on-ink-dim">
+                  Connected to Razorpay <span className="font-mono text-xs">({razorpayStatus.maskedKeyId})</span>
+                </span>
               ) : (
-                <span>
-                  <Link href="/dashboard/settings" className="text-blue-700 underline">
+                <span className="text-on-ink-dim">
+                  <Link href="/dashboard/settings" className="text-accent hover:text-accent-bright underline underline-offset-2">
                     Connect your Razorpay test account
                   </Link>{" "}
                   — every purchase settles into your own account, not a shared one.
                 </span>
               )}
             </li>
-            <li className="flex items-center gap-2">
-              <span className={agents.length > 0 ? "text-green-600" : "text-gray-400"}>
-                {agents.length > 0 ? "✓" : "○"}
+            <li className="flex items-center gap-2.5">
+              <StepMark done={agents.length > 0} />
+              <span className="text-on-ink-dim">
+                <Link href="/dashboard/agents" className="text-accent hover:text-accent-bright underline underline-offset-2">
+                  Create an agent
+                </Link>{" "}
+                — it gets its own API key an AI buyer authenticates with.
               </span>
-              <span>Create an agent below — it gets its own API key an AI buyer authenticates with.</span>
             </li>
-            <li className="flex items-center gap-2">
-              <span className={hasAgentWithCap ? "text-green-600" : "text-gray-400"}>
-                {hasAgentWithCap ? "✓" : "○"}
-              </span>
-              <span>Set a spend cap on that agent — no cap means it can never transact.</span>
+            <li className="flex items-center gap-2.5">
+              <StepMark done={hasAgentWithCap} />
+              <span className="text-on-ink-dim">Set a spend cap on that agent — no cap means it can never transact.</span>
             </li>
           </ol>
-        </section>
+        </Surface>
       )}
 
-      <section>
-        <h2 className="text-lg font-semibold mb-3">Agents &amp; caps</h2>
-
-        <div className="mb-4">
-          <CreateAgentForm />
-        </div>
-
-        <div className="space-y-4">
-          {agents.length === 0 && (
-            <p className="text-sm text-gray-500">
-              No agents yet — create one above to give an AI buyer a scoped API key and spend cap.
-            </p>
-          )}
-          {agents.map((agent) => (
-            <div key={agent.id} className="border rounded-lg p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="font-medium">{agent.name}</span>{" "}
-                  <span
-                    className={`text-xs px-2 py-0.5 rounded ${
-                      agent.status === "active" ? "bg-green-100 text-green-800" : "bg-gray-200 text-gray-600"
-                    }`}
-                  >
-                    {agent.status}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <RotateKeyButton agentId={agent.id} />
-                  <form action={agent.status === "active" ? revokeAgent : reactivateAgent}>
-                    <input type="hidden" name="agentId" value={agent.id} />
-                    <button
-                      type="submit"
-                      className="text-sm px-3 py-1 rounded border hover:bg-gray-50"
-                    >
-                      {agent.status === "active" ? "Revoke" : "Reactivate"}
-                    </button>
-                  </form>
-                </div>
-              </div>
-
-              {agent.cap ? (
-                <div className="mt-2 text-sm text-gray-700">
-                  <div className="flex gap-4">
-                    <span>
-                      Spent {rupees(agent.cap.spentPaise)} of {rupees(agent.cap.capPaise)}
-                    </span>
-                    <span>Remaining {rupees(agent.cap.remainingPaise)}</span>
-                    <span>Per-tx max {rupees(agent.cap.perTransactionMaxPaise)}</span>
-                    <span className="text-gray-400">({agent.cap.status})</span>
-                  </div>
-                  <div className="w-full bg-gray-100 rounded h-2 mt-1">
-                    <div
-                      className="bg-blue-500 h-2 rounded"
-                      style={{
-                        width: `${Math.min((agent.cap.spentPaise / agent.cap.capPaise) * 100, 100)}%`,
-                      }}
-                    />
-                  </div>
-                  <span className="text-xs text-gray-400">
-                    Window ends {formatDate(agent.cap.windowEnd)}
-                  </span>
-                </div>
-              ) : (
-                <p className="mt-2 text-sm text-gray-500">No spend cap set — this agent cannot transact.</p>
-              )}
-
-              <form action={setSpendCap} className="mt-3 flex flex-wrap items-end gap-2 text-sm">
-                <input type="hidden" name="agentId" value={agent.id} />
-                <label className="flex flex-col">
-                  Cap (₹)
-                  <input name="capRupees" type="number" step="0.01" min="0" required className="border rounded px-2 py-1 w-28" />
-                </label>
-                <label className="flex flex-col">
-                  Per-tx max (₹)
-                  <input name="perTransactionMaxRupees" type="number" step="0.01" min="0" required className="border rounded px-2 py-1 w-28" />
-                </label>
-                <label className="flex flex-col">
-                  Window (hours)
-                  <input name="windowHours" type="number" step="1" min="1" defaultValue={24} required className="border rounded px-2 py-1 w-24" />
-                </label>
-                <button type="submit" className="px-3 py-1 rounded bg-blue-600 text-white hover:bg-blue-700">
-                  Set cap
-                </button>
-              </form>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section>
-        <h2 className="text-lg font-semibold mb-3">
-          Pending escalations {escalations.length > 0 && `(${escalations.length})`}
-        </h2>
-        {escalations.length === 0 ? (
-          <p className="text-sm text-gray-500">Nothing pending review.</p>
-        ) : (
+      {escalations.length > 0 && (
+        <section className="mb-8">
+          <h2 className="text-[var(--t-h3)] font-[family-name:var(--font-display)] text-on-ink mb-3">
+            Waiting on you
+          </h2>
           <div className="space-y-3">
             {escalations.map((esc) => (
-              <div key={esc.id} className="border border-amber-300 bg-amber-50 rounded-lg p-4">
-                <div className="flex items-center justify-between">
+              <Surface key={esc.id} variant="raised" className="p-4 border-escalate-line">
+                <div className="flex items-center justify-between flex-wrap gap-2">
                   <div>
-                    <span className="font-medium">
-                      {esc.agent?.name ?? "Unknown agent"} — {rupees(esc.moneyAction.amountPaise)}
+                    <span className="font-medium text-on-ink">
+                      {esc.agent?.name ?? "Unknown agent"} —{" "}
+                      <span className="font-mono">{rupees(esc.moneyAction.amountPaise)}</span>
                     </span>
-                    <span className="text-xs text-gray-500 ml-2">{formatDate(esc.createdAt)}</span>
+                    <span className="text-xs text-on-ink-faint ml-2 font-mono">{formatDate(esc.createdAt)}</span>
                   </div>
                   <div className="flex gap-2">
                     <form action={approveEscalation}>
                       <input type="hidden" name="escalationId" value={esc.id} />
-                      <button type="submit" className="text-sm px-3 py-1 rounded bg-green-600 text-white hover:bg-green-700">
+                      <Button type="submit" variant="primary" size="sm" pendingLabel="Approving…">
                         Approve
-                      </button>
+                      </Button>
                     </form>
                     <form action={rejectEscalation}>
                       <input type="hidden" name="escalationId" value={esc.id} />
-                      <button type="submit" className="text-sm px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700">
+                      <Button type="submit" variant="destructive" size="sm" pendingLabel="Rejecting…">
                         Reject
-                      </button>
+                      </Button>
                     </form>
                   </div>
                 </div>
-                <p className="text-sm text-gray-700 mt-1">{esc.riskReason}</p>
-              </div>
+                <p className="text-sm text-on-ink-dim mt-1.5">{esc.riskReason}</p>
+              </Surface>
             ))}
           </div>
-        )}
+        </section>
+      )}
+
+      <section className="grid grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        <Surface variant="raised" className="p-5">
+          <MoneyStat label="Money moved" paise={moneyMoved.capturedPaise} caption={`${moneyMoved.capturedCount} captured payments`} />
+        </Surface>
+        <Surface variant="raised" className="p-5">
+          <MoneyStat label="Money recovered" paise={recoveryStats.recoveredPaise} tone="allow" caption={`${recoveryStats.recoveredCount} of ${recoveryStats.failureCount} failures`} />
+        </Surface>
+        <Surface variant="raised" className="p-5">
+          <Stat
+            label="Refusals"
+            value={decisionStats.totalRefusals}
+            tone="deny"
+            caption="Evidence the bound is real, not a gap"
+          />
+        </Surface>
+        <Surface variant="raised" className="p-5">
+          <Stat
+            label="Deterministic vs. model"
+            value={
+              <span>
+                {decisionStats.deterministicCount}
+                <span className="text-on-ink-faint text-[0.5em] mx-1">/</span>
+                {decisionStats.modelInfluencedCount}
+              </span>
+            }
+            caption="Arithmetic-only vs. a model's judgment"
+          />
+        </Surface>
+      </section>
+
+      <section className="mb-8">
+        <Surface variant="raised" className="p-5">
+          <h2 className="text-[var(--t-label)] uppercase tracking-[0.08em] text-on-ink-faint font-medium mb-3">
+            Every logged decision
+          </h2>
+          <DecisionComposition allow={decisionCounts.allow} deny={decisionCounts.deny} escalate={decisionCounts.escalate} />
+        </Surface>
       </section>
 
       <AuditTrail initialEntries={auditTrail} />
-    </main>
+    </div>
+  );
+}
+
+function StepMark({ done }: { done: boolean }) {
+  return (
+    <span
+      className={`flex items-center justify-center h-4 w-4 rounded-full shrink-0 ${
+        done ? "bg-allow-wash" : "border border-ink-line"
+      }`}
+      aria-hidden="true"
+    >
+      {done && (
+        <svg width="9" height="9" viewBox="0 0 10 10" fill="none">
+          <path d="M1.5 5.2 4 7.7 8.5 2.5" stroke="var(--allow-bright)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      )}
+    </span>
   );
 }

@@ -22,7 +22,9 @@ async function main() {
   console.log("Razorpay client check passed. Verify this order id appears in the Test Mode dashboard:", order.id);
 }
 
-main().catch((err) => {
-  console.error("Razorpay check FAILED:", err);
-  process.exit(1);
-});
+main()
+  .then(() => process.exit(0))
+  .catch((err) => {
+    console.error("Razorpay check FAILED:", err);
+    process.exit(1);
+  });

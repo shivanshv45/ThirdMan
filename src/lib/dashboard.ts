@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { getRecentAuditEntries } from "@/lib/audit";
 import { decrypt } from "@/lib/crypto";
@@ -323,4 +323,134 @@ export async function getPendingEscalations(merchantId: string): Promise<Pending
     },
     agent: r.agent ? { id: r.agent.id, name: r.agent.name } : null,
   }));
+}
+
+export interface NegotiationRow {
+  id: string;
+  status: (typeof schema.negotiationStatusEnum.enumValues)[number];
+  variantSku: string;
+  quantity: number;
+  catalogueUnitPricePaise: number;
+  floorUnitPricePaise: number;
+  agreedUnitPricePaise: number | null;
+  buyerTurnCount: number;
+  agentName: string | null;
+  sessionToken: string | null;
+  createdAt: Date;
+  resolvedAt: Date | null;
+}
+
+/** Every negotiation for this merchant, newest first — the dashboard's negotiation log (Layer 8). */
+export async function getRecentNegotiations(merchantId: string, limit = 50): Promise<NegotiationRow[]> {
+  const rows = await db
+    .select({
+      negotiation: schema.negotiations,
+      variantSku: schema.productVariants.sku,
+      agentName: schema.agents.name,
+    })
+    .from(schema.negotiations)
+    .innerJoin(schema.productVariants, eq(schema.negotiations.variantId, schema.productVariants.id))
+    .leftJoin(schema.agents, eq(schema.negotiations.agentId, schema.agents.id))
+    .where(eq(schema.negotiations.merchantId, merchantId))
+    .orderBy(desc(schema.negotiations.createdAt))
+    .limit(limit);
+
+  return rows.map((r) => ({
+    id: r.negotiation.id,
+    status: r.negotiation.status,
+    variantSku: r.variantSku,
+    quantity: r.negotiation.quantity,
+    catalogueUnitPricePaise: r.negotiation.catalogueUnitPricePaise,
+    floorUnitPricePaise: r.negotiation.floorUnitPricePaise,
+    agreedUnitPricePaise: r.negotiation.agreedUnitPricePaise,
+    buyerTurnCount: r.negotiation.buyerTurnCount,
+    agentName: r.agentName ?? null,
+    sessionToken: r.negotiation.sessionToken,
+    createdAt: r.negotiation.createdAt,
+    resolvedAt: r.negotiation.resolvedAt,
+  }));
+}
+
+export interface NegotiableVariantRow {
+  variantId: string;
+  productName: string;
+  sku: string;
+  pricePaise: number;
+  costPaise: number;
+  floorPricePaise: number | null;
+  belowCostFloorAcknowledged: boolean;
+}
+
+/** Every active variant with its current negotiation floor (or lack of one) — the dashboard's floor-setting form (Layer 8). */
+export async function getNegotiableVariants(merchantId: string): Promise<NegotiableVariantRow[]> {
+  const rows = await db
+    .select({
+      variantId: schema.productVariants.id,
+      productName: schema.products.name,
+      sku: schema.productVariants.sku,
+      pricePaise: schema.productVariants.pricePaise,
+      costPaise: schema.productVariants.costPaise,
+      floorPricePaise: schema.productVariants.floorPricePaise,
+      belowCostFloorAcknowledged: schema.productVariants.belowCostFloorAcknowledged,
+    })
+    .from(schema.productVariants)
+    .innerJoin(schema.products, eq(schema.productVariants.productId, schema.products.id))
+    .where(and(eq(schema.productVariants.merchantId, merchantId), eq(schema.productVariants.status, "active")));
+
+  return rows;
+}
+
+export interface MoneyMovedStats {
+  capturedPaise: number;
+  capturedCount: number;
+}
+
+/**
+ * The command view's "money moved" headline (Layer 9) — real captured
+ * revenue only, never an order merely created. Sums money_actions
+ * directly rather than reusing recovery's recoveredPaise (a different,
+ * narrower number: only what the recovery pipeline itself recovered),
+ * so the two headline figures stay honestly distinct.
+ */
+export async function getMoneyMovedStats(merchantId: string): Promise<MoneyMovedStats> {
+  const [row] = await db
+    .select({
+      capturedPaise: sql<string>`coalesce(sum(${schema.moneyActions.amountPaise}), 0)`,
+      capturedCount: sql<number>`count(*)`,
+    })
+    .from(schema.moneyActions)
+    .where(and(eq(schema.moneyActions.merchantId, merchantId), eq(schema.moneyActions.status, "captured")));
+
+  return {
+    capturedPaise: Number(row?.capturedPaise ?? 0),
+    capturedCount: Number(row?.capturedCount ?? 0),
+  };
+}
+
+export interface DecisionCounts {
+  allow: number;
+  deny: number;
+  escalate: number;
+}
+
+/**
+ * Raw allow/deny/escalate counts straight off audit_log, merchant-
+ * scoped — the command view's composition snapshot (Layer 9). Deliberately
+ * simpler than explainability.ts's refusal/deferral classification: this
+ * is every logged decision of each kind, not a curated refusal set.
+ */
+export async function getDecisionCounts(merchantId: string): Promise<DecisionCounts> {
+  const rows = await db
+    .select({ decision: schema.auditLog.decision, n: sql<number>`count(*)` })
+    .from(schema.auditLog)
+    .where(eq(schema.auditLog.merchantId, merchantId))
+    .groupBy(schema.auditLog.decision);
+
+  const counts: DecisionCounts = { allow: 0, deny: 0, escalate: 0 };
+  for (const row of rows) {
+    if (row.decision === "allow" || row.decision === "deny" || row.decision === "escalate") {
+      counts[row.decision] = Number(row.n);
+    }
+  }
+  return counts;
 }
