@@ -63,8 +63,13 @@ export default async function DashboardLayout({ children }: { children: React.Re
         statusTone={escalations.length ? "escalate" : "allow"}
       />
       <div className="flex-1 min-w-0 flex flex-col">
-        <div className="hidden md:flex items-center justify-between px-6 h-[var(--nav-h)] border-b border-ink-line shrink-0">
-          <span className="font-[family-name:var(--font-display)] text-lg text-on-ink">{merchant.name}</span>
+        <div className="hidden md:flex items-center justify-between px-8 h-[var(--nav-h)] border-b border-ink-line shrink-0">
+          <div className="flex items-baseline gap-2.5 min-w-0">
+            <span className="font-[family-name:var(--font-display)] text-lg text-on-ink truncate">{merchant.name}</span>
+            <span className="text-[var(--t-label)] uppercase tracking-[0.08em] text-on-ink-faint shrink-0">
+              Merchant
+            </span>
+          </div>
           <form action={logout}>
             <button
               type="submit"
@@ -74,7 +79,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
             </button>
           </form>
         </div>
-        <main className="flex-1 min-w-0 px-4 md:px-8 py-6 md:py-8 max-w-[var(--shell)] w-full mx-auto">
+        <main className="flex-1 min-w-0 px-4 md:px-8 py-6 md:py-10 max-w-[var(--shell)] w-full mx-auto">
           {children}
         </main>
       </div>

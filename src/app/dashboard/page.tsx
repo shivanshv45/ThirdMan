@@ -47,9 +47,13 @@ export default async function DashboardPage() {
       />
 
       {isFirstRun && (
-        <Surface variant="raised" className="p-5 mb-8 border-accent-wash">
-          <h2 className="font-medium text-on-ink mb-3 text-sm">Get set up</h2>
-          <ol className="space-y-2 text-sm">
+        <Surface variant="raised" className="relative overflow-hidden p-6 mb-12">
+          <span aria-hidden="true" className="absolute left-0 inset-y-0 w-[3px] bg-accent" />
+          <h2 className="text-[var(--t-h4)] font-medium text-on-ink">Get set up</h2>
+          <p className="text-sm text-on-ink-dim mt-1 mb-4">
+            Three steps before an agent can move any money. Nothing transacts until all three are done.
+          </p>
+          <ol className="space-y-3 text-sm">
             <li className="flex items-center gap-2.5">
               <StepMark done={razorpayStatus.connected} />
               {razorpayStatus.connected ? (

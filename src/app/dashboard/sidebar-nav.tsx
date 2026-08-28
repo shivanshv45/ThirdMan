@@ -3,6 +3,42 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
+import {
+  LayoutDashboard,
+  RotateCcw,
+  Lock,
+  Package,
+  Tag,
+  MessagesSquare,
+  Coins,
+  ScrollText,
+  Gauge,
+  KeyRound,
+  Scale,
+  Code,
+  Settings,
+  type LucideIcon,
+} from "lucide-react";
+
+/* Icons are resolved here, not passed in as props: a React component
+   can't cross the server/client boundary, and the nav groups are built
+   in the server layout. Keyed by href so a nav item can never end up
+   with an icon belonging to a different page. */
+const ICONS: Record<string, LucideIcon> = {
+  "/dashboard": LayoutDashboard,
+  "/dashboard/recovery": RotateCcw,
+  "/dashboard/escrow": Lock,
+  "/dashboard/products": Package,
+  "/dashboard/offers": Tag,
+  "/dashboard/negotiations": MessagesSquare,
+  "/dashboard/rewards": Coins,
+  "/dashboard/explain": ScrollText,
+  "/dashboard/readiness": Gauge,
+  "/dashboard/agents": KeyRound,
+  "/dashboard/policies": Scale,
+  "/dashboard/embed": Code,
+  "/dashboard/settings": Settings,
+};
 
 export interface NavItem {
   href: string;
@@ -51,6 +87,7 @@ export function SidebarNav({
           <div className="flex flex-col gap-px">
             {group.items.map((item) => {
               const active = isActive(item.href);
+              const Icon = ICONS[item.href];
               return (
                 <Link
                   key={item.href}
@@ -68,7 +105,19 @@ export function SidebarNav({
                       className="absolute left-0 top-1/2 -translate-y-1/2 h-4 w-0.5 rounded-full bg-accent"
                     />
                   )}
-                  <span>{item.label}</span>
+                  <span className="flex items-center gap-2.5 min-w-0">
+                    {Icon && (
+                      <Icon
+                        size={15}
+                        strokeWidth={active ? 2 : 1.75}
+                        aria-hidden="true"
+                        className={`shrink-0 transition-colors duration-[var(--dur-fast)] ${
+                          active ? "text-accent" : "text-on-ink-faint group-hover:text-on-ink-dim"
+                        }`}
+                      />
+                    )}
+                    <span className="truncate">{item.label}</span>
+                  </span>
                   {!!item.badge && (
                     <span className="relative">
                       <span className="inline-flex items-center justify-center min-w-[1.25rem] h-5 rounded-full bg-escalate-wash text-escalate-bright text-[0.6875rem] font-mono font-medium px-1.5">

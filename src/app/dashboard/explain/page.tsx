@@ -46,8 +46,8 @@ export default async function ExplainPage({
       />
 
       <Surface variant="raised" className="p-6">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
-          <Stat label="Refusals" value={stats.totalRefusals} tone="deny" />
+        <div className="grid grid-cols-2 sm:grid-cols-[1.4fr_1fr_1fr_1fr] gap-6 items-end">
+          <Stat label="Refusals" value={stats.totalRefusals} tone="deny" size="primary" />
           <Stat label="Deferrals to you" value={stats.totalDeferrals} tone="escalate" />
           <Stat label="Arithmetic, no model" value={stats.deterministicCount} tone="allow" />
           <Stat label="A model's judgment" value={stats.modelInfluencedCount} tone="accent" />

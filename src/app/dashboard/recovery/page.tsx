@@ -29,11 +29,12 @@ export default async function RecoveryPage() {
       <PageHeader title="Revenue recovery" description="Failed payments, diagnosis, and bounded automatic recovery." />
 
       <Surface variant="raised" className="p-6">
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-6">
+        <div className="grid grid-cols-2 sm:grid-cols-[1.5fr_1fr_1fr] gap-6 items-end">
           <MoneyStat
             label="Recovered"
             paise={stats.recoveredPaise}
             tone="allow"
+            size="primary"
             caption={`of ${formatPaiseGrouped(stats.totalFailedPaise)} failed — ${stats.recoveryRatePercent}%`}
           />
           <Stat
