@@ -12,6 +12,10 @@ import { runOfferEngine } from "@/lib/offer-engine";
 import { getUnifiedDecisions, getDecisionStats, getDecisionById } from "@/lib/explainability";
 import { explainDecision } from "@/lib/explain-decision";
 import { MAX_BUYER_COUNTERS } from "@/lib/negotiation";
+import { enqueueWebhookEvent } from "@/lib/webhooks/enqueue";
+import { encrypt } from "@/lib/crypto";
+import { formatPaise } from "@/lib/money";
+import { getOrCreateEmbedConfig } from "@/lib/embed";
 
 /**
  * L5-8's required consolidated check: costPaise is internal-only
@@ -34,6 +38,9 @@ afterEach(async () => {
     await db.delete(schema.agents).where(eq(schema.agents.merchantId, merchantId));
     await db.delete(schema.productVariants).where(eq(schema.productVariants.merchantId, merchantId));
     await db.delete(schema.products).where(eq(schema.products.merchantId, merchantId));
+    // Layer 10's embed config test is the first in this file to write an
+    // audit entry from its own setup path — clean it up before merchants.
+    await db.delete(schema.auditLog).where(eq(schema.auditLog.merchantId, merchantId));
     await db.delete(schema.merchants).where(eq(schema.merchants.id, merchantId));
   }
   createdMerchantIds.length = 0;
@@ -278,4 +285,53 @@ describe("costPaise never leaks into any agent-facing or public surface", () => 
       await db.delete(schema.negotiations).where(eq(schema.negotiations.merchantId, merchant.id));
     }
   }, 30_000);
+
+  it("Layer 10: an enqueued outbound webhook delivery's payload never carries costPaise, and reports amountPaise/amountDisplay honestly for a real purchase of the cost-marker product", async () => {
+    const { merchant, product } = await setupMerchantWithAgent();
+    const [variant] = await db.select().from(schema.productVariants).where(eq(schema.productVariants.productId, product.id));
+
+    const [webhook] = await db
+      .insert(schema.merchantWebhooks)
+      .values({
+        merchantId: merchant.id,
+        url: "https://receiver.example.invalid/hook",
+        secretEncrypted: encrypt("test-secret"),
+        subscribedEvents: ["order.paid"],
+      })
+      .returning();
+
+    const [moneyAction] = await db
+      .insert(schema.moneyActions)
+      .values({
+        merchantId: merchant.id,
+        variantId: variant.id,
+        quantity: 1,
+        type: "order_create",
+        amountPaise: variant.pricePaise,
+        status: "captured",
+        razorpayEntityId: `order_cost_leak_${Date.now()}`,
+      })
+      .returning();
+
+    await enqueueWebhookEvent(merchant.id, "order.paid", moneyAction);
+
+    const [delivery] = await db.select().from(schema.webhookDeliveries).where(eq(schema.webhookDeliveries.webhookId, webhook.id));
+    expect(delivery).toBeDefined();
+    expect(JSON.stringify(delivery.payload)).not.toMatch(String(COST_PAISE_MARKER));
+
+    const payload = delivery.payload as { data: { amountPaise: number; amountDisplay: string } };
+    expect(payload.data.amountPaise).toBe(variant.pricePaise);
+    expect(payload.data.amountDisplay).toBe(formatPaise(variant.pricePaise));
+
+    await db.delete(schema.webhookDeliveries).where(eq(schema.webhookDeliveries.webhookId, webhook.id));
+    await db.delete(schema.merchantWebhooks).where(eq(schema.merchantWebhooks.id, webhook.id));
+    await db.delete(schema.moneyActions).where(eq(schema.moneyActions.id, moneyAction.id));
+  });
+
+  it("Layer 10: the embed discovery config (embed.ts's EmbedConfig) never carries costPaise", async () => {
+    const { merchant } = await setupMerchantWithAgent();
+    const config = await getOrCreateEmbedConfig(merchant.id);
+    expect(JSON.stringify(config)).not.toMatch(String(COST_PAISE_MARKER));
+    await db.delete(schema.embedConfigs).where(eq(schema.embedConfigs.merchantId, merchant.id));
+  });
 });

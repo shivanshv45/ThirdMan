@@ -25,6 +25,11 @@ export function Surface({
   );
 }
 
+/**
+ * Page title at --t-h2, not --t-h1: this is an application surface, and
+ * a 3.5rem title competes with the data it is supposed to be labelling.
+ * The landing page still owns the display sizes.
+ */
 export function PageHeader({
   title,
   description,
@@ -35,14 +40,14 @@ export function PageHeader({
   actions?: ReactNode;
 }) {
   return (
-    <header className="flex flex-wrap items-start justify-between gap-4 mb-8">
+    <header className="flex flex-wrap items-start justify-between gap-4 pb-5 mb-8 border-b border-ink-line">
       <div>
         <h1
-          className="text-[var(--t-h1)] font-[family-name:var(--font-display)] font-medium tracking-tight text-on-ink"
+          className="text-[var(--t-h2)] font-[family-name:var(--font-display)] font-medium tracking-tight text-on-ink"
         >
           {title}
         </h1>
-        {description && <p className="mt-1.5 text-sm text-on-ink-dim max-w-[var(--measure)]">{description}</p>}
+        {description && <p className="mt-2 text-sm text-on-ink-dim max-w-[var(--measure)]">{description}</p>}
       </div>
       {actions && <div className="flex items-center gap-2 shrink-0">{actions}</div>}
     </header>

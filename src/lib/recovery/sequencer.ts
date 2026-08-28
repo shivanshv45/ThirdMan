@@ -10,6 +10,9 @@ import {
   shouldAttemptRecovery,
   type PriorAttempt,
 } from "@/lib/recovery/policy";
+import { getContact } from "@/lib/contacts";
+import { enqueueNotification } from "@/lib/notifications/enqueue";
+import { formatPaise } from "@/lib/money";
 
 /**
  * Orchestrates recovery for one payment failure. Decides nothing itself —
@@ -266,7 +269,15 @@ export async function runRecoveryForFailure(
     return { failureId, proceeded: true, strategy, outcome: "failed", recoveredPaise: 0, reason };
   }
 
-  const reason = `A real, payable link was created — generating it is real: ${gateResult.paymentLinkUrl}. Delivering it to the customer by email/SMS is not: no messaging provider is wired in this layer. Recorded as pending until the customer completes it, verified by the payment_link.paid webhook.`;
+  // Layer 11-4: the link is real and payable — deliver it. This is the
+  // last step of a pipeline that was otherwise already complete (see
+  // ARCHITECTURE.md's recovery pipeline contract point 9, updated
+  // alongside this). No customer contact on file is a normal, common
+  // state (most webhook-sourced failures carry no email) and must not
+  // become an error — it's recorded honestly on the attempt instead.
+  const deliveryOutcome = await deliverRecoveryLink(merchantId, failure, attemptRow.id, gateResult.paymentLinkUrl);
+
+  const reason = `A real, payable link was created — generating it is real: ${gateResult.paymentLinkUrl}. ${deliveryOutcome}`;
 
   await db
     .update(schema.recoveryAttempts)
@@ -290,6 +301,62 @@ export async function runRecoveryForFailure(
   });
 
   return { failureId, proceeded: true, strategy, outcome: "pending", recoveredPaise: 0, reason };
+}
+
+/**
+ * Delivers (or honestly declines to deliver) a recovery Payment Link.
+ * Never throws into the sequencer — the attempt itself already
+ * succeeded (a real link exists) by the time this runs, and a
+ * notification failure must not turn that into an error, same
+ * discipline as /api/checkout/verify's try/catch around
+ * issueRewardCoinsForCapture. Returns a sentence describing what
+ * happened, appended to the attempt's own reason.
+ *
+ * The email body is entirely deterministic: the amount, the link, and
+ * the merchant name are interpolated by code from real rows. No model
+ * is ever asked to produce a number or a URL in an outgoing email, and
+ * none of the internal diagnosis category, decline detail, or ROI
+ * arithmetic ever appears in customer-facing copy.
+ */
+async function deliverRecoveryLink(
+  merchantId: string,
+  failure: typeof schema.paymentFailures.$inferSelect,
+  attemptId: string,
+  paymentLinkUrl: string,
+): Promise<string> {
+  try {
+    if (!failure.customerContactId) {
+      return "No customer contact is on file for this failure, so the link could not be delivered automatically — add one on /dashboard/recovery.";
+    }
+
+    const contact = await getContact(failure.customerContactId);
+    if (!contact) {
+      return "The customer contact on file for this failure no longer exists — the link could not be delivered automatically.";
+    }
+
+    const [merchant] = await db.select({ name: schema.merchants.name }).from(schema.merchants).where(eq(schema.merchants.id, merchantId));
+    const merchantName = merchant?.name ?? "the merchant";
+    const amount = formatPaise(failure.amountPaise);
+
+    const outcome = await enqueueNotification({
+      merchantId,
+      recipientKind: "customer",
+      contact,
+      notificationType: "recovery_link",
+      subject: `Complete your ${amount} payment to ${merchantName}`,
+      bodyText: `Your recent ${amount} payment to ${merchantName} didn't go through. You can complete it using this secure link:\n\n${paymentLinkUrl}\n\nIf you've already paid another way, you can ignore this message.`,
+      moneyActionId: undefined,
+      relatedEntityId: attemptId,
+    });
+
+    if (outcome.status === "suppressed") {
+      return `Delivery was suppressed: ${outcome.reason}`;
+    }
+    return "Delivering it to the customer by email is real: a notification has been enqueued to the contact on file.";
+  } catch (err) {
+    console.error(`[recovery] failed to enqueue recovery link delivery for attempt ${attemptId}:`, err);
+    return "Delivery could not be enqueued due to an internal error — the link above still works if shared manually.";
+  }
 }
 
 /**

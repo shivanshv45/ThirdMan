@@ -3,7 +3,7 @@ import { eq, inArray } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { getAgentsWithCaps, getAuditTrail, getPendingEscalations } from "@/lib/dashboard";
 import { setSpendCap, revokeAgent, reactivateAgent } from "@/lib/dashboard-mutations";
-import { resolveEscalation } from "@/lib/gate";
+import { resolveEscalation, ESCALATION_EXPIRY_HOURS } from "@/lib/gate";
 import { logAuditEntry } from "@/lib/audit";
 
 /**
@@ -122,7 +122,12 @@ describe("merchant isolation — enumeration by id, not just empty-list", () => 
       .insert(schema.moneyActions)
       .values({ merchantId: merchantA.id, agentId: agentA.id, type: "order_create", amountPaise: 95_000, status: "pending_escalation" })
       .returning();
-    await db.insert(schema.escalations).values({ moneyActionId: moneyAction.id, spendCapId: cap.id, riskReason: "isolation test fixture" });
+    await db.insert(schema.escalations).values({
+      moneyActionId: moneyAction.id,
+      spendCapId: cap.id,
+      riskReason: "isolation test fixture",
+      expiresAt: new Date(Date.now() + ESCALATION_EXPIRY_HOURS * 60 * 60 * 1000),
+    });
 
     const escalationsB = await getPendingEscalations(merchantB.id);
     expect(escalationsB.some((e) => e.moneyAction.id === moneyAction.id)).toBe(false);
@@ -181,7 +186,12 @@ describe("merchant isolation — enumeration by id, not just empty-list", () => 
       .returning();
     const [escalation] = await db
       .insert(schema.escalations)
-      .values({ moneyActionId: moneyAction.id, spendCapId: cap.id, riskReason: "isolation test fixture" })
+      .values({
+        moneyActionId: moneyAction.id,
+        spendCapId: cap.id,
+        riskReason: "isolation test fixture",
+        expiresAt: new Date(Date.now() + ESCALATION_EXPIRY_HOURS * 60 * 60 * 1000),
+      })
       .returning();
 
     await expect(resolveEscalation(merchantB.id, escalation.id, "approved")).rejects.toThrow(/does not belong to this merchant/i);

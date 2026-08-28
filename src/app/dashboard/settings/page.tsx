@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
 import { getSessionMerchant } from "@/lib/auth";
 import { getRazorpayConnectionStatus } from "@/lib/dashboard";
-import { connectRazorpay, disconnectRazorpay } from "./actions";
+import { getAlertSettings } from "@/lib/notifications/merchant-alerts";
+import { connectRazorpay, disconnectRazorpay, updateAlertSettings } from "./actions";
 import { PageHeader, Surface, Field, Input, Button } from "@/components/ui";
 
 export default async function SettingsPage({
@@ -14,6 +15,7 @@ export default async function SettingsPage({
 
   const { error, connected } = await searchParams;
   const status = await getRazorpayConnectionStatus(merchant.id);
+  const alertSettings = await getAlertSettings(merchant.id);
 
   return (
     <div className="space-y-8">
@@ -69,6 +71,39 @@ export default async function SettingsPage({
             </Button>
           </form>
         )}
+      </Surface>
+
+      <Surface variant="raised" className="p-5 space-y-4">
+        <div>
+          <h2 className="text-[var(--t-h4)] font-medium text-on-ink">Email alerts</h2>
+          <p className="text-sm text-on-ink-dim mt-1">
+            A daily summary email, at most once a day, only when there&apos;s something waiting on you. Sent to <span className="font-mono text-on-ink">{merchant.email}</span>.
+          </p>
+        </div>
+
+        <form action={updateAlertSettings} className="space-y-3">
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-sm text-on-ink-dim">
+              <input type="checkbox" name="escalationPendingEnabled" defaultChecked={alertSettings.escalationPendingEnabled} className="accent-accent" />
+              Purchases waiting on your approval
+            </label>
+            <label className="flex items-center gap-2 text-sm text-on-ink-dim">
+              <input type="checkbox" name="holdExpiringEnabled" defaultChecked={alertSettings.holdExpiringEnabled} className="accent-accent" />
+              Escrow holds expiring soon
+            </label>
+            <label className="flex items-center gap-2 text-sm text-on-ink-dim">
+              <input type="checkbox" name="notificationExhaustedEnabled" defaultChecked={alertSettings.notificationExhaustedEnabled} className="accent-accent" />
+              Customer notifications that failed to deliver
+            </label>
+            <label className="flex items-center gap-2 text-sm text-on-ink-dim">
+              <input type="checkbox" name="webhookExhaustedEnabled" defaultChecked={alertSettings.webhookExhaustedEnabled} className="accent-accent" />
+              Webhook deliveries to your server that failed
+            </label>
+          </div>
+          <Button type="submit" variant="secondary" size="sm" pendingLabel="Saving…">
+            Save alert preferences
+          </Button>
+        </form>
       </Surface>
     </div>
   );

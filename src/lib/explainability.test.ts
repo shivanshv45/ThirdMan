@@ -205,6 +205,7 @@ describe("refusal vs. deferral, and the deterministic/model-influenced split", (
       spendCapId: cap.id,
       riskReason: "This purchase pattern looked unusual to the model.",
       outcome: "pending",
+      expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000),
     });
 
     await logAuditEntry({
@@ -254,6 +255,7 @@ describe("refusal vs. deferral, and the deterministic/model-influenced split", (
       spendCapId: cap.id,
       riskReason: fallbackReason,
       outcome: "pending",
+      expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000),
     });
     await logAuditEntry({
       merchantId: merchant.id,

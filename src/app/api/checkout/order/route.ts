@@ -38,9 +38,6 @@ const orderRequestSchema = z
     // than exposing a separate conversationId to the client.
     cart: z.literal(true).optional(),
     sessionToken: z.string().uuid().optional(),
-    // Layer 10: present only for the embeddable widget on a third-party
-    // origin — see embed-cors.ts. Absent, this route is unchanged.
-    embedKey: z.string().optional(),
   })
   .refine((v) => v.productId !== undefined || v.offerId !== undefined || v.negotiationId !== undefined || v.cart !== undefined, {
     message: "one of productId, offerId, negotiationId, or cart is required",
@@ -51,17 +48,8 @@ const orderRequestSchema = z
 const RATE_LIMIT_MAX = 10;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 
-async function extractMerchantId(req: NextRequest): Promise<string | null> {
-  try {
-    const body = await req.clone().json();
-    return typeof body?.merchantId === "string" ? body.merchantId : null;
-  } catch {
-    return null;
-  }
-}
-
 export async function OPTIONS(req: NextRequest) {
-  return handleEmbedPreflight(req, { methods: "POST, OPTIONS", extractMerchantId });
+  return handleEmbedPreflight(req, { methods: "POST, OPTIONS" });
 }
 
 /**
@@ -73,8 +61,9 @@ export async function OPTIONS(req: NextRequest) {
  * hidden agent — see sequencer.ts), keeping every purchase bounded by a
  * real spend cap rather than exempted from one.
  *
- * Layer 10: an embedKey-bearing request is the embeddable widget on the
- * merchant's own site, subject to the origin allowlist below. It still
+ * Layer 10: a request carrying the X-Embed-Key header is the embeddable
+ * widget on the merchant's own site, subject to the origin allowlist
+ * below. It still
  * shares the same storefront agent and spend cap as /store/[merchantId]
  * — see ARCHITECTURE.md's "The embeddable widget" for why that's the
  * deliberate default. Attribution (which origin this came from) is
@@ -101,9 +90,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "invalid request body", details: parsed.error.flatten() }, { status: 400 });
   }
 
-  const { merchantId, productId, variantId, quantity, offerId, negotiationId, cart: wantsCart, sessionToken, embedKey } = parsed.data;
+  const { merchantId, productId, variantId, quantity, offerId, negotiationId, cart: wantsCart, sessionToken } = parsed.data;
 
-  const embedResolution = await resolveEmbedRequest(req, embedKey, merchantId);
+  const embedResolution = await resolveEmbedRequest(req, merchantId);
   if (embedResolution.ok === false) {
     return NextResponse.json({ error: embedResolution.reason }, { status: 400 });
   }

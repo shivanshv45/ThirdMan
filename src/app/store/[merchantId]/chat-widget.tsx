@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { formatPaise as rupees } from "@/lib/money";
 import { BuyButton } from "./buy-button";
+import { postToHost, fetchHeaders } from "@/lib/embed-events";
 
 /**
  * The human front door's conversational surface (Layer 4-6). The model
@@ -65,8 +66,25 @@ interface Negotiation {
   buyerTurnsAllowed: number;
 }
 
-export function ChatWidget({ merchantId }: { merchantId: string }) {
-  const [open, setOpen] = useState(false);
+export interface ChatWidgetProps {
+  merchantId: string;
+  /**
+   * Layer 10: "floating" (default) is the existing fixed-position bubble
+   * used by /store/[merchantId] — unchanged. "embedded" fills its
+   * container and drops the open/close state, since the host page's
+   * launcher button owns that — see /embed/[publishableKey]/page.tsx.
+   */
+  variant?: "floating" | "embedded";
+  /** Layer 10: present only in embedded mode — threaded into every fetch so the origin-allowlist check in embed-cors.ts can run. */
+  embedKey?: string;
+  displayName?: string | null;
+  greeting?: string | null;
+  accentColor?: string | null;
+}
+
+export function ChatWidget({ merchantId, variant = "floating", embedKey, displayName, greeting, accentColor }: ChatWidgetProps) {
+  const embedded = variant === "embedded";
+  const [open, setOpen] = useState(embedded);
   // Lazy initializer runs once on mount, client-side only (this is a
   // client component) — safe to touch sessionStorage/crypto here without
   // the effect-based setState React's own lint rule warns against.
@@ -84,6 +102,42 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages, sending]);
 
+  // Layer 10: tells the loader script's launcher button to open/close
+  // this widget, and reports cart/negotiation changes upward — see
+  // embed-events.ts for the shared postMessage protocol both this file
+  // and public/embed-loader.js speak. A no-op outside an iframe (no
+  // parent to notify), so this is safe to run unconditionally.
+  useEffect(() => {
+    if (!embedded) return;
+    postToHost("chat_opened_state", { open });
+  }, [embedded, open]);
+
+  useEffect(() => {
+    if (!embedded) return;
+    postToHost("cart_updated", {
+      lines: cart.lines.map((l) => ({ variantId: l.variantId, name: l.name, quantity: l.quantity, subtotalPaise: l.subtotalPaise })),
+      subtotalPaise: cart.subtotalPaise,
+      subtotalDisplay: rupees(cart.subtotalPaise),
+    });
+  }, [embedded, cart]);
+
+  useEffect(() => {
+    if (!embedded || !offer) return;
+    postToHost("offer_shown", { bundleName: offer.bundleName, amountPaise: offer.amountPaise, amountDisplay: rupees(offer.amountPaise) });
+  }, [embedded, offer]);
+
+  useEffect(() => {
+    if (!embedded || negotiation?.status !== "agreed" || negotiation.agreedUnitPricePaise === null) return;
+    postToHost("negotiation_agreed", {
+      agreedUnitPricePaise: negotiation.agreedUnitPricePaise,
+      agreedUnitPriceDisplay: rupees(negotiation.agreedUnitPricePaise),
+    });
+    // Only fire once per negotiation reaching "agreed" — negotiationId
+    // isn't tracked in this Negotiation shape, so status+price together
+    // are the closest stable identity available without widening the
+    // /api/chat response shape just for this.
+  }, [embedded, negotiation?.status, negotiation?.agreedUnitPricePaise]);
+
   async function send() {
     const message = input.trim();
     if (!message || !sessionToken || sending) return;
@@ -95,7 +149,7 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: fetchHeaders(embedKey),
         body: JSON.stringify({ merchantId, sessionToken, message }),
       });
       const data = await res.json();
@@ -121,7 +175,7 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
     try {
       await fetch("/api/checkout/decline-offer", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: fetchHeaders(embedKey),
         body: JSON.stringify({ merchantId, offerId: offer.offerId, sessionToken }),
       });
     } finally {
@@ -130,7 +184,22 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
     }
   }
 
+  function handleOrderComplete(order: { moneyActionId: string; razorpayOrderId: string; amountPaise: number; productName: string }) {
+    if (embedded) {
+      postToHost("order_complete", {
+        orderId: order.razorpayOrderId,
+        moneyActionId: order.moneyActionId,
+        amountPaise: order.amountPaise,
+        amountDisplay: rupees(order.amountPaise),
+        productName: order.productName,
+      });
+    }
+  }
+
   if (!open) {
+    // Never rendered in embedded mode (open starts true and nothing
+    // sets it false there) — the host page's launcher button owns the
+    // open/close affordance, not this component.
     return (
       <button
         onClick={() => setOpen(true)}
@@ -142,20 +211,30 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
   }
 
   return (
-    <div className="fixed bottom-6 right-6 w-full max-w-sm h-[32rem] bg-ink-raised border border-ink-line rounded-[var(--radius-lg)] shadow-2xl flex flex-col overflow-hidden">
+    <div
+      className={
+        embedded
+          ? "w-full h-full bg-ink-raised flex flex-col overflow-hidden"
+          : "fixed bottom-6 right-6 w-full max-w-sm h-[32rem] bg-ink-raised border border-ink-line rounded-[var(--radius-lg)] shadow-2xl flex flex-col overflow-hidden"
+      }
+      style={accentColor ? ({ "--accent": accentColor } as React.CSSProperties) : undefined}
+    >
       <div className="flex items-center justify-between px-4 py-3 border-b border-ink-line shrink-0">
         <span className="font-medium text-sm text-on-ink flex items-center gap-2">
           <span className="h-1.5 w-1.5 rounded-full bg-allow" aria-hidden="true" />
-          Ask about our products
+          {displayName ? `Ask ${displayName}` : "Ask about our products"}
         </span>
-        <button onClick={() => setOpen(false)} className="text-on-ink-faint hover:text-on-ink text-sm transition-colors">
+        <button
+          onClick={() => (embedded ? postToHost("close_request") : setOpen(false))}
+          className="text-on-ink-faint hover:text-on-ink text-sm transition-colors"
+        >
           Close
         </button>
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-2">
         {messages.length === 0 && (
-          <p className="text-sm text-on-ink-faint">Ask what we sell, get a recommendation, or say what you&apos;d like to buy.</p>
+          <p className="text-sm text-on-ink-faint">{greeting || "Ask what we sell, get a recommendation, or say what you'd like to buy."}</p>
         )}
         {messages.map((m, i) => (
           <div
@@ -191,9 +270,12 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
               offerId={offer.offerId}
               sessionToken={sessionToken}
               productName={offer.bundleName}
-              onSuccess={() => {
+              embedKey={embedKey}
+              accentColor={accentColor ?? undefined}
+              onSuccess={(order) => {
                 setOffer(null);
                 setCart({ lines: [], subtotalPaise: 0 });
+                handleOrderComplete(order);
               }}
             />
             <button
@@ -217,9 +299,12 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
             negotiationId={negotiation.negotiationId}
             sessionToken={sessionToken}
             productName="Negotiated price"
-            onSuccess={() => {
+            embedKey={embedKey}
+            accentColor={accentColor ?? undefined}
+            onSuccess={(order) => {
               setNegotiation(null);
               setCart({ lines: [], subtotalPaise: 0 });
+              handleOrderComplete(order);
             }}
           />
         </div>
@@ -266,7 +351,12 @@ export function ChatWidget({ merchantId }: { merchantId: string }) {
             cart
             sessionToken={sessionToken}
             productName={`Cart (${cart.lines.length} item${cart.lines.length === 1 ? "" : "s"})`}
-            onSuccess={() => setCart({ lines: [], subtotalPaise: 0 })}
+            embedKey={embedKey}
+            accentColor={accentColor ?? undefined}
+            onSuccess={(order) => {
+              setCart({ lines: [], subtotalPaise: 0 });
+              handleOrderComplete(order);
+            }}
           />
         </div>
       )}

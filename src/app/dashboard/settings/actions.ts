@@ -34,3 +34,14 @@ export async function disconnectRazorpay() {
   await mutations.disconnectRazorpay(merchant.id);
   revalidatePath("/dashboard/settings");
 }
+
+export async function updateAlertSettings(formData: FormData) {
+  const merchant = await requireSessionMerchant();
+  await mutations.updateAlertSettings(merchant.id, {
+    escalationPendingEnabled: formData.get("escalationPendingEnabled") === "on",
+    holdExpiringEnabled: formData.get("holdExpiringEnabled") === "on",
+    notificationExhaustedEnabled: formData.get("notificationExhaustedEnabled") === "on",
+    webhookExhaustedEnabled: formData.get("webhookExhaustedEnabled") === "on",
+  });
+  revalidatePath("/dashboard/settings");
+}

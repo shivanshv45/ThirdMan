@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { fetchHeaders } from "@/lib/embed-events";
 
 /**
  * The real checkout mechanism (Layer 4-2): Razorpay Checkout, the
@@ -56,6 +57,8 @@ export function BuyButton({
   quantity = 1,
   disabled,
   onSuccess,
+  embedKey,
+  accentColor,
 }: {
   merchantId: string;
   /** Exactly one of productId, offerId, negotiationId, or cart — mutually exclusive. */
@@ -72,7 +75,11 @@ export function BuyButton({
   productName: string;
   quantity?: number;
   disabled?: boolean;
-  onSuccess?: () => void;
+  onSuccess?: (order: { moneyActionId: string; razorpayOrderId: string; amountPaise: number; productName: string }) => void;
+  /** Layer 10: present only when this button is rendered inside the embeddable widget on a third-party origin — see embed-cors.ts. Absent, checkout is unchanged. */
+  embedKey?: string;
+  /** Layer 10: the merchant's configured accent colour for the Checkout modal's theme, already validated as a hex colour by embed-mutations.ts. Falls back to the platform default. */
+  accentColor?: string;
 }) {
   const [status, setStatus] = useState<Status>("idle");
   const [message, setMessage] = useState<string | null>(null);
@@ -86,7 +93,7 @@ export function BuyButton({
 
       const orderRes = await fetch("/api/checkout/order", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: fetchHeaders(embedKey),
         body: JSON.stringify({ merchantId, productId, variantId, quantity, offerId, negotiationId, cart, sessionToken }),
       });
       const order = await orderRes.json();
@@ -105,7 +112,7 @@ export function BuyButton({
         currency: "INR",
         name: productName,
         order_id: order.razorpayOrderId,
-        theme: { color: "#0d94fb" },
+        theme: { color: accentColor ?? "#0d94fb" },
         modal: {
           ondismiss: () => {
             if (status !== "success") {
@@ -119,7 +126,7 @@ export function BuyButton({
           try {
             const verifyRes = await fetch("/api/checkout/verify", {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: fetchHeaders(embedKey),
               body: JSON.stringify({
                 moneyActionId: order.moneyActionId,
                 razorpayOrderId: response.razorpay_order_id,
@@ -132,7 +139,12 @@ export function BuyButton({
             if (verifyRes.ok && verify.decision === "allow") {
               setStatus("success");
               setMessage("Payment confirmed. Thank you!");
-              onSuccess?.();
+              onSuccess?.({
+                moneyActionId: order.moneyActionId,
+                razorpayOrderId: order.razorpayOrderId,
+                amountPaise: order.amountPaise,
+                productName,
+              });
             } else {
               setStatus("error");
               setMessage(verify.reason ?? verify.error ?? "Payment could not be verified.");

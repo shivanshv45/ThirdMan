@@ -136,7 +136,9 @@ export const merchants = pgTable("merchants", {
   name: text("name").notNull(),
   email: text("email").notNull().unique(),
   // scrypt hash, stored as "salt:hash" hex. Never a raw password.
-  passwordHash: text("password_hash").notNull(),
+  // Null for a merchant who has only ever signed in via OAuth (Layer 12) —
+  // they simply have no email/password form to use until they set one.
+  passwordHash: text("password_hash"),
   // AES-256-GCM ciphertext of the merchant's own Razorpay test credentials.
   // Null until the merchant connects their account (Layer 2-2). Format:
   // "iv:tag:ciphertext", base64 segments. Decrypted only in src/lib/crypto.ts.
@@ -159,6 +161,30 @@ export const sessions = pgTable("sessions", {
     .notNull()
     .defaultNow(),
 });
+
+export const oauthProviderEnum = pgEnum("oauth_provider", ["google", "github"]);
+
+// One row per (provider, provider's own account id) linked to a merchant.
+// A merchant can have at most one linked identity per provider — re-linking
+// the same provider account updates this row (onConflictDoUpdate on the
+// same unique index) rather than creating a duplicate. email is a snapshot
+// at link time, not kept in sync with the provider afterward.
+export const oauthIdentities = pgTable(
+  "oauth_identities",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id),
+    provider: oauthProviderEnum("provider").notNull(),
+    providerAccountId: text("provider_account_id").notNull(),
+    email: text("email").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [uniqueIndex("oauth_identities_provider_account_idx").on(table.provider, table.providerAccountId)],
+);
 
 // The marketing-level entity (Layer 5-1): title, description, category —
 // what a merchant thinks of as "a product." Money and stock now live on
@@ -375,6 +401,14 @@ export const escalations = pgTable("escalations", {
   riskReason: text("risk_reason").notNull(),
   outcome: escalationOutcomeEnum("outcome").notNull().default("pending"),
   resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  // Set deterministically at creation (see gate.ts's escalation insert):
+  // createdAt + merchant_policies.escalationWindowHours, or a 48h default
+  // matching escrow's ESCROW_HOLD_EXPIRY_HOURS shape (Layer 11). Past
+  // this, escalations:expire (notifications/expiry.ts) resolves the
+  // escalation as "rejected" via gate.ts's own resolveEscalation — never
+  // a second, duplicate release path — so timing out denies, it never
+  // auto-approves. Fail closed: silence is not consent.
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -466,6 +500,11 @@ export const paymentFailures = pgTable(
     // An opaque handle only. Never an email, phone, or name — this row
     // feeds the audit log, and CLAUDE.md rule 1 bars full PII there.
     customerRef: text("customer_ref"),
+    // Nullable — a webhook-sourced failure often has no address at all,
+    // and that is a normal state, not an error (Layer 11). Set from the
+    // Razorpay payload if present, or added later by a merchant on
+    // /dashboard/recovery. See contacts.ts and recovery/sequencer.ts.
+    customerContactId: uuid("customer_contact_id").references(() => customerContacts.id),
     source: paymentFailureSourceEnum("source").notNull(),
     status: paymentFailureStatusEnum("status").notNull().default("new"),
     diagnosis: jsonb("diagnosis"),
@@ -532,6 +571,12 @@ export const conversations = pgTable("conversations", {
     .notNull()
     .references(() => merchants.id),
   sessionToken: text("session_token").notNull().unique(),
+  // Layer 11-5: set (deterministically, by chat.ts) the turn a customer
+  // is offered a restock alert for an out-of-stock variant; cleared the
+  // moment they either provide an address or move on to something else.
+  // Not inferred from chat history — a real pointer, same "written
+  // exclusively by code, never the model" discipline as cartItems above.
+  pendingRestockVariantId: uuid("pending_restock_variant_id").references(() => productVariants.id),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -1056,3 +1101,268 @@ export const webhookDeliveries = pgTable(
       .where(sql`${table.moneyActionId} is not null`),
   ],
 );
+
+// --- Layer 11: notifications, contactable customers, token rewards ---
+// See plans/layer-11-notifications-and-token-rewards.md. This is a
+// separate delivery spine from webhook_deliveries above: that one
+// notifies a merchant's SERVER (machine-to-machine, HMAC-signed,
+// SSRF is the risk); this one notifies a HUMAN (consent and
+// unsubscribe are mandatory, no signing needed). Same durable-queue
+// shape, deliberately not merged — see DECISIONS.md.
+
+export const contactChannelEnum = pgEnum("contact_channel", ["email"]);
+
+export const contactConsentSourceEnum = pgEnum("contact_consent_source", [
+  "checkout",
+  "chat_restock_request",
+  "recovery_intake",
+  "merchant_entered",
+]);
+
+// A customer's contact address, with consent provenance and an
+// unsubscribe token from birth — every row, no exceptions, even though
+// a recovery-link email arguably wouldn't strictly need one. See L11-1.
+export const customerContacts = pgTable(
+  "customer_contacts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id),
+    channel: contactChannelEnum("channel").notNull().default("email"),
+    // Normalised lowercase — see contacts.ts's normalizeEmail. Never
+    // stored as typed.
+    address: text("address").notNull(),
+    consentSource: contactConsentSourceEnum("consent_source").notNull(),
+    consentAt: timestamp("consent_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    // Opaque, unguessable, generated once at insert and NEVER rotated —
+    // an unsubscribe link already sent in an email must keep working.
+    // This token is the sole credential on the public unsubscribe route.
+    unsubscribeToken: text("unsubscribe_token").notNull().unique(),
+    // Non-null means: send nothing to this contact, ever, regardless of
+    // what triggers a later enqueue. Checked by contacts.ts's
+    // isContactable, called from exactly one place (the queue's
+    // enqueue path) so there is never a second opinion.
+    unsubscribedAt: timestamp("unsubscribed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // One contact row per address per merchant — a customer who both
+    // fails a payment and later asks for a restock alert is ONE row
+    // with one unsubscribe token, not two, so unsubscribing from one
+    // context can't leave the other still sending.
+    uniqueIndex("customer_contacts_merchant_channel_address_idx").on(
+      table.merchantId,
+      table.channel,
+      table.address,
+    ),
+  ],
+);
+
+export const recipientKindEnum = pgEnum("recipient_kind", ["customer", "merchant"]);
+
+export const notificationStatusEnum = pgEnum("notification_status", [
+  "pending",
+  "sent",
+  "failed",
+  "exhausted",
+  "suppressed",
+]);
+
+// The durable outbound queue for human-facing notifications. A row
+// exists BEFORE any provider call is attempted (see
+// notifications/enqueue.ts) — same "crash mid-flight leaves a
+// traceable row" discipline as money_actions and webhook_deliveries.
+export const notificationDeliveries = pgTable(
+  "notification_deliveries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id),
+    // Nullable: a merchant-addressed alert (L11-6) goes to
+    // merchants.email, which already exists and needs no contact row.
+    contactId: uuid("contact_id").references(() => customerContacts.id),
+    recipientKind: recipientKindEnum("recipient_kind").notNull(),
+    // e.g. "recovery_link" | "restock_alert" | "escalation_pending" |
+    // "hold_expiring" | "notification_exhausted" | "webhook_exhausted".
+    // Not an enum: notifications/policy.ts owns the closed list of valid
+    // values in code, where the frequency-cap and dedupe logic already
+    // has to reason about them; a DB enum here would just be a second
+    // place to keep in sync.
+    notificationType: text("notification_type").notNull(),
+    channel: contactChannelEnum("channel").notNull().default("email"),
+    subject: text("subject").notNull(),
+    // Exactly what was sent, plain text — same discipline as
+    // webhook_deliveries.payload storing the exact signed bytes. A
+    // delivery log that can't show what a customer actually received
+    // isn't evidence.
+    bodyText: text("body_text").notNull(),
+    bodyHtml: text("body_html"),
+    status: notificationStatusEnum("status").notNull().default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    providerMessageId: text("provider_message_id"),
+    // Nullable; set when the notification concerns a specific money
+    // action (e.g. a recovery link), so the audit trail can join back.
+    moneyActionId: uuid("money_action_id").references(() => moneyActions.id),
+    // Nullable; the payment_failures/escrow_holds/escalations/variant
+    // row this notification is about. Not a typed FK — it points at
+    // different tables depending on notificationType, same "opaque
+    // handle, interpreted by code, not the schema" choice as
+    // payment_failures.customerRef.
+    relatedEntityId: uuid("related_entity_id"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // Prevents the same notification being sent twice about the same
+    // thing to the same person — e.g. a recovery sequencer run twice,
+    // or two overlapping cron ticks both scanning for restocks. A
+    // database constraint, not a hope that ticks never overlap. Same
+    // trick as money_actions.idempotencyKey and
+    // webhook_deliveries_dedupe_idx.
+    uniqueIndex("notification_deliveries_dedupe_idx")
+      .on(table.notificationType, table.relatedEntityId, table.contactId)
+      .where(sql`${table.relatedEntityId} is not null`),
+  ],
+);
+
+export const restockRequestStatusEnum = pgEnum("restock_request_status", [
+  "waiting",
+  "notified",
+  "cancelled",
+]);
+
+// A buyer's "tell me when this is back" ask from the chat widget
+// (L11-5). Deterministically scanned for by a cron job, never hooked
+// on every stock write — stock changes in several places (gate
+// reservation, release, merchant edit, import) and hooking all of them
+// is how one gets missed. One scan over real current state can't drift.
+export const restockRequests = pgTable(
+  "restock_requests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id),
+    variantId: uuid("variant_id")
+      .notNull()
+      .references(() => productVariants.id),
+    contactId: uuid("contact_id")
+      .notNull()
+      .references(() => customerContacts.id),
+    status: restockRequestStatusEnum("status").notNull().default("waiting"),
+    requestedAt: timestamp("requested_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    notifiedAt: timestamp("notified_at", { withTimezone: true }),
+  },
+  (table) => [
+    // A customer can only be "waiting" once per variant — asking twice
+    // doesn't create two rows, and once notified they must ask again
+    // (status becomes terminal) rather than being silently re-armed.
+    uniqueIndex("restock_requests_waiting_idx")
+      .on(table.variantId, table.contactId)
+      .where(sql`${table.status} = 'waiting'`),
+  ],
+);
+
+// --- Layer 11-8: reward coins redeemable for AI usage on this platform ---
+// The tiers are real Groq-served models, honestly labelled — see
+// ai-credits.ts's docstring and DECISIONS.md for why a Groq response is
+// never relabelled under another vendor's model name. Reuses the same
+// reward_coin_ledger every other coin issuance/redemption writes to
+// (reason: "redemption") — this is not a second currency, it's a
+// second thing the existing coins can buy.
+
+// One row per model tier a merchant has configured. Seeded with real
+// Groq model ids; a tier for a provider with no key configured is
+// still a real row (enabled: false), shown in the UI as "not
+// connected" rather than omitted or faked as available.
+export const aiCreditTiers = pgTable("ai_credit_tiers", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  merchantId: uuid("merchant_id")
+    .notNull()
+    .references(() => merchants.id),
+  // The real provider model id passed to llm.ts, e.g.
+  // "llama-3.3-70b-versatile" — never a fabricated or relabelled name.
+  modelId: text("model_id").notNull(),
+  // What the UI shows — must name the real model, not a stand-in for
+  // another vendor's product.
+  displayName: text("display_name").notNull(),
+  provider: text("provider").notNull(),
+  // Merchant-set integer coin price per request. Code multiplies;
+  // never a model's call to make (CLAUDE.md rule 2).
+  coinsPerRequest: integer("coins_per_request").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// One row per AI-credit redemption. providerServed is what makes the
+// tier-label honesty claim checkable by a test rather than asserted in
+// a comment — see ai-credits.test.ts.
+export const aiCreditRedemptions = pgTable("ai_credit_redemptions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  merchantId: uuid("merchant_id")
+    .notNull()
+    .references(() => merchants.id),
+  tierId: uuid("tier_id")
+    .notNull()
+    .references(() => aiCreditTiers.id),
+  agentId: uuid("agent_id").references(() => agents.id),
+  sessionToken: text("session_token"),
+  coinsSpent: integer("coins_spent").notNull(),
+  // The reward_coin_ledger row this redemption's coin deduction wrote —
+  // same "trace back to real ledger evidence" discipline as
+  // rewardCoinLedger.moneyActionId.
+  rewardLedgerId: uuid("reward_ledger_id")
+    .notNull()
+    .references(() => rewardCoinLedger.id),
+  promptExcerpt: text("prompt_excerpt").notNull(),
+  responseExcerpt: text("response_excerpt"),
+  // Which provider actually answered (llm.ts's own CompletionResult
+  // field) — never assumed from the tier's displayName.
+  providerServed: text("provider_served"),
+  succeeded: boolean("succeeded").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// --- Layer 11-6: merchant digest alerts ---
+// One row per merchant, same "absence means default, not a magic
+// fallback value" discipline as merchant_reward_settings — a merchant
+// with no row here gets every alert type ON (default true), because a
+// merchant who never opens the dashboard is exactly who this feature
+// is for; explicitly turning one off writes a real row.
+export const merchantAlertSettings = pgTable("merchant_alert_settings", {
+  merchantId: uuid("merchant_id")
+    .primaryKey()
+    .references(() => merchants.id),
+  escalationPendingEnabled: boolean("escalation_pending_enabled").notNull().default(true),
+  holdExpiringEnabled: boolean("hold_expiring_enabled").notNull().default(true),
+  notificationExhaustedEnabled: boolean("notification_exhausted_enabled").notNull().default(true),
+  webhookExhaustedEnabled: boolean("webhook_exhausted_enabled").notNull().default(true),
+  // When the last digest was actually sent — the dedupe bound for "at
+  // most one digest per merchant per day" (notifications/merchant-
+  // alerts.ts), read instead of relying on notification_deliveries'
+  // own relatedEntityId dedupe (a digest has no single related entity;
+  // it summarises several).
+  lastDigestSentAt: timestamp("last_digest_sent_at", { withTimezone: true }),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});

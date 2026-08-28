@@ -15,34 +15,13 @@ const verifyRequestSchema = z.object({
   razorpayOrderId: z.string().min(1),
   razorpayPaymentId: z.string().min(1),
   razorpaySignature: z.string().min(1),
-  // Layer 10: present only for the embeddable widget on a third-party
-  // origin — see embed-cors.ts. Absent, this route is unchanged. Unlike
-  // the other checkout routes, merchantId isn't in the request body
-  // here (it's derived from the money action below), so the origin
-  // check happens after that lookup rather than up front.
-  embedKey: z.string().optional(),
 });
 
 const RATE_LIMIT_MAX = 20;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 
-async function extractMerchantIdFromMoneyAction(req: NextRequest): Promise<string | null> {
-  try {
-    const body = await req.clone().json();
-    const moneyActionId = body?.moneyActionId;
-    if (typeof moneyActionId !== "string") return null;
-    const [moneyAction] = await db
-      .select({ merchantId: schema.moneyActions.merchantId })
-      .from(schema.moneyActions)
-      .where(eq(schema.moneyActions.id, moneyActionId));
-    return moneyAction?.merchantId ?? null;
-  } catch {
-    return null;
-  }
-}
-
 export async function OPTIONS(req: NextRequest) {
-  return handleEmbedPreflight(req, { methods: "POST, OPTIONS", extractMerchantId: extractMerchantIdFromMoneyAction });
+  return handleEmbedPreflight(req, { methods: "POST, OPTIONS" });
 }
 
 /**
@@ -72,7 +51,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "invalid request body", details: parsed.error.flatten() }, { status: 400 });
   }
 
-  const { moneyActionId, razorpayOrderId, razorpayPaymentId, razorpaySignature, embedKey } = parsed.data;
+  const { moneyActionId, razorpayOrderId, razorpayPaymentId, razorpaySignature } = parsed.data;
 
   const [moneyAction] = await db
     .select()
@@ -83,7 +62,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "unknown order" }, { status: 404 });
   }
 
-  const embedResolution = await resolveEmbedRequest(req, embedKey, moneyAction.merchantId);
+  const embedResolution = await resolveEmbedRequest(req, moneyAction.merchantId);
   if (embedResolution.ok === false) {
     return NextResponse.json({ error: embedResolution.reason }, { status: 400 });
   }

@@ -255,6 +255,49 @@ button {
 }
 
 /* =============================================================
+   Auth backdrop drift — an almost-imperceptibly slow tint shift
+   between indigo and a warm brown, cross-fading two radial washes
+   over several minutes. Nothing moves fast enough to notice frame
+   to frame; the point is that it's visibly different if you look
+   away and come back. Reduced motion: settles on one frame, no
+   animation, never a static void where the gradient should be.
+   ============================================================= */
+
+.auth-backdrop-drift {
+  background:
+    radial-gradient(120% 90% at 20% 15%, rgba(99, 91, 219, 0.32), transparent 60%),
+    radial-gradient(120% 90% at 82% 88%, rgba(184, 115, 51, 0.24), transparent 60%);
+  animation: auth-drift 210s var(--ease-in-out) infinite alternate;
+}
+
+@keyframes auth-drift {
+  0% {
+    background:
+      radial-gradient(120% 90% at 20% 15%, rgba(99, 91, 219, 0.34), transparent 60%),
+      radial-gradient(120% 90% at 82% 88%, rgba(184, 115, 51, 0.1), transparent 60%);
+  }
+  50% {
+    background:
+      radial-gradient(120% 90% at 24% 20%, rgba(140, 105, 190, 0.22), transparent 62%),
+      radial-gradient(120% 90% at 78% 84%, rgba(184, 115, 51, 0.2), transparent 62%);
+  }
+  100% {
+    background:
+      radial-gradient(120% 90% at 30% 22%, rgba(99, 91, 219, 0.08), transparent 60%),
+      radial-gradient(120% 90% at 74% 80%, rgba(184, 115, 51, 0.34), transparent 60%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-backdrop-drift {
+    animation: none;
+    background:
+      radial-gradient(120% 90% at 20% 15%, rgba(99, 91, 219, 0.24), transparent 60%),
+      radial-gradient(120% 90% at 82% 88%, rgba(184, 115, 51, 0.2), transparent 60%);
+  }
+}
+
+/* =============================================================
    Coda Theme Override — landing page only
    ============================================================= */
 

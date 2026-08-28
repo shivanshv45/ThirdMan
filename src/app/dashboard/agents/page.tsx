@@ -4,7 +4,7 @@ import { getSessionMerchant } from "@/lib/auth";
 import { setSpendCap, revokeAgent, reactivateAgent } from "../actions";
 import { CreateAgentForm, RotateKeyButton } from "../agent-key-reveal";
 import { formatPaise as rupees } from "@/lib/money";
-import { PageHeader, Surface, Button, Field, Input, EmptyState } from "@/components/ui";
+import { PageHeader, Surface, Button, Field, Input, EmptyState, DetailsToggle } from "@/components/ui";
 
 function formatDate(d: Date): string {
   return new Date(d).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
@@ -30,16 +30,21 @@ export default async function AgentsPage() {
           description="Create one above to give an AI buyer a scoped API key and spend cap."
         />
       ) : (
-        <div className="space-y-4">
+        <div className="space-y-3">
           {agents.map((agent) => {
             const pct = agent.cap ? Math.min((agent.cap.spentPaise / agent.cap.capPaise) * 100, 100) : 0;
+            const revoked = agent.status !== "active";
+            // The bar carries the cap's own real status, not an invented
+            // threshold — "exhausted" is a value the gate actually wrote.
+            const barColor = agent.cap?.status === "exhausted" ? "var(--deny)" : "var(--accent)";
+
             return (
-              <Surface key={agent.id} variant="raised" className="p-4">
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium text-on-ink">{agent.name}</span>
+              <Surface key={agent.id} variant="raised" className={`p-5 ${revoked ? "opacity-70" : ""}`}>
+                <div className="flex items-start justify-between flex-wrap gap-3">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <span className="text-[var(--t-h4)] font-medium text-on-ink truncate">{agent.name}</span>
                     <span
-                      className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                      className={`text-[var(--t-label)] uppercase tracking-[0.06em] px-2 py-0.5 rounded-full font-medium shrink-0 ${
                         agent.status === "active"
                           ? "bg-allow-wash text-allow-bright"
                           : "bg-ink-overlay text-on-ink-faint"
@@ -48,7 +53,7 @@ export default async function AgentsPage() {
                       {agent.status}
                     </span>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 shrink-0">
                     <RotateKeyButton agentId={agent.id} />
                     <form action={agent.status === "active" ? revokeAgent : reactivateAgent}>
                       <input type="hidden" name="agentId" value={agent.id} />
@@ -60,51 +65,72 @@ export default async function AgentsPage() {
                 </div>
 
                 {agent.cap ? (
-                  <div className="mt-3 text-sm">
-                    <div className="flex gap-4 font-mono tabular-nums text-on-ink-dim text-xs">
-                      <span>
-                        Spent <span className="text-on-ink">{rupees(agent.cap.spentPaise)}</span> of{" "}
-                        {rupees(agent.cap.capPaise)}
-                      </span>
-                      <span>Remaining {rupees(agent.cap.remainingPaise)}</span>
-                      <span>Per-tx max {rupees(agent.cap.perTransactionMaxPaise)}</span>
-                      <span className="text-on-ink-faint">({agent.cap.status})</span>
+                  <div className="mt-4">
+                    <div className="flex items-end justify-between gap-4 flex-wrap">
+                      <div>
+                        <div className="text-[var(--t-label)] uppercase tracking-[0.08em] text-on-ink-faint font-medium">
+                          Remaining this window
+                        </div>
+                        <div className="mt-1 font-mono text-2xl tabular-nums text-on-ink leading-none">
+                          {rupees(agent.cap.remainingPaise)}
+                        </div>
+                      </div>
+                      <div className="text-xs font-mono tabular-nums text-on-ink-dim text-right">
+                        <div>
+                          {rupees(agent.cap.spentPaise)} spent of {rupees(agent.cap.capPaise)}
+                        </div>
+                        <div className="text-on-ink-faint mt-0.5">
+                          {rupees(agent.cap.perTransactionMaxPaise)} max per transaction
+                        </div>
+                      </div>
                     </div>
-                    <div className="w-full bg-ink-overlay rounded-full h-1.5 mt-2">
+
+                    <div className="w-full bg-ink-overlay rounded-full h-1 mt-3 overflow-hidden">
                       <div
-                        className="bg-accent h-1.5 rounded-full transition-[width] duration-[var(--dur-slow)] ease-[var(--ease-out)]"
-                        style={{ width: `${pct}%` }}
+                        className="h-1 rounded-full transition-[width] duration-[var(--dur-slow)] ease-[var(--ease-out)]"
+                        style={{ width: `${pct}%`, background: barColor }}
                       />
                     </div>
-                    <span className="text-xs text-on-ink-faint font-mono">
-                      Window ends {formatDate(agent.cap.windowEnd)}
-                    </span>
+
+                    <div className="flex items-center justify-between gap-3 mt-2 text-xs font-mono text-on-ink-faint">
+                      <span>Window ends {formatDate(agent.cap.windowEnd)}</span>
+                      <span>{agent.cap.status}</span>
+                    </div>
                   </div>
                 ) : (
-                  <p className="mt-2 text-sm text-on-ink-dim">No spend cap set — this agent cannot transact.</p>
+                  <p className="mt-3 text-sm text-deny-bright">
+                    No spend cap set — this agent cannot transact.
+                  </p>
                 )}
 
-                <form action={setSpendCap} className="mt-3 flex flex-wrap items-end gap-2">
-                  <input type="hidden" name="agentId" value={agent.id} />
-                  <div className="w-28">
-                    <Field label="Cap (₹)">
-                      <Input name="capRupees" type="number" step="0.01" min="0" required />
-                    </Field>
-                  </div>
-                  <div className="w-28">
-                    <Field label="Per-tx max (₹)">
-                      <Input name="perTransactionMaxRupees" type="number" step="0.01" min="0" required />
-                    </Field>
-                  </div>
-                  <div className="w-24">
-                    <Field label="Window (h)">
-                      <Input name="windowHours" type="number" step="1" min="1" defaultValue={24} required />
-                    </Field>
-                  </div>
-                  <Button type="submit" variant="primary" pendingLabel="Setting…">
-                    Set cap
-                  </Button>
-                </form>
+                {/* Collapsed by default: the card should lead with what the
+                    cap currently is, not with three empty inputs asking to
+                    change it. */}
+                <div className="mt-4 pt-4 border-t border-ink-line-soft">
+                  <DetailsToggle summary={agent.cap ? "Change cap" : "Set a cap"} variant="plain">
+                    <form action={setSpendCap} className="flex flex-wrap items-end gap-2">
+                      <input type="hidden" name="agentId" value={agent.id} />
+                      <div className="w-28">
+                        <Field label="Cap (₹)">
+                          <Input name="capRupees" type="number" step="0.01" min="0" required />
+                        </Field>
+                      </div>
+                      <div className="w-28">
+                        <Field label="Per-tx max (₹)">
+                          <Input name="perTransactionMaxRupees" type="number" step="0.01" min="0" required />
+                        </Field>
+                      </div>
+                      <div className="w-24">
+                        <Field label="Window (h)">
+                          <Input name="windowHours" type="number" step="1" min="1" defaultValue={24} required />
+                        </Field>
+                      </div>
+                      <Button type="submit" variant="primary" pendingLabel="Setting…">
+                        {agent.cap ? "Update cap" : "Set cap"}
+                      </Button>
+                    </form>
+                  </DetailsToggle>
+                </div>
               </Surface>
             );
           })}

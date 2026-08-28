@@ -11,4 +11,6 @@ export { Reveal } from "./reveal";
 export { DecisionComposition } from "./decision-composition";
 export { ReadinessGauge } from "./readiness-gauge";
 export { AmbientField } from "./ambient-field";
+export { AuthBackdrop } from "./auth-backdrop";
+export { OAuthButton } from "./oauth-button";
 export { formatPaiseGrouped, splitPaiseForDisplay } from "./format";

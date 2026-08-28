@@ -8,25 +8,13 @@ const declineRequestSchema = z.object({
   merchantId: z.string().uuid(),
   offerId: z.string().uuid(),
   sessionToken: z.string().uuid(),
-  // Layer 10: present only for the embeddable widget on a third-party
-  // origin — see embed-cors.ts. Absent, this route is unchanged.
-  embedKey: z.string().optional(),
 });
 
 const RATE_LIMIT_MAX = 20;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 
-async function extractMerchantId(req: NextRequest): Promise<string | null> {
-  try {
-    const body = await req.clone().json();
-    return typeof body?.merchantId === "string" ? body.merchantId : null;
-  } catch {
-    return null;
-  }
-}
-
 export async function OPTIONS(req: NextRequest) {
-  return handleEmbedPreflight(req, { methods: "POST, OPTIONS", extractMerchantId });
+  return handleEmbedPreflight(req, { methods: "POST, OPTIONS" });
 }
 
 /**
@@ -54,7 +42,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "invalid request body", details: parsed.error.flatten() }, { status: 400 });
   }
 
-  const embedResolution = await resolveEmbedRequest(req, parsed.data.embedKey, parsed.data.merchantId);
+  const embedResolution = await resolveEmbedRequest(req, parsed.data.merchantId);
   if (embedResolution.ok === false) {
     return NextResponse.json({ error: embedResolution.reason }, { status: 400 });
   }

@@ -20,18 +20,26 @@ export type EmbedRequestResolution =
   | { ok: false; reason: string }
   | { ok: "not-an-embed" };
 
-const ORIGIN_DENY_RATE_LIMIT_MAX = 20;
+const ORIGIN_DENY_RATE_LIMIT_MAX = 5;
 const ORIGIN_DENY_RATE_LIMIT_WINDOW_MS = 60_000;
 
 /**
  * Resolves an embed-tagged request against the merchant it claims to be
- * for. `embedKey` absent entirely means "not an embed request" — the
- * legacy, unchanged path. `embedKey` present but invalid, mismatched,
- * or from a disallowed origin is always a deny, never silently ignored
- * back into the legacy path (that would let a caller strip its own key
- * to bypass origin enforcement).
+ * for. The embed key travels as the X-Embed-Key request HEADER, never
+ * in the JSON body — a real browser CORS preflight (OPTIONS) carries no
+ * body, only headers, so a body-only key would be invisible to
+ * handleEmbedPreflight below and the whole cross-origin flow would
+ * silently fail (see FAILURES.md for the real bug this was until
+ * caught by an actual curl-driven preflight, not just a unit test).
+ *
+ * No header at all means "not an embed request" — the legacy,
+ * unchanged path. A header present but invalid, mismatched, or from a
+ * disallowed origin is always a deny, never silently ignored back into
+ * the legacy path (that would let a caller strip its own key to bypass
+ * origin enforcement).
  */
-export async function resolveEmbedRequest(req: NextRequest, embedKey: string | undefined, merchantId: string): Promise<EmbedRequestResolution> {
+export async function resolveEmbedRequest(req: NextRequest, merchantId: string): Promise<EmbedRequestResolution> {
+  const embedKey = req.headers.get("x-embed-key");
   if (!embedKey) return { ok: "not-an-embed" };
 
   const requestOrigin = req.headers.get("origin");
@@ -59,7 +67,7 @@ async function logOriginDenial(req: NextRequest, merchantId: string, requestOrig
   // flood the audit log — an unbounded write triggered by an
   // unauthenticated cross-origin request is a log-flooding vector.
   const limitKey = `embed-origin-denied:${requestOrigin ?? getClientIp(req.headers)}`;
-  const { allowed } = checkRateLimit(limitKey, 5, 60_000);
+  const { allowed } = checkRateLimit(limitKey, ORIGIN_DENY_RATE_LIMIT_MAX, ORIGIN_DENY_RATE_LIMIT_WINDOW_MS);
   if (!allowed) return;
 
   await logAuditEntry({
@@ -85,29 +93,27 @@ export function embedCorsHeaders(origin: string): Record<string, string> {
 
 /**
  * A uniform preflight handler for routes that accept embed traffic.
- * Applies the identical resolution logic the POST handler uses — a
- * preflight that allows what the POST would deny is a bug, so both call
- * this same function rather than keeping two copies that can drift.
+ * Applies the identical resolution logic the POST handler uses (the
+ * key resolves a merchant on its own, since a real CORS preflight
+ * carries no body to cross-check against) — a preflight that allows
+ * what the POST would deny is a bug, so both read the same X-Embed-Key
+ * header and the same isOriginAllowed check rather than keeping two
+ * copies that can drift. The POST handler's own resolveEmbedRequest
+ * additionally cross-checks the key's merchant against the body's own
+ * merchantId, which a preflight has no body to compare against.
  */
-export async function handleEmbedPreflight(
-  req: NextRequest,
-  opts: { methods: string; extractMerchantId: (req: NextRequest) => Promise<string | null> },
-): Promise<NextResponse> {
+export async function handleEmbedPreflight(req: NextRequest, opts: { methods: string }): Promise<NextResponse> {
   const requestOrigin = req.headers.get("origin");
-  if (!requestOrigin) return new NextResponse(null, { status: 204 });
-
-  const merchantId = await opts.extractMerchantId(req);
   const embedKey = req.headers.get("x-embed-key") ?? undefined;
+  if (!requestOrigin || !embedKey) return new NextResponse(null, { status: 204 });
 
-  if (!merchantId || !embedKey) return new NextResponse(null, { status: 204 });
-
-  const resolution = await resolveEmbedRequest(req, embedKey, merchantId);
-  if (resolution.ok !== true) return new NextResponse(null, { status: 204 });
+  const config = await resolveEmbedKey(embedKey);
+  if (!config || !isOriginAllowed(config, requestOrigin)) return new NextResponse(null, { status: 204 });
 
   return new NextResponse(null, {
     status: 204,
     headers: {
-      ...embedCorsHeaders(resolution.origin),
+      ...embedCorsHeaders(requestOrigin),
       "Access-Control-Allow-Methods": opts.methods,
       "Access-Control-Allow-Headers": "Content-Type, X-Embed-Key",
       "Access-Control-Max-Age": "600",

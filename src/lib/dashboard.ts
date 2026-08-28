@@ -194,6 +194,11 @@ export async function getRewardSettingsForDashboard(merchantId: string) {
   return settings ?? null;
 }
 
+/** Layer 11-8: every tier, enabled or not — the dashboard is the one surface that needs to see a disabled tier to re-enable it. ai-credits.ts's getEnabledTiers is the buyer-facing read (enabled only). */
+export async function getAiCreditTiersForDashboard(merchantId: string) {
+  return db.select().from(schema.aiCreditTiers).where(eq(schema.aiCreditTiers.merchantId, merchantId));
+}
+
 export interface RewardLedgerStats {
   totalIssuedCoins: number;
   totalRedeemedCoins: number;

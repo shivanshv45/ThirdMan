@@ -8,6 +8,7 @@ export interface NavItem {
   href: string;
   label: string;
   badge?: number;
+  badgeTooltip?: string;
 }
 
 export interface NavGroup {
@@ -20,21 +21,34 @@ export interface NavGroup {
  * fact 3). Groups reflect what a merchant actually does with each
  * page (Money / Selling / Trust / Setup), not the build order.
  * Collapses to a real drawer under 768px rather than wrapping.
+ *
+ * Density and the hover-revealed badge tooltip are a deliberate pass
+ * toward the tool-like precision of the motes editor's own sidebar
+ * (compact rows, an icon/badge that explains itself only on hover
+ * rather than a permanent caption) — see plans/layer-12.
  */
-export function SidebarNav({ groups }: { groups: NavGroup[] }) {
+export function SidebarNav({
+  groups,
+  statusLabel,
+  statusTone = "allow",
+}: {
+  groups: NavGroup[];
+  statusLabel?: string;
+  statusTone?: "allow" | "escalate";
+}) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
 
   const isActive = (href: string) => (href === "/dashboard" ? pathname === href : pathname.startsWith(href));
 
   const nav = (
-    <nav className="flex flex-col gap-6 px-3 py-4">
+    <nav className="flex flex-col gap-5 px-2.5 py-3.5">
       {groups.map((group) => (
         <div key={group.heading}>
-          <p className="px-2.5 mb-1.5 text-[var(--t-label)] uppercase tracking-[0.08em] text-on-ink-faint font-medium">
+          <p className="px-2 mb-1 text-[var(--t-label)] uppercase tracking-[0.08em] text-on-ink-faint font-medium">
             {group.heading}
           </p>
-          <div className="flex flex-col gap-0.5">
+          <div className="flex flex-col gap-px">
             {group.items.map((item) => {
               const active = isActive(item.href);
               return (
@@ -42,7 +56,7 @@ export function SidebarNav({ groups }: { groups: NavGroup[] }) {
                   key={item.href}
                   href={item.href}
                   onClick={() => setOpen(false)}
-                  className={`relative flex items-center justify-between gap-2 rounded-[var(--radius)] px-2.5 py-1.5 text-sm transition-colors duration-[var(--dur-fast)] ease-[var(--ease-out)] ${
+                  className={`group relative flex items-center justify-between gap-2 rounded-[var(--radius)] px-2 py-1.5 text-sm transition-colors duration-[var(--dur-fast)] ease-[var(--ease-out)] ${
                     active
                       ? "bg-accent-wash text-on-ink font-medium"
                       : "text-on-ink-dim hover:text-on-ink hover:bg-ink-overlay"
@@ -56,8 +70,18 @@ export function SidebarNav({ groups }: { groups: NavGroup[] }) {
                   )}
                   <span>{item.label}</span>
                   {!!item.badge && (
-                    <span className="inline-flex items-center justify-center min-w-[1.25rem] h-5 rounded-full bg-escalate-wash text-escalate-bright text-[0.6875rem] font-mono font-medium px-1.5">
-                      {item.badge}
+                    <span className="relative">
+                      <span className="inline-flex items-center justify-center min-w-[1.25rem] h-5 rounded-full bg-escalate-wash text-escalate-bright text-[0.6875rem] font-mono font-medium px-1.5">
+                        {item.badge}
+                      </span>
+                      {item.badgeTooltip && (
+                        <span
+                          role="tooltip"
+                          className="pointer-events-none absolute right-0 top-full mt-1.5 w-max max-w-[13rem] rounded-[var(--radius)] border border-ink-line bg-ink-overlay px-2 py-1 text-xs text-on-ink-dim opacity-0 shadow-[0_8px_24px_rgba(0,0,0,0.4)] transition-opacity duration-[var(--dur-fast)] group-hover:opacity-100 z-10"
+                        >
+                          {item.badgeTooltip}
+                        </span>
+                      )}
                     </span>
                   )}
                 </Link>
@@ -98,8 +122,14 @@ export function SidebarNav({ groups }: { groups: NavGroup[] }) {
       )}
 
       {/* Desktop sidebar */}
-      <aside className="hidden md:block w-[var(--sidebar-w)] shrink-0 border-r border-ink-line h-full overflow-y-auto">
-        {nav}
+      <aside className="hidden md:flex md:flex-col w-[var(--sidebar-w)] shrink-0 border-r border-ink-line h-full">
+        <div className="flex-1 min-h-0 overflow-y-auto">{nav}</div>
+        {statusLabel && (
+          <div className="flex items-center gap-1.5 border-t border-ink-line px-3.5 py-2 text-xs text-on-ink-faint shrink-0">
+            <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${statusTone === "escalate" ? "bg-escalate" : "bg-allow"}`} />
+            <span className="truncate">{statusLabel}</span>
+          </div>
+        )}
       </aside>
     </>
   );

@@ -1,8 +1,9 @@
 import { redirect } from "next/navigation";
 import { getSessionMerchant } from "@/lib/auth";
-import { getRewardSettingsForDashboard, getRewardLedgerStats } from "@/lib/dashboard";
-import { setRewardSettings } from "./actions";
-import { PageHeader, Surface, Stat, Field, Input, Button } from "@/components/ui";
+import { getRewardSettingsForDashboard, getRewardLedgerStats, getAiCreditTiersForDashboard } from "@/lib/dashboard";
+import { setRewardSettings, createAiCreditTier, toggleAiCreditTier } from "./actions";
+import { TIER_PRESETS } from "./tier-presets";
+import { PageHeader, Surface, Stat, Field, Input, Select, Button, EmptyState } from "@/components/ui";
 
 export default async function RewardsPage({
   searchParams,
@@ -14,7 +15,12 @@ export default async function RewardsPage({
 
   const { error } = await searchParams;
 
-  const [settings, stats] = await Promise.all([getRewardSettingsForDashboard(merchant.id), getRewardLedgerStats(merchant.id)]);
+  const [settings, stats, tiers] = await Promise.all([
+    getRewardSettingsForDashboard(merchant.id),
+    getRewardLedgerStats(merchant.id),
+    getAiCreditTiersForDashboard(merchant.id),
+  ]);
+  const availablePresets = TIER_PRESETS.filter((p) => !tiers.some((t) => t.modelId === p.modelId));
 
   return (
     <div className="space-y-8">
@@ -90,6 +96,60 @@ export default async function RewardsPage({
             {settings ? "Save" : "Enable rewards"}
           </Button>
         </form>
+      </Surface>
+
+      <Surface variant="raised" className="p-5">
+        <h2 className="text-[var(--t-h4)] font-medium text-on-ink mb-1">AI credit tiers</h2>
+        <p className="text-sm text-on-ink-dim mb-4 max-w-[var(--measure)]">
+          Buyers can spend coins on a real AI response from one of these models — each one genuinely served by Groq, under its real name, at whatever price you set. No model ever decides its own price; that&apos;s always this fixed integer.
+        </p>
+
+        {tiers.length === 0 ? (
+          <EmptyState title="No tiers yet" description="Add one below to let buyers redeem coins for a real AI response." />
+        ) : (
+          <div className="space-y-2 mb-5">
+            {tiers.map((tier) => (
+              <div key={tier.id} className="flex items-center justify-between gap-3 rounded-[var(--radius)] border border-ink-line px-4 py-3">
+                <div>
+                  <p className="text-sm font-medium text-on-ink">{tier.displayName}</p>
+                  <p className="text-xs text-on-ink-faint font-mono">{tier.modelId}</p>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className="text-sm font-mono text-on-ink-dim">{tier.coinsPerRequest} coins/response</span>
+                  <form action={toggleAiCreditTier}>
+                    <input type="hidden" name="tierId" value={tier.id} />
+                    <input type="hidden" name="enabled" value={tier.enabled ? "false" : "true"} />
+                    <Button type="submit" variant={tier.enabled ? "secondary" : "primary"} size="sm" pendingLabel="Saving…">
+                      {tier.enabled ? "Disable" : "Enable"}
+                    </Button>
+                  </form>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {availablePresets.length > 0 ? (
+          <form action={createAiCreditTier} className="space-y-3 max-w-sm">
+            <Field label="Model">
+              <Select name="modelId" required>
+                {availablePresets.map((p) => (
+                  <option key={p.modelId} value={p.modelId}>
+                    {p.displayName}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Coins per response">
+              <Input name="coinsPerRequest" type="number" step="1" min="1" required defaultValue="10" />
+            </Field>
+            <Button type="submit" variant="secondary" pendingLabel="Adding…">
+              Add tier
+            </Button>
+          </form>
+        ) : (
+          <p className="text-xs text-on-ink-faint">Every available model already has a tier.</p>
+        )}
       </Surface>
     </div>
   );

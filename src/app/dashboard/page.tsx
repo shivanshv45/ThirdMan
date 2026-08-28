@@ -83,22 +83,34 @@ export default async function DashboardPage() {
       )}
 
       {escalations.length > 0 && (
-        <section className="mb-8">
-          <h2 className="text-[var(--t-h3)] font-[family-name:var(--font-display)] text-on-ink mb-3">
-            Waiting on you
-          </h2>
-          <div className="space-y-3">
+        <section className="mb-12">
+          <div className="flex items-baseline gap-3 mb-4">
+            <h2 className="text-[var(--t-h3)] font-[family-name:var(--font-display)] text-on-ink">
+              Waiting on you
+            </h2>
+            <span className="font-mono text-xs text-escalate-bright">
+              {escalations.length} held, nothing moves until you decide
+            </span>
+          </div>
+          <div className="space-y-2">
             {escalations.map((esc) => (
-              <Surface key={esc.id} variant="raised" className="p-4 border-escalate-line">
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <div>
-                    <span className="font-medium text-on-ink">
-                      {esc.agent?.name ?? "Unknown agent"} —{" "}
-                      <span className="font-mono">{rupees(esc.moneyAction.amountPaise)}</span>
-                    </span>
-                    <span className="text-xs text-on-ink-faint ml-2 font-mono">{formatDate(esc.createdAt)}</span>
+              <div
+                key={esc.id}
+                className="relative rounded-[var(--radius-lg)] border border-ink-line bg-ink-raised pl-5 pr-4 py-4 overflow-hidden"
+              >
+                <span aria-hidden="true" className="absolute left-0 inset-y-0 w-[3px] bg-escalate" />
+                <div className="flex items-start justify-between flex-wrap gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-baseline gap-2 flex-wrap">
+                      <span className="font-mono text-lg text-on-ink tabular-nums">
+                        {rupees(esc.moneyAction.amountPaise)}
+                      </span>
+                      <span className="text-sm text-on-ink-dim">{esc.agent?.name ?? "Unknown agent"}</span>
+                      <span className="text-xs text-on-ink-faint font-mono">{formatDate(esc.createdAt)}</span>
+                    </div>
+                    <p className="text-sm text-on-ink-dim mt-1.5 max-w-[var(--measure)]">{esc.riskReason}</p>
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 shrink-0">
                     <form action={approveEscalation}>
                       <input type="hidden" name="escalationId" value={esc.id} />
                       <Button type="submit" variant="primary" size="sm" pendingLabel="Approving…">
@@ -113,21 +125,40 @@ export default async function DashboardPage() {
                     </form>
                   </div>
                 </div>
-                <p className="text-sm text-on-ink-dim mt-1.5">{esc.riskReason}</p>
-              </Surface>
+              </div>
             ))}
           </div>
         </section>
       )}
 
-      <section className="grid grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-        <Surface variant="raised" className="p-5">
-          <MoneyStat label="Money moved" paise={moneyMoved.capturedPaise} caption={`${moneyMoved.capturedCount} captured payments`} />
+      {/* The two headline facts, given the room that says so. Everything
+          below this band is supporting evidence and renders smaller. */}
+      <section className="mb-6">
+        <Surface variant="raised" className="grid sm:grid-cols-2 divide-y sm:divide-y-0 sm:divide-x divide-ink-line">
+          <div className="p-6 sm:p-8">
+            <MoneyStat
+              label="Money moved"
+              paise={moneyMoved.capturedPaise}
+              size="primary"
+              caption={`${moneyMoved.capturedCount} captured payment${moneyMoved.capturedCount === 1 ? "" : "s"}, settled into your own Razorpay account`}
+            />
+          </div>
+          <div className="p-6 sm:p-8">
+            <MoneyStat
+              label="Money recovered"
+              paise={recoveryStats.recoveredPaise}
+              tone="allow"
+              size="primary"
+              caption={`${recoveryStats.recoveredCount} of ${recoveryStats.failureCount} failed payment${recoveryStats.failureCount === 1 ? "" : "s"} brought back`}
+            />
+          </div>
         </Surface>
-        <Surface variant="raised" className="p-5">
-          <MoneyStat label="Money recovered" paise={recoveryStats.recoveredPaise} tone="allow" caption={`${recoveryStats.recoveredCount} of ${recoveryStats.failureCount} failures`} />
-        </Surface>
-        <Surface variant="raised" className="p-5">
+      </section>
+
+      {/* Asymmetric on purpose: the composition bar needs real width to be
+          readable, the two counts do not. Size follows content, not decoration. */}
+      <section className="grid lg:grid-cols-[1fr_1fr_1.7fr] gap-4 mb-14">
+        <Surface variant="flush" className="p-5">
           <Stat
             label="Refusals"
             value={decisionStats.totalRefusals}
@@ -135,27 +166,30 @@ export default async function DashboardPage() {
             caption="Evidence the bound is real, not a gap"
           />
         </Surface>
-        <Surface variant="raised" className="p-5">
+        <Surface variant="flush" className="p-5">
           <Stat
             label="Deterministic vs. model"
             value={
               <span>
                 {decisionStats.deterministicCount}
-                <span className="text-on-ink-faint text-[0.5em] mx-1">/</span>
+                <span className="text-on-ink-faint text-[0.55em] mx-1.5">/</span>
                 {decisionStats.modelInfluencedCount}
               </span>
             }
             caption="Arithmetic-only vs. a model's judgment"
           />
         </Surface>
-      </section>
-
-      <section className="mb-8">
-        <Surface variant="raised" className="p-5">
-          <h2 className="text-[var(--t-label)] uppercase tracking-[0.08em] text-on-ink-faint font-medium mb-3">
+        <Surface variant="flush" className="p-5 flex flex-col">
+          <div className="text-[var(--t-label)] uppercase tracking-[0.08em] text-on-ink-faint font-medium">
             Every logged decision
-          </h2>
-          <DecisionComposition allow={decisionCounts.allow} deny={decisionCounts.deny} escalate={decisionCounts.escalate} />
+          </div>
+          <div className="mt-auto pt-4">
+            {decisionCounts.allow + decisionCounts.deny + decisionCounts.escalate === 0 ? (
+              <p className="text-sm text-on-ink-dim">Nothing decided yet.</p>
+            ) : (
+              <DecisionComposition allow={decisionCounts.allow} deny={decisionCounts.deny} escalate={decisionCounts.escalate} />
+            )}
+          </div>
         </Surface>
       </section>
 

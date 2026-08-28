@@ -8,6 +8,7 @@ import { confirmCapture } from "@/lib/gate";
 import { confirmRecoveryLinkPaid } from "@/lib/recovery/sequencer";
 import { logAuditEntry } from "@/lib/audit";
 import { issueRewardCoinsForCapture } from "@/lib/reward-actions";
+import { enqueueWebhookEvent } from "@/lib/webhooks/enqueue";
 
 /**
  * Razorpay's webhook intake. Handles payment.failed (feeds the recovery
@@ -151,16 +152,10 @@ async function handlePaymentCaptured(payload: unknown): Promise<void> {
   const orderId = entity.order_id;
   const paymentId = entity.id;
 
-  const [moneyAction] = await db
-    .select({
-      id: schema.moneyActions.id,
-      merchantId: schema.moneyActions.merchantId,
-      agentId: schema.moneyActions.agentId,
-      amountPaise: schema.moneyActions.amountPaise,
-      holdOnly: schema.moneyActions.holdOnly,
-    })
-    .from(schema.moneyActions)
-    .where(eq(schema.moneyActions.razorpayEntityId, orderId));
+  // Full row (not a narrow select) — Layer 10's enqueueWebhookEvent
+  // below needs the complete money_actions shape to build a
+  // notification payload.
+  const [moneyAction] = await db.select().from(schema.moneyActions).where(eq(schema.moneyActions.razorpayEntityId, orderId));
 
   if (!moneyAction) {
     // A payment this codebase never created an order for through the
@@ -186,6 +181,20 @@ async function handlePaymentCaptured(payload: unknown): Promise<void> {
       await issueRewardCoinsForCapture(moneyAction.merchantId, moneyAction.agentId, moneyAction.id, moneyAction.amountPaise, { agentId: moneyAction.agentId });
     } catch (err) {
       console.warn("[webhook] reward coin issuance failed:", err);
+    }
+  }
+
+  // Layer 10: notify the merchant's own backend, mirroring
+  // /api/checkout/verify's own enqueue call. The dedupe unique index on
+  // webhook_deliveries (webhookId, eventType, moneyActionId) is exactly
+  // what stops this webhook path and the browser's checkout-signature
+  // path from producing two deliveries when both confirm the same
+  // capture — see webhooks/enqueue.ts.
+  if (result.decision === "allow" && !moneyAction.holdOnly) {
+    try {
+      await enqueueWebhookEvent(moneyAction.merchantId, "order.paid", moneyAction);
+    } catch (err) {
+      console.warn("[webhook] webhook enqueue failed:", err);
     }
   }
 }

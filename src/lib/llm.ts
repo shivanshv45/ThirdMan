@@ -31,6 +31,15 @@ export interface CompletionInput {
   systemPrompt?: string;
   /** Set only for tasks that genuinely need stronger reasoning than Groq reliably provides. */
   needsHardReasoning?: boolean;
+  /**
+   * Layer 11-8: overrides GROQ_MODEL for this one call — used by
+   * ai-credits.ts to actually serve the model tier a buyer paid coins
+   * for, rather than always serving the app's own default. Every
+   * feature call site in this codebase omits this and gets GROQ_MODEL,
+   * unchanged from before this field existed. Has no effect when
+   * needsHardReasoning routes to Gemini instead.
+   */
+  groqModelOverride?: string;
 }
 
 export interface CompletionResult {
@@ -54,7 +63,7 @@ async function callGroq(input: CompletionInput): Promise<string> {
   const completion = await withTimeout(
     "groq.chat.completions.create",
     groq.chat.completions.create({
-      model: GROQ_MODEL,
+      model: input.groqModelOverride ?? GROQ_MODEL,
       messages: [
         ...(input.systemPrompt
           ? [{ role: "system" as const, content: input.systemPrompt }]

@@ -731,3 +731,82 @@ export async function setRewardSettings(input: SetRewardSettingsInput) {
 
   return settings;
 }
+
+/**
+ * Layer 11-6: which merchant digest alert types are on. Not a money
+ * action — no gate, no bound, just a preference — so no audit entry;
+ * matches the "n/a" treatment other pure-preference mutations already
+ * get in this file. Absence of a row means every type defaults to on
+ * (merchantAlertSettings' own schema comment), so an upsert here is
+ * only needed the first time a merchant actually changes something.
+ */
+export async function updateAlertSettings(
+  merchantId: string,
+  values: {
+    escalationPendingEnabled: boolean;
+    holdExpiringEnabled: boolean;
+    notificationExhaustedEnabled: boolean;
+    webhookExhaustedEnabled: boolean;
+  },
+) {
+  const [settings] = await db
+    .insert(schema.merchantAlertSettings)
+    .values({ merchantId, ...values })
+    .onConflictDoUpdate({ target: schema.merchantAlertSettings.merchantId, set: { ...values, updatedAt: new Date() } })
+    .returning();
+
+  return settings;
+}
+
+/**
+ * Layer 11-8: creates one AI-credit tier — a real Groq model id under
+ * its real display name, and a merchant-set integer coin price. Coin
+ * pricing is a merchant decision, never a model's — same discipline
+ * setRewardSettings above already applies to the coin-to-paise rate.
+ */
+export async function createAiCreditTier(input: { merchantId: string; modelId: string; displayName: string; provider: string; coinsPerRequest: number }) {
+  if (!Number.isInteger(input.coinsPerRequest) || input.coinsPerRequest <= 0) {
+    throw new Error("Coin price must be a positive integer.");
+  }
+
+  const [tier] = await db
+    .insert(schema.aiCreditTiers)
+    .values({
+      merchantId: input.merchantId,
+      modelId: input.modelId,
+      displayName: input.displayName,
+      provider: input.provider,
+      coinsPerRequest: input.coinsPerRequest,
+    })
+    .returning();
+
+  await logAuditEntry({
+    merchantId: input.merchantId,
+    actor: "merchant",
+    event: "ai_credit_tier_created",
+    decision: "n/a",
+    reason: `Added AI credit tier "${input.displayName}" (${input.modelId}) at ${input.coinsPerRequest} coins per response.`,
+  });
+
+  return tier;
+}
+
+export async function setAiCreditTierEnabled(merchantId: string, tierId: string, enabled: boolean) {
+  const [tier] = await db
+    .update(schema.aiCreditTiers)
+    .set({ enabled })
+    .where(and(eq(schema.aiCreditTiers.id, tierId), eq(schema.aiCreditTiers.merchantId, merchantId)))
+    .returning();
+
+  if (!tier) throw new Error("Tier not found.");
+
+  await logAuditEntry({
+    merchantId,
+    actor: "merchant",
+    event: enabled ? "ai_credit_tier_enabled" : "ai_credit_tier_disabled",
+    decision: "n/a",
+    reason: `${enabled ? "Enabled" : "Disabled"} AI credit tier "${tier.displayName}".`,
+  });
+
+  return tier;
+}

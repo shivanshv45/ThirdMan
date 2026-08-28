@@ -90,7 +90,7 @@ async function main() {
       .returning();
     console.log("Created merchant:", merchant.name, merchant.id);
     console.log(`  Login at /login with ${MERCHANT_EMAIL} / ${MERCHANT_PASSWORD} (dev only, never a real credential).`);
-  } else if (merchant.passwordHash.startsWith("locked:")) {
+  } else if (merchant.passwordHash?.startsWith("locked:")) {
     // A pre-Layer-2 merchant row, backfilled by the migration with a
     // login-blocking placeholder hash. Give it real dev credentials so
     // seeding stays usable without a manual signup.

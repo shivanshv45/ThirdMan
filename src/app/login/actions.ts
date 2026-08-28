@@ -41,9 +41,10 @@ export async function login(formData: FormData) {
 
   const [merchant] = await db.select().from(schema.merchants).where(eq(schema.merchants.email, email));
 
-  // Same generic message whether the email doesn't exist or the password
-  // is wrong, so a login attempt can't be used to enumerate accounts.
-  if (!merchant || !(await verifyPassword(password, merchant.passwordHash))) {
+  // Same generic message whether the email doesn't exist, the account is
+  // OAuth-only (no password set), or the password is wrong — none of
+  // these should be distinguishable from a login attempt.
+  if (!merchant || !merchant.passwordHash || !(await verifyPassword(password, merchant.passwordHash))) {
     redirect(`/login?error=${encodeURIComponent(GENERIC_ERROR)}`);
   }
 

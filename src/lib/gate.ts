@@ -7,6 +7,7 @@ import { computeRiskSignals, assessRisk } from "@/lib/risk";
 import { resolveOffer, loadOfferItems, type ResolvedOffer } from "@/lib/discount";
 import { resolveNegotiation, markNegotiationRedeemed, type ResolvedNegotiation } from "@/lib/negotiation";
 import { resolveCartForCheckout, snapshotCartPurchase, loadCartPurchaseItems, type ResolvedCart } from "@/lib/cart";
+import { enqueueWebhookEvent } from "@/lib/webhooks/enqueue";
 
 /**
  * Loads and decrypts a merchant's own Razorpay credentials. The gate is
@@ -44,6 +45,18 @@ async function loadMerchantCredentials(merchantId: string): Promise<RazorpayCred
  */
 
 export type GateDecision = "allow" | "deny" | "escalate";
+
+/**
+ * How long a pending escalation waits for a merchant before it is
+ * auto-resolved (Layer 11) — same shape and same reasoning as
+ * ESCROW_HOLD_EXPIRY_HOURS below: an unresolved hold on money is a
+ * support ticket waiting to happen. See
+ * notifications/expiry.ts's expirePendingEscalations, which calls
+ * resolveEscalation(..., "rejected") on anything past this — timing
+ * out DENIES, it never auto-approves (fail closed: silence isn't
+ * consent).
+ */
+export const ESCALATION_EXPIRY_HOURS = 48;
 
 export interface MoneyActionRequest {
   agentId: string;
@@ -1032,6 +1045,7 @@ export async function attemptMoneyAction(
         moneyActionId: moneyAction.id,
         spendCapId: cap.id,
         riskReason: risk.reason,
+        expiresAt: new Date(Date.now() + ESCALATION_EXPIRY_HOURS * 60 * 60 * 1000),
       });
 
       const reason = `Escalated — ${risk.reason} (assessed by ${risk.source}). Budget reserved and held pending merchant review.`;
@@ -1535,6 +1549,15 @@ export async function issueRefund(
       metadata: { refundId: refund.id, refundAmountPaise, wasHeld },
     });
 
+    // Layer 10: notify the merchant's own backend so their order system
+    // can reverse fulfilment. Enqueue only, never awaited into this
+    // function's own success — see webhooks/enqueue.ts's docstring.
+    try {
+      await enqueueWebhookEvent(merchantId, "order.refunded", moneyAction);
+    } catch (err) {
+      console.warn("[gate] webhook enqueue failed after refund:", err);
+    }
+
     return { decision: "allow", reason, moneyActionId: moneyAction.id };
   } catch (err) {
     const reason = `Refund failed — ${err instanceof Error ? err.message : String(err)}.`;
@@ -1548,4 +1571,64 @@ export async function issueRefund(
     });
     return { decision: "deny", reason, moneyActionId: moneyAction.id };
   }
+}
+
+/**
+ * Refunds a reward-coin redemption that already happened — Layer 11-8's
+ * AI-credit refund path (ai-credits.ts), used when a model call fails
+ * AFTER coins were already debited for it. Deliberately NOT routed
+ * through attemptMoneyAction: a refund is not a new discretionary
+ * spend for the risk layer to second-guess, it is an unconditional
+ * correction of money already taken through no fault of the buyer's —
+ * the exact same reasoning issueRefund() above already applies to a
+ * real Razorpay refund, which also never calls attemptMoneyAction or
+ * passes through checkBounds/assessRisk.
+ *
+ * A real bug caught this: an earlier version of ai-credits.ts's refund
+ * called attemptMoneyAction with type "reward_issue", which (correctly,
+ * by that function's own contract) ran it through the live risk layer
+ * — and a live model call assessed one refund as "escalate," leaving
+ * the coins parked in a pending_escalation money action instead of
+ * back in the buyer's balance. See FAILURES.md.
+ *
+ * Writes the ledger row with the exact same atomic INSERT...SELECT
+ * executeAndSettle's reward branch uses (an issuance always succeeds,
+ * so no balance-atomicity guard is needed for a positive delta), then
+ * a money_actions row of its own for the audit trail to point at —
+ * never reuses the original, already-terminal money_actions row.
+ */
+export async function refundRewardCoins(
+  merchantId: string,
+  agentId: string,
+  coins: number,
+  identity: { agentId?: string; sessionToken?: string },
+  reason: string,
+): Promise<GateResult> {
+  if (!Number.isInteger(coins) || coins <= 0) {
+    throw new Error(`refundRewardCoins: coins must be a positive integer, got ${coins}`);
+  }
+
+  const [moneyAction] = await db
+    .insert(schema.moneyActions)
+    .values({ merchantId, agentId: agentId || null, type: "reward_issue", amountPaise: 0, status: "executed" })
+    .returning();
+
+  await db.execute(sql`
+    insert into ${schema.rewardCoinLedger} (merchant_id, agent_id, session_token, coins_delta, reason, money_action_id)
+    values (${merchantId}, ${identity.agentId ?? null}, ${identity.sessionToken ?? null}, ${coins}, 'purchase_issue', ${moneyAction.id})
+  `);
+
+  await db.update(schema.moneyActions).set({ status: "captured" }).where(eq(schema.moneyActions.id, moneyAction.id));
+
+  const auditReason = `Refunded ${coins} reward coin(s) — ${reason}`;
+  await logAuditEntry({
+    merchantId,
+    actor: "system",
+    event: "reward_coins_refunded",
+    decision: "n/a",
+    reason: auditReason,
+    moneyActionId: moneyAction.id,
+  });
+
+  return { decision: "allow", reason: auditReason, moneyActionId: moneyAction.id };
 }

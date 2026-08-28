@@ -15,7 +15,14 @@ export default async function DashboardLayout({ children }: { children: React.Re
     {
       heading: "Money",
       items: [
-        { href: "/dashboard", label: "Overview", badge: escalations.length },
+        {
+          href: "/dashboard",
+          label: "Overview",
+          badge: escalations.length,
+          badgeTooltip: escalations.length
+            ? `${escalations.length} money action${escalations.length === 1 ? "" : "s"} waiting on a decision`
+            : undefined,
+        },
         { href: "/dashboard/recovery", label: "Recovery" },
         { href: "/dashboard/escrow", label: "Escrow" },
       ],
@@ -41,6 +48,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
       items: [
         { href: "/dashboard/agents", label: "Agents & caps" },
         { href: "/dashboard/policies", label: "Policies" },
+        { href: "/dashboard/embed", label: "Embed on your site" },
         { href: "/dashboard/settings", label: "Settings" },
       ],
     },
@@ -49,7 +57,11 @@ export default async function DashboardLayout({ children }: { children: React.Re
   return (
     <div className="flex flex-col md:flex-row flex-1 min-h-0">
       <Reveal />
-      <SidebarNav groups={groups} />
+      <SidebarNav
+        groups={groups}
+        statusLabel={escalations.length ? `${escalations.length} pending escalation${escalations.length === 1 ? "" : "s"}` : "All decisions resolved"}
+        statusTone={escalations.length ? "escalate" : "allow"}
+      />
       <div className="flex-1 min-w-0 flex flex-col">
         <div className="hidden md:flex items-center justify-between px-6 h-[var(--nav-h)] border-b border-ink-line shrink-0">
           <span className="font-[family-name:var(--font-display)] text-lg text-on-ink">{merchant.name}</span>

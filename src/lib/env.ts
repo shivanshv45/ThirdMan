@@ -32,6 +32,22 @@ const envSchema = z.object({
   // this app configures — optional, used only to resolve the real
   // production domain for social-share image URLs (see layout.tsx).
   VERCEL_URL: z.string().optional(),
+  // Layer 11: outbound customer/merchant email. Optional — absent means
+  // notifications/provider.ts falls back to a console-log provider, a
+  // real (not mocked) degradation that still exercises the whole queue,
+  // bounds, and audit trail without a key. See DECISIONS.md.
+  RESEND_API_KEY: z.string().optional(),
+  // Shared secret for POST /api/cron/run (Layer 11-3) — generate with
+  // openssl rand -base64 32. Required in production; optional in
+  // development so `npm test`/local dev don't need it configured.
+  CRON_SECRET: z.string().optional(),
+  // Google/GitHub OAuth (Layer 12). All four optional as a pair — a
+  // provider's button is simply hidden on /login and /signup when its
+  // pair isn't configured, rather than rendering a button that 500s.
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
+  GITHUB_CLIENT_ID: z.string().optional(),
+  GITHUB_CLIENT_SECRET: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -52,3 +68,17 @@ function loadEnv(): Env {
 }
 
 export const env = loadEnv();
+
+/**
+ * The one place this codebase resolves its own public URL — same
+ * reasoning layout.tsx's own siteUrl already documents: no merchant-
+ * facing env var names a production domain yet (a wrong hardcoded
+ * value would actively break links), so this falls back to localhost
+ * in development and picks up Vercel's own build-injected VERCEL_URL
+ * automatically once deployed. Used anywhere an absolute URL has to go
+ * into an email or a webhook payload — e.g. notifications/send.ts's
+ * unsubscribe link, merchant-alerts.ts's digest links.
+ */
+export function getAppUrl(): string {
+  return env.VERCEL_URL ? `https://${env.VERCEL_URL}` : "http://localhost:3000";
+}

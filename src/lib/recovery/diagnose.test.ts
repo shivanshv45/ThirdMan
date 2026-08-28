@@ -14,6 +14,7 @@ function makeFailure(overrides: Partial<FailureRow>): FailureRow {
     declineCode: "BAD_REQUEST_ERROR",
     declineDescription: null,
     customerRef: null,
+    customerContactId: null,
     source: "simulated",
     status: "new",
     diagnosis: null,
