@@ -127,6 +127,13 @@
       "when": 1787828695471,
       "tag": "0017_mysterious_kang",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1787922891199,
+      "tag": "0018_bizarre_whiplash",
+      "breakpoints": true
     }
   ]
 }

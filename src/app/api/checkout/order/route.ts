@@ -8,6 +8,7 @@ import { decrypt } from "@/lib/crypto";
 import { getOrCreateStorefrontAgent } from "@/lib/storefront";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 import { resolveCartForCheckout, getConversationBySession, clearCart } from "@/lib/cart";
+import { embedCorsHeaders, handleEmbedPreflight, resolveEmbedRequest } from "@/lib/embed-cors";
 
 const orderRequestSchema = z
   .object({
@@ -37,6 +38,9 @@ const orderRequestSchema = z
     // than exposing a separate conversationId to the client.
     cart: z.literal(true).optional(),
     sessionToken: z.string().uuid().optional(),
+    // Layer 10: present only for the embeddable widget on a third-party
+    // origin — see embed-cors.ts. Absent, this route is unchanged.
+    embedKey: z.string().optional(),
   })
   .refine((v) => v.productId !== undefined || v.offerId !== undefined || v.negotiationId !== undefined || v.cart !== undefined, {
     message: "one of productId, offerId, negotiationId, or cart is required",
@@ -47,6 +51,19 @@ const orderRequestSchema = z
 const RATE_LIMIT_MAX = 10;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 
+async function extractMerchantId(req: NextRequest): Promise<string | null> {
+  try {
+    const body = await req.clone().json();
+    return typeof body?.merchantId === "string" ? body.merchantId : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function OPTIONS(req: NextRequest) {
+  return handleEmbedPreflight(req, { methods: "POST, OPTIONS", extractMerchantId });
+}
+
 /**
  * Creates a real Razorpay order for a human buyer on the public
  * storefront (Layer 4-2). Routes through the same gate every other money
@@ -55,6 +72,13 @@ const RATE_LIMIT_WINDOW_MS = 60_000;
  * "storefront" agent (same pattern as the recovery pipeline's own
  * hidden agent — see sequencer.ts), keeping every purchase bounded by a
  * real spend cap rather than exempted from one.
+ *
+ * Layer 10: an embedKey-bearing request is the embeddable widget on the
+ * merchant's own site, subject to the origin allowlist below. It still
+ * shares the same storefront agent and spend cap as /store/[merchantId]
+ * — see ARCHITECTURE.md's "The embeddable widget" for why that's the
+ * deliberate default. Attribution (which origin this came from) is
+ * folded into the money action's context string only, never a new cap.
  */
 export async function POST(req: NextRequest) {
   const rateLimit = checkRateLimit(`checkout-order:${getClientIp(req.headers)}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
@@ -77,7 +101,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "invalid request body", details: parsed.error.flatten() }, { status: 400 });
   }
 
-  const { merchantId, productId, variantId, quantity, offerId, negotiationId, cart: wantsCart, sessionToken } = parsed.data;
+  const { merchantId, productId, variantId, quantity, offerId, negotiationId, cart: wantsCart, sessionToken, embedKey } = parsed.data;
+
+  const embedResolution = await resolveEmbedRequest(req, embedKey, merchantId);
+  if (embedResolution.ok === false) {
+    return NextResponse.json({ error: embedResolution.reason }, { status: 400 });
+  }
+  const corsHeaders = embedResolution.ok === true ? embedCorsHeaders(embedResolution.origin) : undefined;
+  const contextSuffix = embedResolution.ok === true ? ` (embed: ${new URL(embedResolution.origin).hostname})` : "";
 
   const [merchant] = await db
     .select({ keyIdEncrypted: schema.merchants.razorpayKeyIdEncrypted })
@@ -85,7 +116,7 @@ export async function POST(req: NextRequest) {
     .where(eq(schema.merchants.id, merchantId));
 
   if (!merchant?.keyIdEncrypted) {
-    return NextResponse.json({ error: "this merchant has not connected a Razorpay account" }, { status: 400 });
+    return NextResponse.json({ error: "this merchant has not connected a Razorpay account" }, { status: 400, headers: corsHeaders });
   }
 
   const storefrontAgent = await getOrCreateStorefrontAgent(merchantId);
@@ -96,17 +127,17 @@ export async function POST(req: NextRequest) {
   // below only claims the offer, it never determines what gets charged.
   if (offerId) {
     if (!sessionToken) {
-      return NextResponse.json({ error: "sessionToken is required to redeem an offer" }, { status: 400 });
+      return NextResponse.json({ error: "sessionToken is required to redeem an offer" }, { status: 400, headers: corsHeaders });
     }
 
     const [offer] = await db.select().from(schema.offers).where(eq(schema.offers.id, offerId));
     if (!offer || offer.merchantId !== merchantId) {
-      return NextResponse.json({ error: "offer not found" }, { status: 404 });
+      return NextResponse.json({ error: "offer not found" }, { status: 404, headers: corsHeaders });
     }
 
     const [bundle] = await db.select().from(schema.bundles).where(eq(schema.bundles.id, offer.bundleId));
     if (!bundle) {
-      return NextResponse.json({ error: "offer not found" }, { status: 404 });
+      return NextResponse.json({ error: "offer not found" }, { status: 404, headers: corsHeaders });
     }
 
     // acceptOffer is a no-op (returns false) if the offer was already
@@ -122,22 +153,25 @@ export async function POST(req: NextRequest) {
       merchantId,
       type: "order_create",
       amountPaise: bundle.bundlePricePaise,
-      context: `Storefront checkout: bundle "${bundle.name}"`,
+      context: `Storefront checkout: bundle "${bundle.name}"${contextSuffix}`,
       offerId,
       sessionToken,
     });
 
     if (result.decision !== "allow" || !result.razorpayOrderId) {
-      return NextResponse.json({ error: result.reason }, { status: 200 });
+      return NextResponse.json({ error: result.reason }, { status: 200, headers: corsHeaders });
     }
 
-    return NextResponse.json({
-      moneyActionId: result.moneyActionId,
-      razorpayOrderId: result.razorpayOrderId,
-      razorpayKeyId: decrypt(merchant.keyIdEncrypted),
-      amountPaise: bundle.bundlePricePaise,
-      productName: bundle.name,
-    });
+    return NextResponse.json(
+      {
+        moneyActionId: result.moneyActionId,
+        razorpayOrderId: result.razorpayOrderId,
+        razorpayKeyId: decrypt(merchant.keyIdEncrypted),
+        amountPaise: bundle.bundlePricePaise,
+        productName: bundle.name,
+      },
+      { headers: corsHeaders },
+    );
   }
 
   // Layer 8: buy at an agreed negotiated price. The gate (via
@@ -146,15 +180,15 @@ export async function POST(req: NextRequest) {
   // a price itself, same discipline as the offerId branch above.
   if (negotiationId) {
     if (!sessionToken) {
-      return NextResponse.json({ error: "sessionToken is required to redeem a negotiated price" }, { status: 400 });
+      return NextResponse.json({ error: "sessionToken is required to redeem a negotiated price" }, { status: 400, headers: corsHeaders });
     }
 
     const [negotiation] = await db.select().from(schema.negotiations).where(eq(schema.negotiations.id, negotiationId));
     if (!negotiation || negotiation.merchantId !== merchantId) {
-      return NextResponse.json({ error: "negotiation not found" }, { status: 404 });
+      return NextResponse.json({ error: "negotiation not found" }, { status: 404, headers: corsHeaders });
     }
     if (negotiation.status !== "agreed" || negotiation.agreedUnitPricePaise === null) {
-      return NextResponse.json({ error: `Negotiation is "${negotiation.status}", not agreed.` }, { status: 200 });
+      return NextResponse.json({ error: `Negotiation is "${negotiation.status}", not agreed.` }, { status: 200, headers: corsHeaders });
     }
 
     const amountPaise = negotiation.agreedUnitPricePaise * negotiation.quantity;
@@ -164,22 +198,25 @@ export async function POST(req: NextRequest) {
       merchantId,
       type: "order_create",
       amountPaise,
-      context: `Storefront checkout: negotiated price for variant ${negotiation.variantId}`,
+      context: `Storefront checkout: negotiated price for variant ${negotiation.variantId}${contextSuffix}`,
       negotiationId,
       sessionToken,
     });
 
     if (result.decision !== "allow" || !result.razorpayOrderId) {
-      return NextResponse.json({ error: result.reason }, { status: 200 });
+      return NextResponse.json({ error: result.reason }, { status: 200, headers: corsHeaders });
     }
 
-    return NextResponse.json({
-      moneyActionId: result.moneyActionId,
-      razorpayOrderId: result.razorpayOrderId,
-      razorpayKeyId: decrypt(merchant.keyIdEncrypted),
-      amountPaise,
-      productName: "Negotiated price",
-    });
+    return NextResponse.json(
+      {
+        moneyActionId: result.moneyActionId,
+        razorpayOrderId: result.razorpayOrderId,
+        razorpayKeyId: decrypt(merchant.keyIdEncrypted),
+        amountPaise,
+        productName: "Negotiated price",
+      },
+      { headers: corsHeaders },
+    );
   }
 
   // Layer 9-close-out: buy the buyer chat's real multi-item cart. The
@@ -189,17 +226,17 @@ export async function POST(req: NextRequest) {
   // offerId/negotiationId branches above.
   if (wantsCart) {
     if (!sessionToken) {
-      return NextResponse.json({ error: "sessionToken is required to check out a cart" }, { status: 400 });
+      return NextResponse.json({ error: "sessionToken is required to check out a cart" }, { status: 400, headers: corsHeaders });
     }
 
     const conversation = await getConversationBySession(merchantId, sessionToken);
     if (!conversation) {
-      return NextResponse.json({ error: "cart not found" }, { status: 404 });
+      return NextResponse.json({ error: "cart not found" }, { status: 404, headers: corsHeaders });
     }
 
     const { cart, failure } = await resolveCartForCheckout(merchantId, conversation.id);
     if (failure) {
-      return NextResponse.json({ error: failure.reason }, { status: 200 });
+      return NextResponse.json({ error: failure.reason }, { status: 200, headers: corsHeaders });
     }
 
     const result = await attemptMoneyAction({
@@ -207,12 +244,12 @@ export async function POST(req: NextRequest) {
       merchantId,
       type: "order_create",
       amountPaise: cart!.amountPaise,
-      context: `Storefront checkout: cart (${cart!.lines.length} item${cart!.lines.length === 1 ? "" : "s"})`,
+      context: `Storefront checkout: cart (${cart!.lines.length} item${cart!.lines.length === 1 ? "" : "s"})${contextSuffix}`,
       cartConversationId: conversation.id,
     });
 
     if (result.decision !== "allow" || !result.razorpayOrderId) {
-      return NextResponse.json({ error: result.reason }, { status: 200 });
+      return NextResponse.json({ error: result.reason }, { status: 200, headers: corsHeaders });
     }
 
     // The cart is cleared only once the order is genuinely allowed — a
@@ -221,13 +258,16 @@ export async function POST(req: NextRequest) {
     // a denial.
     await clearCart(conversation.id);
 
-    return NextResponse.json({
-      moneyActionId: result.moneyActionId,
-      razorpayOrderId: result.razorpayOrderId,
-      razorpayKeyId: decrypt(merchant.keyIdEncrypted),
-      amountPaise: cart!.amountPaise,
-      productName: `Cart (${cart!.lines.length} item${cart!.lines.length === 1 ? "" : "s"})`,
-    });
+    return NextResponse.json(
+      {
+        moneyActionId: result.moneyActionId,
+        razorpayOrderId: result.razorpayOrderId,
+        razorpayKeyId: decrypt(merchant.keyIdEncrypted),
+        amountPaise: cart!.amountPaise,
+        productName: `Cart (${cart!.lines.length} item${cart!.lines.length === 1 ? "" : "s"})`,
+      },
+      { headers: corsHeaders },
+    );
   }
 
   const [product] = await db
@@ -236,7 +276,7 @@ export async function POST(req: NextRequest) {
     .where(eq(schema.products.id, productId!));
 
   if (!product || product.merchantId !== merchantId || product.status !== "active") {
-    return NextResponse.json({ error: "product not found" }, { status: 404 });
+    return NextResponse.json({ error: "product not found" }, { status: 404, headers: corsHeaders });
   }
 
   // If the caller (e.g. the buyer chat, Layer 5-7) already resolved a
@@ -255,7 +295,7 @@ export async function POST(req: NextRequest) {
         .where(and(eq(schema.productVariants.productId, product.id), eq(schema.productVariants.status, "active")));
 
   if (!variant) {
-    return NextResponse.json({ error: "product not found" }, { status: 404 });
+    return NextResponse.json({ error: "product not found" }, { status: 404, headers: corsHeaders });
   }
 
   const amountPaise = variant.pricePaise * quantity;
@@ -265,20 +305,23 @@ export async function POST(req: NextRequest) {
     merchantId,
     type: "order_create",
     amountPaise,
-    context: `Storefront checkout: ${product.name}`,
+    context: `Storefront checkout: ${product.name}${contextSuffix}`,
     variantId: variant.id,
     quantity,
   });
 
   if (result.decision !== "allow" || !result.razorpayOrderId) {
-    return NextResponse.json({ error: result.reason }, { status: 200 });
+    return NextResponse.json({ error: result.reason }, { status: 200, headers: corsHeaders });
   }
 
-  return NextResponse.json({
-    moneyActionId: result.moneyActionId,
-    razorpayOrderId: result.razorpayOrderId,
-    razorpayKeyId: decrypt(merchant.keyIdEncrypted),
-    amountPaise,
-    productName: product.name,
-  });
+  return NextResponse.json(
+    {
+      moneyActionId: result.moneyActionId,
+      razorpayOrderId: result.razorpayOrderId,
+      razorpayKeyId: decrypt(merchant.keyIdEncrypted),
+      amountPaise,
+      productName: product.name,
+    },
+    { headers: corsHeaders },
+  );
 }

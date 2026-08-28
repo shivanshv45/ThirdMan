@@ -3,16 +3,33 @@ import { z } from "zod";
 import { redeemRewardCoins } from "@/lib/reward-actions";
 import { getOrCreateStorefrontAgent } from "@/lib/storefront";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
+import { embedCorsHeaders, handleEmbedPreflight, resolveEmbedRequest } from "@/lib/embed-cors";
 
 const redeemRequestSchema = z.object({
   merchantId: z.string().uuid(),
   sessionToken: z.string().uuid(),
   purchaseAmountPaise: z.number().int().positive(),
   coins: z.number().int().positive(),
+  // Layer 10: present only for the embeddable widget on a third-party
+  // origin — see embed-cors.ts. Absent, this route is unchanged.
+  embedKey: z.string().optional(),
 });
 
 const RATE_LIMIT_MAX = 10;
 const RATE_LIMIT_WINDOW_MS = 60_000;
+
+async function extractMerchantId(req: NextRequest): Promise<string | null> {
+  try {
+    const body = await req.clone().json();
+    return typeof body?.merchantId === "string" ? body.merchantId : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function OPTIONS(req: NextRequest) {
+  return handleEmbedPreflight(req, { methods: "POST, OPTIONS", extractMerchantId });
+}
 
 /**
  * Redeems reward coins as their own gated money action (Layer 6-5) —
@@ -44,10 +61,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "invalid request body", details: parsed.error.flatten() }, { status: 400 });
   }
 
-  const { merchantId, sessionToken, purchaseAmountPaise, coins } = parsed.data;
+  const { merchantId, sessionToken, purchaseAmountPaise, coins, embedKey } = parsed.data;
+
+  const embedResolution = await resolveEmbedRequest(req, embedKey, merchantId);
+  if (embedResolution.ok === false) {
+    return NextResponse.json({ error: embedResolution.reason }, { status: 400 });
+  }
+  const corsHeaders = embedResolution.ok === true ? embedCorsHeaders(embedResolution.origin) : undefined;
+
   const storefrontAgent = await getOrCreateStorefrontAgent(merchantId);
 
   const result = await redeemRewardCoins(merchantId, storefrontAgent.id, purchaseAmountPaise, coins, { sessionToken });
 
-  return NextResponse.json(result, { status: 200 });
+  return NextResponse.json(result, { status: 200, headers: corsHeaders });
 }

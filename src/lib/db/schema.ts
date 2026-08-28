@@ -916,3 +916,143 @@ export const negotiationTurns = pgTable("negotiation_turns", {
     .notNull()
     .defaultNow(),
 });
+
+// ---------------------------------------------------------------------
+// Layer 10 — the embeddable widget. A second front door onto the exact
+// same buyer endpoints /store/[merchantId] already calls (see
+// ARCHITECTURE.md's "The embeddable widget"). Introduces no new money
+// action type and no new gate path.
+// ---------------------------------------------------------------------
+
+export const embedStatusEnum = pgEnum("embed_status", ["active", "disabled"]);
+
+export const embedPositionEnum = pgEnum("embed_position", [
+  "bottom_right",
+  "bottom_left",
+]);
+
+// One config per merchant, same shape as merchant_policies — merchantId
+// is the primary key, not a separate id, since there is never more than
+// one.
+export const embedConfigs = pgTable("embed_configs", {
+  merchantId: uuid("merchant_id")
+    .primaryKey()
+    .references(() => merchants.id),
+  // "pk_<base64url>", stored in PLAINTEXT deliberately — unlike
+  // agents.apiKeyHash, this value is printed verbatim into public HTML
+  // by design, so hashing it buys nothing, and storing it plainly is
+  // what lets the dashboard show a merchant their own key again after a
+  // reload (the opposite of the agent-key "shown once" contract in
+  // agent-key-reveal.tsx). Never accept an "sk_"-prefixed value here —
+  // see embed.ts's resolveEmbedKey.
+  publishableKey: text("publishable_key").notNull().unique(),
+  status: embedStatusEnum("status").notNull().default("active"),
+  // Normalised (scheme+host+port, lowercased host, no trailing slash)
+  // exact-match origins — see embed.ts's normalizeOrigin. Empty means
+  // "not configured yet", enforced as a deny by isOriginAllowed, never
+  // as "allow everything" (fail closed, same discipline as every other
+  // bound in this codebase).
+  allowedOrigins: text("allowed_origins").array().notNull().default(sql`'{}'::text[]`),
+  // Cosmetic only — what the embedded widget's header/greeting show.
+  // Null falls back to merchants.name / the existing default copy.
+  displayName: text("display_name"),
+  // Validated as a hex colour (#rgb or #rrggbb) before it is ever
+  // stored or interpolated into CSS — see embed.ts's isValidHexColor.
+  // A merchant-supplied string reaching a stylesheet unvalidated is a
+  // CSS injection.
+  accentColor: text("accent_color"),
+  greeting: text("greeting"),
+  position: embedPositionEnum("position").notNull().default("bottom_right"),
+  // Real on/off switches for features that already exist elsewhere in
+  // the product (negotiation, offers) — never a flag for behaviour that
+  // isn't built.
+  features: jsonb("features").notNull().default(sql`'{}'::jsonb`),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const webhookStatusEnum = pgEnum("webhook_status", ["active", "disabled"]);
+
+// A merchant-registered endpoint their own backend exposes to receive
+// server-to-server notifications (order.paid, stock.changed, ...) —
+// the same idea as Razorpay's own webhook to this app, mirrored one
+// level down. Unlike embedConfigs.publishableKey, `secret` genuinely is
+// a secret (it signs every delivery) and is encrypted at rest via
+// crypto.ts, same as merchants.razorpayKeySecretEncrypted.
+export const merchantWebhooks = pgTable("merchant_webhooks", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  merchantId: uuid("merchant_id")
+    .notNull()
+    .references(() => merchants.id),
+  url: text("url").notNull(),
+  secretEncrypted: text("secret_encrypted").notNull(),
+  subscribedEvents: text("subscribed_events").array().notNull().default(sql`'{}'::text[]`),
+  status: webhookStatusEnum("status").notNull().default("active"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const webhookDeliveryStatusEnum = pgEnum("webhook_delivery_status", [
+  "pending",
+  "delivered",
+  "failed",
+  "exhausted",
+]);
+
+// The durable outbound queue. A row exists BEFORE any HTTP call is
+// attempted (see webhooks/enqueue.ts) — that is what makes a crashed
+// process recoverable rather than a silently dropped notification.
+// Never delivered synchronously from a money-moving code path: enqueue
+// is fast and can't fail the caller; delivery happens out-of-band via
+// webhooks/runner.ts, exactly the separation gate.ts keeps between
+// checkBounds (decide) and executeAndSettle (carry out).
+export const webhookDeliveries = pgTable(
+  "webhook_deliveries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // Denormalised from merchantWebhooks so the dashboard's delivery-log
+    // query is one join fewer.
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id),
+    webhookId: uuid("webhook_id")
+      .notNull()
+      .references(() => merchantWebhooks.id),
+    eventType: text("event_type").notNull(),
+    // Exactly the bytes signed and sent — see webhooks/deliver.ts. Never
+    // re-serialised at send time, same discipline webhook-verify.ts's
+    // own docstring establishes for inbound Razorpay signatures.
+    payload: jsonb("payload").notNull(),
+    status: webhookDeliveryStatusEnum("status").notNull().default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+    // When the next retry becomes due. Null once delivered or exhausted.
+    // The runner's only query predicate for "what's due right now".
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    lastStatusCode: integer("last_status_code"),
+    lastError: text("last_error"),
+    // Nullable: stock.changed events aren't tied to one purchase.
+    moneyActionId: uuid("money_action_id").references(() => moneyActions.id),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // confirmCapture has two independent success paths (checkout
+    // signature, webhook) that can both fire for one capture — this
+    // makes "enqueue the order.paid notification" idempotent at the
+    // database level rather than hoping the race doesn't happen. See
+    // the gate contract's point 10; that race is documented as normal.
+    uniqueIndex("webhook_deliveries_dedupe_idx")
+      .on(table.webhookId, table.eventType, table.moneyActionId)
+      .where(sql`${table.moneyActionId} is not null`),
+  ],
+);
