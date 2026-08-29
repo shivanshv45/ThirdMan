@@ -1,4 +1,4 @@
-import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
+import { and, eq, lte, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db, schema } from "@/lib/db";
 import { logAuditEntry } from "@/lib/audit";
@@ -221,11 +221,31 @@ export async function rescheduleTask(taskId: string, runAfter: Date): Promise<vo
     .where(and(eq(schema.agentTasks.id, taskId), eq(schema.agentTasks.status, "claimed")));
 }
 
+/**
+ * Guarded by excluding every terminal status from the WHERE clause — a
+ * task already succeeded/failed/cancelled cannot be re-terminated into
+ * a different terminal status. Without this, completeTask/abandonTask
+ * (which had no check at all) could silently overwrite an already-
+ * succeeded task to failed, exactly the terminal-task-resurrection
+ * class of bug rescheduleTask's own guard exists to prevent — found
+ * here by this module's own property test before it shipped (see
+ * FAILURES.md). The audit entry is only written when the update
+ * actually applied, so a no-op attempt never produces a duplicate or
+ * contradictory audit row.
+ */
 async function terminateTask(taskId: string, merchantId: string, status: "succeeded" | "failed" | "cancelled", reason: string, boundApplied?: string): Promise<void> {
-  await db
+  const updated = await db
     .update(schema.agentTasks)
     .set({ status, claimedUntil: null, updatedAt: sql`now()` })
-    .where(eq(schema.agentTasks.id, taskId));
+    .where(
+      and(
+        eq(schema.agentTasks.id, taskId),
+        sql`${schema.agentTasks.status} not in ('succeeded', 'failed', 'cancelled')`,
+      ),
+    )
+    .returning({ id: schema.agentTasks.id });
+
+  if (updated.length === 0) return;
 
   await logAuditEntry({
     merchantId,

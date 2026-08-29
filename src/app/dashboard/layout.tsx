@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { getSessionMerchant } from "@/lib/auth";
-import { getPendingEscalations, getGuardianIncidents } from "@/lib/dashboard";
+import { getPendingEscalations, getGuardianIncidents, getActiveTaskCount } from "@/lib/dashboard";
 import { logout } from "./actions";
 import { SidebarNav, type NavGroup } from "./sidebar-nav";
 import { Reveal } from "@/components/ui";
@@ -11,6 +11,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   const escalations = await getPendingEscalations(merchant.id);
   const guardianIncidents = await getGuardianIncidents(merchant.id);
+  const activeTaskCount = await getActiveTaskCount(merchant.id);
 
   const groups: NavGroup[] = [
     {
@@ -52,6 +53,12 @@ export default async function DashboardLayout({ children }: { children: React.Re
             : undefined,
         },
         { href: "/dashboard/preflight", label: "Preflight" },
+        {
+          href: "/dashboard/tasks",
+          label: "Agent Runtime",
+          badge: activeTaskCount,
+          badgeTooltip: activeTaskCount ? `${activeTaskCount} task${activeTaskCount === 1 ? "" : "s"} active` : undefined,
+        },
       ],
     },
     {

@@ -4,6 +4,7 @@ import { getRecentAuditEntries } from "@/lib/audit";
 import { decrypt } from "@/lib/crypto";
 import { getSpansForMoneyAction } from "@/lib/tracing";
 import { getUseCaseBudgetStatus } from "@/lib/model-router";
+import { listTasksForMerchant, getTaskSteps } from "@/lib/runtime/tasks";
 
 /**
  * Read queries for the merchant dashboard. Every function is scoped by
@@ -699,5 +700,23 @@ export async function getDecisionWaterfall(merchantId: string, moneyActionId: st
     detail: describeWaterfallStep(span.name, span.attributes as Record<string, unknown>),
     ok: span.ok,
   }));
+}
+
+/** Layer 17: the merchant-facing task view's data — every real agent_tasks row, newest first, with its real step history. */
+export async function getTasksForMerchant(merchantId: string) {
+  const tasks = await listTasksForMerchant(merchantId);
+  const withSteps = await Promise.all(
+    tasks.map(async (task) => ({
+      ...task,
+      steps: await getTaskSteps(task.id),
+    })),
+  );
+  return withSteps.reverse(); // listTasksForMerchant orders oldest-first; the dashboard reads newest-first, matching every other activity list in this codebase
+}
+
+/** How many tasks are currently active (not yet terminal) — the sidebar badge, same pattern as getGuardianIncidents/getPendingEscalations. */
+export async function getActiveTaskCount(merchantId: string): Promise<number> {
+  const tasks = await listTasksForMerchant(merchantId);
+  return tasks.filter((t) => t.status === "pending" || t.status === "waiting" || t.status === "claimed").length;
 }
 

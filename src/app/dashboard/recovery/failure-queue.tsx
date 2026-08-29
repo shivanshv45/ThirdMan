@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import {
   refreshRecoveryData,
   runSingleRecoveryAction,
+  queueRecoveryTaskAction,
   type FailureQueueResult,
   type RecoveryStatsResult,
 } from "./actions";
@@ -41,6 +42,7 @@ export function FailureQueue({
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const [runningId, setRunningId] = useState<string | null>(null);
+  const [queueingId, setQueueingId] = useState<string | null>(null);
 
   function refresh() {
     startTransition(async () => {
@@ -56,6 +58,15 @@ export function FailureQueue({
     formData.set("failureId", failureId);
     await runSingleRecoveryAction(formData);
     setRunningId(null);
+    refresh();
+  }
+
+  async function queueOne(failureId: string) {
+    setQueueingId(failureId);
+    const formData = new FormData();
+    formData.set("failureId", failureId);
+    await queueRecoveryTaskAction(formData);
+    setQueueingId(null);
     refresh();
   }
 
@@ -87,6 +98,7 @@ export function FailureQueue({
           | null;
         const isDone = failure.status === "recovered" || failure.status === "written_off";
         const isRunning = runningId === failure.id;
+        const isQueueing = queueingId === failure.id;
 
         return (
           <div key={failure.id} className="rounded-[var(--radius-lg)] border border-ink-line bg-ink-raised p-4">
@@ -125,6 +137,17 @@ export function FailureQueue({
                       <span className="h-3 w-3 rounded-full border-2 border-current border-t-transparent animate-spin" aria-hidden="true" />
                     )}
                     {isRunning ? "Running…" : "Run recovery"}
+                  </button>
+                )}
+                {!isDone && (
+                  <button
+                    type="button"
+                    onClick={() => queueOne(failure.id)}
+                    disabled={isQueueing}
+                    title="Runs the same recovery sequence as a durable background task instead of synchronously — see Agent Runtime"
+                    className="text-xs px-3 py-1.5 rounded-[var(--radius)] bg-ink-overlay border border-ink-line text-on-ink-dim hover:border-on-ink-faint disabled:opacity-50 transition-colors duration-[var(--dur-fast)]"
+                  >
+                    {isQueueing ? "Queueing…" : "Run in background"}
                   </button>
                 )}
                 {attempts.length > 0 && (

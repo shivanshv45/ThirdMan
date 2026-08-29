@@ -8,6 +8,7 @@ import { getAuditTrail } from "@/lib/dashboard";
 import { db, schema } from "@/lib/db";
 import { eq, and } from "drizzle-orm";
 import { rearmAgent } from "@/lib/guardian";
+import { cancelTask, retryTask } from "@/lib/runtime/tasks";
 import { redirect } from "next/navigation";
 
 type AgentCapability = (typeof schema.agentCapabilityEnum.enumValues)[number];
@@ -166,6 +167,22 @@ export async function rearmAgentAction(formData: FormData) {
   await rearmAgent(merchant.id, agentId);
   revalidatePath("/dashboard/guardian");
   revalidatePath("/dashboard/agents");
+}
+
+export async function cancelTaskAction(formData: FormData) {
+  const merchant = await requireSessionMerchant();
+  const taskId = String(formData.get("taskId"));
+  if (!taskId) throw new Error("Missing taskId");
+  await cancelTask(merchant.id, taskId);
+  revalidatePath("/dashboard/tasks");
+}
+
+export async function retryTaskAction(formData: FormData) {
+  const merchant = await requireSessionMerchant();
+  const taskId = String(formData.get("taskId"));
+  if (!taskId) throw new Error("Missing taskId");
+  await retryTask(merchant.id, taskId);
+  revalidatePath("/dashboard/tasks");
 }
 
 export async function logout() {

@@ -230,8 +230,12 @@ describe("runtime/tasks", () => {
       const { id } = await createTask({ merchantId: merchant.id, agentId: agent.id, kind: "recovery_sequence", state: { failureId: fakeFailureId() }, maxAttempts: 3 });
       taskIds.push(id);
 
-      const [claimedTask] = await claimDueTasks(10);
-      expect(claimedTask.attemptCount).toBe(1);
+      // A shared database can have other due tasks (other tests, other
+      // merchants) claimed in the same batch — find this test's own
+      // task by id rather than assuming it's returned first.
+      const claimedTask = (await claimDueTasks(1000)).find((t) => t.id === id);
+      expect(claimedTask).toBeDefined();
+      expect(claimedTask!.attemptCount).toBe(1);
 
       const future = new Date(Date.now() + 60 * 60 * 1000);
       await rescheduleTask(id, future);
@@ -253,8 +257,11 @@ describe("runtime/tasks", () => {
       const { id } = await createTask({ merchantId: merchant.id, agentId: agent.id, kind: "recovery_sequence", state: { failureId: fakeFailureId() }, maxAttempts: 2 });
       taskIds.push(id);
 
-      const [firstClaim] = await claimDueTasks(10);
-      expect(firstClaim.attemptCount).toBe(1);
+      // Find our own task by id — a shared database can have other due
+      // tasks claimed in the same batch.
+      const firstClaim = (await claimDueTasks(1000)).find((t) => t.id === id);
+      expect(firstClaim).toBeDefined();
+      expect(firstClaim!.attemptCount).toBe(1);
       // runAfter is compared against the DATABASE's own now() in
       // claimDueTasks, never the app server's clock — a runAfter set
       // from new Date() here can race the DB's clock and not read as
@@ -267,9 +274,9 @@ describe("runtime/tasks", () => {
       // is a real, comfortable margin against that measured gap.
       await rescheduleTask(id, new Date(Date.now() - 10_000));
 
-      const [secondClaim] = await claimDueTasks(10);
+      const secondClaim = (await claimDueTasks(1000)).find((t) => t.id === id);
       expect(secondClaim).toBeDefined();
-      expect(secondClaim.attemptCount).toBe(2);
+      expect(secondClaim!.attemptCount).toBe(2);
       await abandonTask(id, merchant.id, "ceiling reached", "task_max_attempts_reached");
 
       const [task] = await db.select().from(schema.agentTasks).where(eq(schema.agentTasks.id, id));
