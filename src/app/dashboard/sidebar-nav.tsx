@@ -20,6 +20,7 @@ import {
   ShieldAlert,
   FlaskConical,
   Landmark,
+  BrainCircuit,
   type LucideIcon,
 } from "lucide-react";
 
@@ -40,6 +41,7 @@ const ICONS: Record<string, LucideIcon> = {
   "/dashboard/readiness": Gauge,
   "/dashboard/guardian": ShieldAlert,
   "/dashboard/preflight": FlaskConical,
+  "/dashboard/memory": BrainCircuit,
   "/dashboard/agents": KeyRound,
   "/dashboard/policies": Scale,
   "/dashboard/embed": Code,

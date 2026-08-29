@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { complete, completeStructured } from "@/lib/llm";
 import { getPublicCatalogue, type PublicProduct } from "@/lib/storefront-catalogue";
@@ -8,8 +8,11 @@ import { runOfferEngine, getOpenOfferForIdentity } from "@/lib/offer-engine";
 import { openNegotiation, submitBuyerCounter, getOpenNegotiationForIdentity, MAX_BUYER_COUNTERS } from "@/lib/negotiation";
 import { addCartItem, setCartItemQuantity, removeCartItem, getCart, type CartLineView } from "@/lib/cart";
 import { requestRestockAlert } from "@/lib/restock";
-import { normalizeEmail } from "@/lib/contacts";
+import { normalizeEmail, recordContact } from "@/lib/contacts";
 import { inspectInbound } from "@/lib/model-armor";
+import { getMemoryFactsForSubject, renderMemoryFactBlock } from "@/lib/memory/retrieve";
+import { extractCandidateMemories, writeStatedMemory } from "@/lib/memory/stated";
+import { recomputeDerivedMemory } from "@/lib/memory/derived";
 import { z } from "zod";
 
 /**
@@ -377,6 +380,15 @@ export async function handleChatTurn(
     }
 
     await requestRestockAlert(merchantId, pendingVariant.id, normalized);
+
+    // Layer 18: this is the one point in a chat turn a real identity
+    // becomes known — persist it onto the conversation so a returning
+    // buyer's memory (see memory/retrieve.ts) is reachable on a later
+    // session. Written exclusively by code, same discipline as
+    // pendingRestockVariantId (schema.ts).
+    const contact = await recordContact({ merchantId, address: normalized, consentSource: "chat_restock_request" });
+    await db.update(schema.conversations).set({ customerContactId: contact.id }).where(eq(schema.conversations.id, conversation.id));
+
     const reply = `Got it — I'll email ${normalized} the moment ${pendingVariant.name} is back in stock.`;
     await db.insert(schema.chatMessages).values({ conversationId: conversation.id, role: "assistant", content: reply });
     const rawCart = await getCart(conversation.id);
@@ -484,10 +496,18 @@ export async function handleChatTurn(
       ? `SYSTEM FACT — the customer's cart currently holds EXACTLY: ${cart.lines.map((l) => `${l.quantity} x "${l.name}"`).join(", ")}. Cart subtotal: ${formatPaise(cart.subtotalPaise)}. These numbers are authoritative and final. If you mention the cart, you must state exactly these quantities and this subtotal — never different ones, even if the conversation earlier suggested otherwise.`
       : "SYSTEM FACT — the customer's cart is currently empty.";
 
+  // Layer 18: an anonymous session (no customerContactId yet) genuinely
+  // gets no memory — not a fingerprint, not an inferred fallback. This
+  // is an honest, common state, same as "no customer contact on file"
+  // elsewhere in this codebase.
+  const memoryFactBlock = conversation.customerContactId
+    ? renderMemoryFactBlock(await getMemoryFactsForSubject(merchantId, "customer_contact", conversation.customerContactId))
+    : "";
+
   let reply: string;
   try {
     const { text } = await complete({
-      systemPrompt: `You are a friendly storefront assistant for a coffee shop. You may only discuss products in this real catalogue — never invent a product or state a price other than what's given to you:\n${catalogueList}\n\nBe concise, warm, and helpful. If asked about a product not in the catalogue, say plainly that it isn't carried. Never state a total, price, or cart quantity other than one explicitly given to you as a SYSTEM FACT.\n\n${cartFact}`,
+      systemPrompt: `You are a friendly storefront assistant for a coffee shop. You may only discuss products in this real catalogue — never invent a product or state a price other than what's given to you:\n${catalogueList}\n\nBe concise, warm, and helpful. If asked about a product not in the catalogue, say plainly that it isn't carried. Never state a total, price, or cart quantity other than one explicitly given to you as a SYSTEM FACT.\n\n${cartFact}${memoryFactBlock ? `\n\n${memoryFactBlock}` : ""}`,
       prompt: `Conversation so far:\n${historyText}\n\nRespond to the customer's latest message. If you reference the cart, its contents must match the SYSTEM FACT exactly.`,
     });
     reply = text.trim();
@@ -497,6 +517,27 @@ export async function handleChatTurn(
   }
 
   await db.insert(schema.chatMessages).values({ conversationId: conversation.id, role: "assistant", content: reply });
+
+  // Layer 18-3: extract-then-write, only when a real subject exists to
+  // attach a stated memory to. Fire-and-forget-safe by construction —
+  // extractCandidateMemories never throws, and a candidate is written
+  // inert (unconfirmed), so a slow or failed extraction can never delay
+  // or corrupt the reply already sent above.
+  if (conversation.customerContactId) {
+    const [sourceMessage] = await db
+      .select({ id: schema.chatMessages.id })
+      .from(schema.chatMessages)
+      .where(and(eq(schema.chatMessages.conversationId, conversation.id), eq(schema.chatMessages.role, "customer")))
+      .orderBy(desc(schema.chatMessages.createdAt))
+      .limit(1);
+    if (sourceMessage) {
+      const candidates = await extractCandidateMemories(merchantId, conversation.id, customerMessage);
+      for (const candidate of candidates) {
+        await writeStatedMemory(merchantId, "customer_contact", conversation.customerContactId, candidate, sourceMessage.id);
+      }
+    }
+    await recomputeDerivedMemory(merchantId, "customer_contact", conversation.customerContactId);
+  }
 
   // Layer 6-3: run the offer engine at most once per cart — an existing
   // open offer for this session is reused, never re-offered or replaced

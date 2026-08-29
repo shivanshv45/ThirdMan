@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { getSessionMerchant } from "@/lib/auth";
-import { getPendingEscalations, getGuardianIncidents, getActiveTaskCount } from "@/lib/dashboard";
+import { getPendingEscalations, getGuardianIncidents, getActiveTaskCount, getPendingMemoryConfirmCount } from "@/lib/dashboard";
 import { logout } from "./actions";
 import { SidebarNav, type NavGroup } from "./sidebar-nav";
 import { Reveal } from "@/components/ui";
@@ -12,6 +12,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const escalations = await getPendingEscalations(merchant.id);
   const guardianIncidents = await getGuardianIncidents(merchant.id);
   const activeTaskCount = await getActiveTaskCount(merchant.id);
+  const pendingMemoryCount = await getPendingMemoryConfirmCount(merchant.id);
 
   const groups: NavGroup[] = [
     {
@@ -58,6 +59,12 @@ export default async function DashboardLayout({ children }: { children: React.Re
           label: "Agent Runtime",
           badge: activeTaskCount,
           badgeTooltip: activeTaskCount ? `${activeTaskCount} task${activeTaskCount === 1 ? "" : "s"} active` : undefined,
+        },
+        {
+          href: "/dashboard/memory",
+          label: "Memory Bank",
+          badge: pendingMemoryCount,
+          badgeTooltip: pendingMemoryCount ? `${pendingMemoryCount} stated memor${pendingMemoryCount === 1 ? "y" : "ies"} awaiting confirmation` : undefined,
         },
       ],
     },

@@ -720,3 +720,70 @@ export async function getActiveTaskCount(merchantId: string): Promise<number> {
   return tasks.filter((t) => t.status === "pending" || t.status === "waiting" || t.status === "claimed").length;
 }
 
+// --- Layer 18: the Memory Bank dashboard read ---
+
+export interface MemoryRow {
+  id: string;
+  subjectType: (typeof schema.memorySubjectTypeEnum.enumValues)[number];
+  subjectId: string;
+  subjectLabel: string;
+  kind: (typeof schema.memoryKindEnum.enumValues)[number];
+  key: string;
+  value: string;
+  sourceType: string;
+  sourceId: string;
+  confirmedAt: Date | null;
+  expiresAt: Date | null;
+  updatedAt: Date;
+}
+
+/**
+ * Every real memory row for this merchant, newest first, with a
+ * resolved human-readable subject label — an agent's real name, or a
+ * customer contact's real address. No fabricated rows: an empty result
+ * is rendered as EmptyState by the page, never padded.
+ */
+export async function getMemoryOverview(merchantId: string): Promise<MemoryRow[]> {
+  const rows = await db.select().from(schema.agentMemories).where(eq(schema.agentMemories.merchantId, merchantId)).orderBy(desc(schema.agentMemories.updatedAt));
+
+  const agentIds = rows.filter((r) => r.subjectType === "agent").map((r) => r.subjectId);
+  const contactIds = rows.filter((r) => r.subjectType === "customer_contact").map((r) => r.subjectId);
+
+  const [agentRows, contactRows] = await Promise.all([
+    agentIds.length ? db.select({ id: schema.agents.id, name: schema.agents.name }).from(schema.agents).where(inArray(schema.agents.id, agentIds)) : Promise.resolve([]),
+    contactIds.length
+      ? db.select({ id: schema.customerContacts.id, address: schema.customerContacts.address }).from(schema.customerContacts).where(inArray(schema.customerContacts.id, contactIds))
+      : Promise.resolve([]),
+  ]);
+
+  const agentNameById = new Map(agentRows.map((a) => [a.id, a.name]));
+  const contactAddressById = new Map(contactRows.map((c) => [c.id, c.address]));
+
+  return rows.map((row) => ({
+    id: row.id,
+    subjectType: row.subjectType,
+    subjectId: row.subjectId,
+    subjectLabel:
+      row.subjectType === "agent"
+        ? (agentNameById.get(row.subjectId) ?? "Unknown agent")
+        : (contactAddressById.get(row.subjectId) ?? "Unknown contact"),
+    kind: row.kind,
+    key: row.key,
+    value: row.value,
+    sourceType: row.sourceType,
+    sourceId: row.sourceId,
+    confirmedAt: row.confirmedAt,
+    expiresAt: row.expiresAt,
+    updatedAt: row.updatedAt,
+  }));
+}
+
+/** Stated memories awaiting merchant confirmation — the sidebar badge, same pattern as getGuardianIncidents/getActiveTaskCount. */
+export async function getPendingMemoryConfirmCount(merchantId: string): Promise<number> {
+  const rows = await db
+    .select({ id: schema.agentMemories.id })
+    .from(schema.agentMemories)
+    .where(and(eq(schema.agentMemories.merchantId, merchantId), eq(schema.agentMemories.kind, "stated"), sql`${schema.agentMemories.confirmedAt} is null`));
+  return rows.length;
+}
+

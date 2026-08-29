@@ -9,6 +9,8 @@ import { db, schema } from "@/lib/db";
 import { eq, and } from "drizzle-orm";
 import { rearmAgent } from "@/lib/guardian";
 import { cancelTask, retryTask } from "@/lib/runtime/tasks";
+import { confirmStatedMemory } from "@/lib/memory/stated";
+import { deleteMemory, correctMemory } from "@/lib/memory/retrieve";
 import { redirect } from "next/navigation";
 
 type AgentCapability = (typeof schema.agentCapabilityEnum.enumValues)[number];
@@ -183,6 +185,34 @@ export async function retryTaskAction(formData: FormData) {
   if (!taskId) throw new Error("Missing taskId");
   await retryTask(merchant.id, taskId);
   revalidatePath("/dashboard/tasks");
+}
+
+export async function confirmMemoryAction(formData: FormData) {
+  const merchant = await requireSessionMerchant();
+  const memoryId = String(formData.get("memoryId"));
+  if (!memoryId) throw new Error("Missing memoryId");
+  const result = await confirmStatedMemory(merchant.id, memoryId);
+  if (!result.ok) throw new Error(result.reason);
+  revalidatePath("/dashboard/memory");
+}
+
+export async function correctMemoryAction(formData: FormData) {
+  const merchant = await requireSessionMerchant();
+  const memoryId = String(formData.get("memoryId"));
+  const value = String(formData.get("value") ?? "");
+  if (!memoryId) throw new Error("Missing memoryId");
+  const result = await correctMemory(merchant.id, memoryId, value);
+  if (!result.ok) throw new Error(result.reason);
+  revalidatePath("/dashboard/memory");
+}
+
+export async function deleteMemoryAction(formData: FormData) {
+  const merchant = await requireSessionMerchant();
+  const memoryId = String(formData.get("memoryId"));
+  if (!memoryId) throw new Error("Missing memoryId");
+  const result = await deleteMemory(merchant.id, memoryId);
+  if (!result.ok) throw new Error(result.reason);
+  revalidatePath("/dashboard/memory");
 }
 
 export async function logout() {

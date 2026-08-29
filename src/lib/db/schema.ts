@@ -592,6 +592,13 @@ export const conversations = pgTable("conversations", {
   // Not inferred from chat history — a real pointer, same "written
   // exclusively by code, never the model" discipline as cartItems above.
   pendingRestockVariantId: uuid("pending_restock_variant_id").references(() => productVariants.id),
+  // Layer 18: set (deterministically, by chat.ts's provide_contact
+  // handling, via contacts.ts's recordContact) the moment a real email
+  // is on file for this session — what makes a customer_contact memory
+  // subject reachable at all. Same "written exclusively by code, never
+  // the model" discipline as pendingRestockVariantId above. Null means
+  // this session is genuinely anonymous and gets no memory.
+  customerContactId: uuid("customer_contact_id").references(() => customerContacts.id),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -1849,3 +1856,70 @@ export const agentTaskSteps = pgTable("agent_task_steps", {
     .notNull()
     .defaultNow(),
 });
+
+// --- Layer 18: the Memory Bank ---
+// See plans/layer-18-memory-bank.md. The governing rule: memory is
+// context, never a bound — gate.ts has no import of this table or of
+// src/lib/memory/* at all. Anchored only to real, durable identities
+// this product has (a customer contact, an agent) — never a session
+// token or a fingerprint for an anonymous visitor.
+
+export const memorySubjectTypeEnum = pgEnum("memory_subject_type", ["customer_contact", "agent"]);
+
+export const memoryKindEnum = pgEnum("memory_kind", ["derived", "stated"]);
+
+// One row per (subject, key) — update-in-place, not an append-only
+// history. A correction replaces the value rather than sitting beside
+// it, so retrieval can never surface two conflicting answers for the
+// same key (see DECISIONS.md).
+export const agentMemories = pgTable(
+  "agent_memories",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id),
+    subjectType: memorySubjectTypeEnum("subject_type").notNull(),
+    // Polymorphic by subjectType (customerContacts.id or agents.id) —
+    // same documented-opaque-pointer discipline as
+    // notificationDeliveries.relatedEntityId; a single FK can't span
+    // two tables, so this is interpreted by code, not the schema.
+    subjectId: uuid("subject_id").notNull(),
+    kind: memoryKindEnum("kind").notNull(),
+    // Constrained to a closed vocabulary in code (src/lib/memory/derived.ts's
+    // DERIVED_MEMORY_KEYS, src/lib/memory/stated.ts's STATED_MEMORY_KEYS),
+    // not a DB enum — derived and stated keys are different, disjoint
+    // sets and a shared DB enum would blur that boundary.
+    key: text("key").notNull(),
+    // The constrained value a fixed per-key template renders. Never
+    // concatenated raw into a prompt — see retrieve.ts. This is the
+    // layer's central injection defence, alongside the closed key
+    // vocabulary itself.
+    value: text("value").notNull(),
+    // Real provenance, required — a memory with no source cannot be
+    // created. Derived: the table+row it was computed from. Stated: the
+    // messages row it was extracted from.
+    sourceType: text("source_type").notNull(),
+    sourceId: uuid("source_id").notNull(),
+    // Null = pending/inert, never retrieved. Derived memories are
+    // confirmed immediately (code-computed, nothing to review). A
+    // stated memory stays null until a human confirms it — never
+    // auto-confirmed.
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("agent_memories_subject_key_idx").on(
+      table.merchantId,
+      table.subjectType,
+      table.subjectId,
+      table.key,
+    ),
+  ],
+);
