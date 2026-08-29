@@ -7,6 +7,7 @@ import {
   getAgentsWithCaps,
   getMoneyMovedStats,
   getDecisionCounts,
+  getMoneyAtRiskSummary,
 } from "@/lib/dashboard";
 import { getRecoveryStats } from "@/lib/recovery/attribution";
 import { getDecisionStats } from "@/lib/explainability";
@@ -15,6 +16,7 @@ import { approveEscalation, rejectEscalation } from "./actions";
 import { AuditTrail } from "./audit-trail";
 import { formatPaise as rupees } from "@/lib/money";
 import { PageHeader, Surface, MoneyStat, Stat, Button, DecisionComposition } from "@/components/ui";
+import { MoneyAtRisk } from "./money-at-risk";
 
 function formatDate(d: Date): string {
   return new Date(d).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
@@ -24,7 +26,7 @@ export default async function DashboardPage() {
   const merchant = await getSessionMerchant();
   if (!merchant) redirect("/login");
 
-  const [auditTrail, escalations, razorpayStatus, agents, moneyMoved, decisionCounts, recoveryStats, decisionStats] =
+  const [auditTrail, escalations, razorpayStatus, agents, moneyMoved, decisionCounts, recoveryStats, decisionStats, moneyAtRisk] =
     await Promise.all([
       getAuditTrail(merchant.id, 100),
       getPendingEscalations(merchant.id),
@@ -34,6 +36,7 @@ export default async function DashboardPage() {
       getDecisionCounts(merchant.id),
       getRecoveryStats(merchant.id),
       getDecisionStats(merchant.id),
+      getMoneyAtRiskSummary(merchant.id),
     ]);
 
   const hasAgentWithCap = agents.some((a) => a.cap !== null);
@@ -43,7 +46,7 @@ export default async function DashboardPage() {
     <div>
       <PageHeader
         title="Overview"
-        description="What happened with your money, and what the system refused to do about it."
+        description="Where you're losing money right now, what happened with it, and what the system refused to do about it."
       />
 
       {isFirstRun && (
@@ -134,6 +137,8 @@ export default async function DashboardPage() {
           </div>
         </section>
       )}
+
+      <MoneyAtRisk summary={moneyAtRisk} />
 
       {/* The two headline facts, given the room that says so. Everything
           below this band is supporting evidence and renders smaller. */}

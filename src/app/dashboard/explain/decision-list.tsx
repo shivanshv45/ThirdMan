@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { explainDecisionAction } from "./actions";
+import { explainDecisionAction, getDecisionWaterfallAction } from "./actions";
 import type { UnifiedDecision } from "@/lib/explainability";
+import type { WaterfallStep } from "@/lib/dashboard";
 
 function formatDate(d: Date | string): string {
   return new Date(d).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
@@ -87,11 +88,23 @@ export function DecisionList({ decisions }: { decisions: UnifiedDecision[] }) {
 function ExpandedDetails({ decision }: { decision: UnifiedDecision }) {
   const [explanation, setExplanation] = useState<{ text: string; available: boolean } | null>(null);
   const [isPending, startTransition] = useTransition();
+  const [waterfall, setWaterfall] = useState<WaterfallStep[] | null>(null);
+  const [isWaterfallPending, startWaterfallTransition] = useTransition();
 
   function handleExplain() {
     startTransition(async () => {
       const result = await explainDecisionAction(decision.id);
       setExplanation({ text: result.explanation, available: result.available });
+    });
+  }
+
+  const moneyActionId = decision.sourceRef.moneyActionId;
+
+  function handleShowWaterfall() {
+    if (!moneyActionId) return;
+    startWaterfallTransition(async () => {
+      const steps = await getDecisionWaterfallAction(moneyActionId);
+      setWaterfall(steps);
     });
   }
 
@@ -143,6 +156,50 @@ function ExpandedDetails({ decision }: { decision: UnifiedDecision }) {
           )}
         </div>
       )}
+
+      {moneyActionId && !waterfall && (
+        <button
+          type="button"
+          onClick={handleShowWaterfall}
+          disabled={isWaterfallPending}
+          className="text-xs px-2.5 py-1.5 rounded-[var(--radius)] bg-ink-overlay border border-ink-line text-on-ink hover:border-on-ink-faint disabled:opacity-50 transition-colors font-sans inline-flex items-center gap-1.5"
+        >
+          {isWaterfallPending && <span className="h-2.5 w-2.5 rounded-full border-2 border-current border-t-transparent animate-spin" aria-hidden="true" />}
+          {isWaterfallPending ? "Loading…" : "Show timing waterfall"}
+        </button>
+      )}
+
+      {waterfall && <WaterfallPanel steps={waterfall} />}
+    </div>
+  );
+}
+
+function WaterfallPanel({ steps }: { steps: WaterfallStep[] }) {
+  if (steps.length === 0) {
+    return (
+      <p className="text-xs text-on-ink-faint font-sans">
+        No timing captured for this decision — either it happened before this feature shipped, or its trace has since aged out of the in-process buffer.
+      </p>
+    );
+  }
+
+  const maxDurationMs = Math.max(...steps.map((s) => s.durationMs), 1);
+
+  return (
+    <div className="font-mono space-y-1.5">
+      {steps.map((step, i) => (
+        <div key={i} className="flex items-center gap-2">
+          <span className={`w-40 shrink-0 truncate font-sans ${step.ok ? "text-on-ink-dim" : "text-deny-bright"}`}>{step.label}</span>
+          <span className="w-16 shrink-0 text-right text-on-ink">{step.durationMs.toFixed(1)}ms</span>
+          <div className="flex-1 h-2 rounded-full bg-ink-overlay overflow-hidden min-w-[2rem]">
+            <div
+              className={`h-full ${step.ok ? "bg-accent" : "bg-deny"}`}
+              style={{ width: `${Math.max((step.durationMs / maxDurationMs) * 100, 2)}%` }}
+            />
+          </div>
+          {step.detail && <span className="text-on-ink-faint font-sans truncate max-w-[16rem]">{step.detail}</span>}
+        </div>
+      ))}
     </div>
   );
 }

@@ -2,6 +2,8 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { getRecentAuditEntries } from "@/lib/audit";
 import { decrypt } from "@/lib/crypto";
+import { getSpansForMoneyAction } from "@/lib/tracing";
+import { getUseCaseBudgetStatus } from "@/lib/model-router";
 
 /**
  * Read queries for the merchant dashboard. Every function is scoped by
@@ -541,5 +543,161 @@ export async function getRecentTreasuryLedgerEntries(merchantId: string, limit =
     .where(eq(schema.treasuryLedger.merchantId, merchantId))
     .orderBy(desc(schema.treasuryLedger.createdAt))
     .limit(limit);
+}
+
+export interface WaterfallStep {
+  label: string;
+  durationMs: number;
+  detail: string;
+  ok: boolean;
+}
+
+/**
+ * Layer 15-2: a fixed, human-labelled display order for the money-path
+ * spans tracing.ts captures (see gate.ts/llm.ts/audit.ts's withSpan
+ * call sites) — a span name not in this map still renders, under its
+ * raw name, rather than being silently dropped, so an uninstrumented or
+ * future step is still visible instead of invisible.
+ */
+const WATERFALL_STEP_LABELS: Record<string, string> = {
+  mandate_verification: "Mandate verification",
+  capability_check: "Capability check",
+  guardian_state: "Guardian state",
+  policy_evaluation: "Policy evaluation",
+  risk_assessment: "Risk assessment",
+  chat: "Model call",
+  execute_and_settle: "Execute and settle",
+  razorpay_authorize: "Razorpay authorize",
+  ledger_commit: "Ledger commit",
+  audit_write: "Audit write",
+};
+
+function describeWaterfallStep(name: string, attributes: Record<string, unknown>): string {
+  switch (name) {
+    case "mandate_verification":
+      return "ES256, checkout hash checked";
+    case "capability_check":
+      return typeof attributes["thirdman.capability"] === "string" ? `${attributes["thirdman.capability"]} required` : "";
+    case "guardian_state":
+      return "evaluated against the agent's own rolling baseline";
+    case "policy_evaluation": {
+      const amountPaise = attributes["thirdman.amount_paise"];
+      return typeof amountPaise === "number" ? `spend cap, stock, price match for ₹${(amountPaise / 100).toFixed(2)}` : "spend cap, stock, price match";
+    }
+    case "risk_assessment":
+      return "deterministic fallback or a real model call";
+    case "chat": {
+      const model = attributes["gen_ai.response.model"] ?? attributes["gen_ai.request.model"];
+      const inTok = attributes["gen_ai.usage.input_tokens"];
+      const outTok = attributes["gen_ai.usage.output_tokens"];
+      const parts = [attributes["gen_ai.system"], model].filter(Boolean).join("/");
+      const tokens = typeof inTok === "number" && typeof outTok === "number" ? `${inTok + outTok} tokens` : undefined;
+      return [parts, tokens].filter(Boolean).join(" · ");
+    }
+    case "razorpay_authorize":
+      return "real Razorpay order/link created";
+    case "ledger_commit":
+      return "money_actions row updated";
+    case "audit_write":
+      return typeof attributes["thirdman.event"] === "string" ? String(attributes["thirdman.event"]) : "";
+    default:
+      return "";
+  }
+}
+
+export interface MoneyAtRiskSummary {
+  failedPaymentsAwaitingRecovery: { count: number; amountPaise: number };
+  abandonedCarts: { count: number };
+  outOfStockWithDemand: { count: number };
+  pendingEscalations: { count: number; amountPaise: number };
+  suspendedAgents: { count: number };
+  aiSpendAgainstBudget: { configuredUseCases: number; overBudgetUseCases: number };
+}
+
+/**
+ * Layer 15-4: the command view's "where am I losing money right now"
+ * summary — six real aggregations, each over a table this app already
+ * owns and already queries elsewhere. Every function reused here
+ * (getPendingEscalations, getGuardianIncidents) is the identical
+ * merchant-scoped query the rest of the dashboard already trusts;
+ * nothing here re-derives a number a different path could disagree
+ * with. Deliberately excludes ad spend, support tickets, subscriptions,
+ * and settlement mismatch — this app holds no real table for any of
+ * them, and CLAUDE.md's no-fabricated-data rule means a smaller honest
+ * view beats a larger invented one. See plans/layer-15.
+ */
+export async function getMoneyAtRiskSummary(merchantId: string): Promise<MoneyAtRiskSummary> {
+  const [failedPayments, abandonedCartRows, outOfStockRows, pendingEscalations, guardianIncidents, useCaseStatuses] = await Promise.all([
+    db
+      .select({ amountPaise: schema.paymentFailures.amountPaise })
+      .from(schema.paymentFailures)
+      .where(and(eq(schema.paymentFailures.merchantId, merchantId), inArray(schema.paymentFailures.status, ["new", "diagnosed", "recovering"]))),
+
+    // A cart is "abandoned" once it has at least one line and no
+    // corresponding cart_purchases row yet — distinct conversations only.
+    db
+      .selectDistinct({ conversationId: schema.cartItems.conversationId })
+      .from(schema.cartItems)
+      .innerJoin(schema.conversations, eq(schema.cartItems.conversationId, schema.conversations.id))
+      .leftJoin(schema.cartPurchases, eq(schema.cartPurchases.conversationId, schema.cartItems.conversationId))
+      .where(and(eq(schema.conversations.merchantId, merchantId), sql`${schema.cartPurchases.id} is null`)),
+
+    db
+      .select({ id: schema.restockRequests.id })
+      .from(schema.restockRequests)
+      .where(and(eq(schema.restockRequests.merchantId, merchantId), eq(schema.restockRequests.status, "waiting"))),
+
+    getPendingEscalations(merchantId),
+    getGuardianIncidents(merchantId),
+
+    Promise.all(
+      (["support_chat", "recovery_diagnosis", "negotiation", "classification"] as const).map((useCase) => getUseCaseBudgetStatus(merchantId, useCase)),
+    ),
+  ]);
+
+  return {
+    failedPaymentsAwaitingRecovery: {
+      count: failedPayments.length,
+      amountPaise: failedPayments.reduce((sum, f) => sum + f.amountPaise, 0),
+    },
+    abandonedCarts: { count: abandonedCartRows.length },
+    outOfStockWithDemand: { count: outOfStockRows.length },
+    pendingEscalations: {
+      count: pendingEscalations.length,
+      amountPaise: pendingEscalations.reduce((sum, e) => sum + e.moneyAction.amountPaise, 0),
+    },
+    suspendedAgents: { count: guardianIncidents.filter((g) => g.state === "suspended").length },
+    aiSpendAgainstBudget: {
+      configuredUseCases: useCaseStatuses.filter((s) => s.configured).length,
+      overBudgetUseCases: useCaseStatuses.filter((s) => s.configured && s.remainingPaise <= 0).length,
+    },
+  };
+}
+
+/**
+ * The per-decision timing waterfall (Layer 15-2): verifies the money
+ * action belongs to this merchant (same ownership discipline as
+ * getGuardianTransitions/getDecisionForMoneyAction — never trust an id
+ * without re-checking it), then reads back whatever spans tracing.ts
+ * captured for it. Empty if none were captured — a decision that
+ * predates this layer, or whose spans have since been evicted from the
+ * in-memory ring buffer — which the caller renders as an honest empty
+ * state, never a fabricated timing row (CLAUDE.md's no-fabricated-data rule).
+ */
+export async function getDecisionWaterfall(merchantId: string, moneyActionId: string): Promise<WaterfallStep[]> {
+  const [moneyAction] = await db
+    .select({ id: schema.moneyActions.id })
+    .from(schema.moneyActions)
+    .where(and(eq(schema.moneyActions.id, moneyActionId), eq(schema.moneyActions.merchantId, merchantId)));
+  if (!moneyAction) return [];
+
+  const spans = getSpansForMoneyAction(moneyActionId);
+
+  return spans.map((span) => ({
+    label: WATERFALL_STEP_LABELS[span.name] ?? span.name,
+    durationMs: Math.round(span.durationMs * 100) / 100,
+    detail: describeWaterfallStep(span.name, span.attributes as Record<string, unknown>),
+    ok: span.ok,
+  }));
 }
 

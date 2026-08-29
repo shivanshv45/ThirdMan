@@ -3,6 +3,7 @@
 import { requireSessionMerchant } from "@/lib/auth";
 import { getDecisionById } from "@/lib/explainability";
 import { explainDecision, type DecisionExplanation } from "@/lib/explain-decision";
+import { getDecisionWaterfall, type WaterfallStep } from "@/lib/dashboard";
 
 /**
  * Explains one decision on demand — never eagerly for a whole page of
@@ -21,4 +22,16 @@ export async function explainDecisionAction(decisionId: string): Promise<Decisio
   }
 
   return explainDecision(decision);
+}
+
+/**
+ * Layer 15-2: the per-decision timing waterfall, fetched on demand from
+ * the same "Show details" disclosure as the plain-language explainer —
+ * never eagerly for a whole page of rows. moneyActionId re-checked
+ * against this merchant inside getDecisionWaterfall itself, so a
+ * merchant can't read another merchant's timing by guessing an id.
+ */
+export async function getDecisionWaterfallAction(moneyActionId: string): Promise<WaterfallStep[]> {
+  const merchant = await requireSessionMerchant();
+  return getDecisionWaterfall(merchant.id, moneyActionId);
 }

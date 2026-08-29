@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { refreshAuditTrail, type AuditEntry } from "./actions";
 import { formatPaise as rupees } from "@/lib/money";
 import { DecisionBadge, type Decision, Button, EmptyState } from "@/components/ui";
@@ -24,14 +24,52 @@ export function AuditTrail({ initialEntries }: { initialEntries: AuditEntry[] })
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
+  // "connecting" until the first message/open event lands, then "live"
+  // or "unavailable" — the manual Refresh button always stays usable
+  // regardless of state, so this never blocks the existing fallback.
+  // Lazy initializer (not an effect) decides "unavailable" up front so
+  // no setState is needed synchronously inside the effect below.
+  const [streamStatus, setStreamStatus] = useState<"connecting" | "live" | "unavailable">(() =>
+    typeof EventSource === "undefined" ? "unavailable" : "connecting",
+  );
+  const seenIds = useRef(new Set(initialEntries.map((e) => e.id)));
 
   function handleRefresh() {
     startTransition(async () => {
       const fresh = await refreshAuditTrail();
       setEntries(fresh);
+      seenIds.current = new Set(fresh.map((e) => e.id));
       setLastRefreshed(new Date());
     });
   }
+
+  useEffect(() => {
+    // Layer 15-3's explicit degrade-gracefully requirement: if
+    // EventSource isn't available at all, streamStatus was already
+    // initialized to "unavailable" above and the manual Refresh button
+    // works exactly as it always has — nothing more to do here.
+    if (typeof EventSource === "undefined") return;
+
+    const source = new EventSource("/api/dashboard/decisions/stream");
+
+    source.addEventListener("open", () => setStreamStatus("live"));
+    source.addEventListener("error", () => {
+      // EventSource auto-reconnects on its own; this only reflects the
+      // gap in the status indicator so it doesn't lie about being live
+      // while disconnected. The stream never needs the merchant to
+      // acknowledge anything to recover.
+      setStreamStatus((prev) => (prev === "live" ? "connecting" : prev));
+    });
+    source.addEventListener("decision", (event: MessageEvent<string>) => {
+      const entry = JSON.parse(event.data) as AuditEntry;
+      if (seenIds.current.has(entry.id)) return;
+      seenIds.current.add(entry.id);
+      setEntries((prev) => [entry, ...prev]);
+      setStreamStatus("live");
+    });
+
+    return () => source.close();
+  }, []);
 
   return (
     <section>
@@ -43,6 +81,12 @@ export function AuditTrail({ initialEntries }: { initialEntries: AuditEntry[] })
           </p>
         </div>
         <div className="flex items-center gap-3">
+          {streamStatus === "live" && (
+            <span className="flex items-center gap-1.5 text-xs text-on-ink-faint">
+              <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-allow animate-pulse" />
+              Live
+            </span>
+          )}
           {lastRefreshed && (
             <span className="text-xs text-on-ink-faint font-mono">Updated {formatDate(lastRefreshed)}</span>
           )}
