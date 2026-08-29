@@ -1,10 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
-import { getAgentsWithCaps, getAuditTrail, getPendingEscalations } from "@/lib/dashboard";
+import { getAgentsWithCaps, getAuditTrail, getPendingEscalations, getMemoryOverview } from "@/lib/dashboard";
 import { setSpendCap, revokeAgent, reactivateAgent } from "@/lib/dashboard-mutations";
 import { resolveEscalation, ESCALATION_EXPIRY_HOURS } from "@/lib/gate";
 import { logAuditEntry } from "@/lib/audit";
+import { deleteMemory, correctMemory } from "@/lib/memory/retrieve";
 
 /**
  * Merchant isolation is a bound like any other CLAUDE.md bound, and it's
@@ -96,6 +97,7 @@ afterEach(async () => {
       );
     await db.delete(schema.auditLog).where(eq(schema.auditLog.merchantId, merchantId));
     await db.delete(schema.moneyActions).where(eq(schema.moneyActions.merchantId, merchantId));
+    await db.delete(schema.agentMemories).where(eq(schema.agentMemories.merchantId, merchantId));
     await db
       .delete(schema.spendCaps)
       .where(inArray(schema.spendCaps.agentId, db.select({ id: schema.agents.id }).from(schema.agents).where(eq(schema.agents.merchantId, merchantId))));
@@ -216,5 +218,35 @@ describe("merchant isolation — enumeration by id, not just empty-list", () => 
 
     const auditB = await getAuditTrail(merchantB.id, 100);
     expect(auditB.some((e) => e.event === "isolation_regression_check")).toBe(false);
+  });
+
+  it("Layer 18: B's memory overview never contains A's memory, and B cannot delete or correct A's memory by id", async () => {
+    const { merchantA, merchantB, agentA } = await setup();
+
+    const [memory] = await db
+      .insert(schema.agentMemories)
+      .values({
+        merchantId: merchantA.id,
+        subjectType: "agent",
+        subjectId: agentA.id,
+        kind: "derived",
+        key: "reward_coin_balance",
+        value: "42 reward coins",
+        sourceType: "reward_coin_ledger",
+        sourceId: agentA.id,
+        confirmedAt: new Date(),
+      })
+      .returning();
+
+    const overviewB = await getMemoryOverview(merchantB.id);
+    expect(overviewB.some((m) => m.id === memory.id)).toBe(false);
+
+    const deleteResult = await deleteMemory(merchantB.id, memory.id);
+    expect(deleteResult.ok).toBe(false);
+    const correctResult = await correctMemory(merchantB.id, memory.id, "0 reward coins");
+    expect(correctResult.ok).toBe(false);
+
+    const [stillThere] = await db.select().from(schema.agentMemories).where(eq(schema.agentMemories.id, memory.id));
+    expect(stillThere.value).toBe("42 reward coins");
   });
 });

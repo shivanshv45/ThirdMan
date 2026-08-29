@@ -424,4 +424,33 @@ describe("costPaise never leaks into any agent-facing or public surface", () => 
     expect(rows[0].reason).not.toContain(String(COST_PAISE_MARKER));
     expect(rows[0].boundApplied ?? "").not.toContain(String(COST_PAISE_MARKER));
   });
+
+  // Layer 18: derived memory is computed only from prior-purchase counts,
+  // reward balances, negotiation outcomes, and restock requests — none of
+  // which involve costPaise — but this proves it directly against a real
+  // captured purchase of the cost-marker product, rather than trusting
+  // that derived.ts's own "never selected" comment holds forever.
+  it("Layer 18: a derived memory fact for a captured purchase of the cost-marker product never carries costPaise, on the raw row or the dashboard's rendered overview", async () => {
+    const { merchant, product, agent } = await setupMerchantWithAgent();
+    const [variant] = await db.select().from(schema.productVariants).where(eq(schema.productVariants.productId, product.id));
+
+    const [moneyAction] = await db
+      .insert(schema.moneyActions)
+      .values({ merchantId: merchant.id, agentId: agent.id, variantId: variant.id, quantity: 1, type: "order_create", amountPaise: variant.pricePaise, status: "captured" })
+      .returning();
+
+    const { recomputeDerivedMemory } = await import("@/lib/memory/derived");
+    await recomputeDerivedMemory(merchant.id, "agent", agent.id);
+
+    const rows = await db.select().from(schema.agentMemories).where(eq(schema.agentMemories.subjectId, agent.id));
+    expect(rows.length).toBeGreaterThan(0);
+    expect(JSON.stringify(rows)).not.toMatch(String(COST_PAISE_MARKER));
+
+    const { getMemoryOverview } = await import("@/lib/dashboard");
+    const overview = await getMemoryOverview(merchant.id);
+    expect(JSON.stringify(overview)).not.toMatch(String(COST_PAISE_MARKER));
+
+    await db.delete(schema.agentMemories).where(eq(schema.agentMemories.merchantId, merchant.id));
+    await db.delete(schema.moneyActions).where(eq(schema.moneyActions.id, moneyAction.id));
+  });
 });

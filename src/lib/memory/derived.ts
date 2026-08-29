@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { getCoinBalance } from "@/lib/reward-coins";
 import { formatPaise } from "@/lib/money";
@@ -230,7 +230,7 @@ export async function recomputeDerivedMemory(merchantId: string, subjectType: Me
             eq(schema.agentMemories.subjectType, subjectType),
             eq(schema.agentMemories.subjectId, subjectId),
             eq(schema.agentMemories.kind, "derived"),
-            sql`${schema.agentMemories.key} = ANY(${staleKeys})`,
+            inArray(schema.agentMemories.key, staleKeys),
           ),
         );
     }
