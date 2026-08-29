@@ -183,6 +183,13 @@
       "when": 1788002395975,
       "tag": "0025_concerned_patriot",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1788022628225,
+      "tag": "0026_shocking_spot",
+      "breakpoints": true
     }
   ]
 }

@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
-import { routeCompletion, setModelBudget, getUseCaseBudgetStatus, getRoutingSavings } from "@/lib/model-router";
+import { routeCompletion, setModelBudget, setUseCaseProvider, getUseCaseBudgetStatus, getRoutingSavings } from "@/lib/model-router";
 import { createTestMerchant } from "@/lib/test-helpers";
+import { env } from "@/lib/env";
 
 /**
  * Layer 14-4: real Groq calls (no mocks, same standard as llm.test.ts
@@ -106,4 +107,32 @@ describe("model-router — real Groq calls, real budget arithmetic", () => {
       expect(row.amountPaise).toBeLessThan(0); // a draw is always negative
     }
   }, 20_000);
+
+  // Layer 16: a use case with a real provider preference routes there
+  // when funded, and still degrades to the Groq cheapest tier — never
+  // "the cheapest model on the preferred provider" — when exhausted.
+  it.skipIf(!env.OPENROUTER_API_KEY)("a use case with a preferred provider routes to it when funded, and degrades to Groq's cheapest tier when exhausted", async () => {
+    const merchant = await createTestMerchant("__model_router_test_provider_pref__");
+    merchantId = merchant.id;
+    await setModelBudget(merchant.id, "support_chat", 10_000_00);
+    await setUseCaseProvider(merchant.id, "support_chat", "openrouter");
+
+    const funded = await routeCompletion(merchant.id, "support_chat", { prompt: "Say 'ok' and nothing else." });
+    expect(funded.degraded).toBe(false);
+    expect(funded.provider).toBe("openrouter");
+    expect(funded.modelId).toBe("z-ai/glm-4.6");
+
+    await setModelBudget(merchant.id, "support_chat", 0);
+    const exhausted = await routeCompletion(merchant.id, "support_chat", { prompt: "Say 'ok' and nothing else." });
+    expect(exhausted.degraded).toBe(true);
+    expect(exhausted.modelId).toBe("openai/gpt-oss-20b");
+    expect(exhausted.provider).toBe("groq");
+  }, 45_000);
+
+  it("setUseCaseProvider rejects an unroutable provider name and a use case with no budget row yet", async () => {
+    const merchant = await createTestMerchant("__model_router_test_provider_reject__");
+    merchantId = merchant.id;
+    await expect(setUseCaseProvider(merchant.id, "classification", "not-a-real-provider")).rejects.toThrow(/not a routable provider/);
+    await expect(setUseCaseProvider(merchant.id, "classification", "zai")).rejects.toThrow(/no budget configured/);
+  });
 });

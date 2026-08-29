@@ -16,6 +16,17 @@ const envSchema = z.object({
     .url("DATABASE_URL must be a valid connection string"),
   GROQ_API_KEY: z.string().min(1, "GROQ_API_KEY is required"),
   GEMINI_API_KEY: z.string().min(1, "GEMINI_API_KEY is required"),
+  // Layer 16: three more providers, all optional — a provider with no
+  // key configured is simply unroutable (model-router.ts's candidate
+  // set excludes it), never a crash at import time. Groq/Gemini stay
+  // required since existing call sites assume they're always callable.
+  NVIDIA_API_KEY: z.string().optional(),
+  // NVIDIA NIM's OpenAI-compatible base URL varies by which model/host
+  // is provisioned (build.nvidia.com vs. a self-hosted NIM) — required
+  // alongside the key, optional as a pair like Google/GitHub OAuth above.
+  NVIDIA_ENDPOINT: z.string().optional(),
+  OPENROUTER_API_KEY: z.string().optional(),
+  ZAI_API_KEY: z.string().optional(),
   // Shared secret entered into Razorpay's webhook config to match. Consumed
   // by src/lib/webhook-verify.ts since Layer 3.
   RAZORPAY_WEBHOOK_SECRET: z.string().min(1, "RAZORPAY_WEBHOOK_SECRET is required"),

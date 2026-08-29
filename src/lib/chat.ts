@@ -9,6 +9,7 @@ import { openNegotiation, submitBuyerCounter, getOpenNegotiationForIdentity, MAX
 import { addCartItem, setCartItemQuantity, removeCartItem, getCart, type CartLineView } from "@/lib/cart";
 import { requestRestockAlert } from "@/lib/restock";
 import { normalizeEmail } from "@/lib/contacts";
+import { inspectInbound } from "@/lib/model-armor";
 import { z } from "zod";
 
 /**
@@ -334,6 +335,23 @@ export async function handleChatTurn(
   const catalogue = toChatProducts(await getPublicCatalogue(merchantId));
 
   await db.insert(schema.chatMessages).values({ conversationId: conversation.id, role: "customer", content: customerMessage });
+
+  // Layer 16-4: a buyer message is untrusted input by definition —
+  // scanned deterministically before it ever reaches classifyIntent's
+  // model call. A blocked message is refused here, plainly, and never
+  // becomes a prompt; this is the deterministic-first, fail-closed-on-
+  // untrusted-input path model-armor.ts documents.
+  const inboundVerdict = await inspectInbound(customerMessage, {
+    merchantId,
+    trustLevel: "untrusted",
+    auditContext: { conversationId: conversation.id },
+  });
+  if (!inboundVerdict.clean) {
+    const reply = "I can't help with that request. If you meant to ask about a product or your order, try rephrasing.";
+    await db.insert(schema.chatMessages).values({ conversationId: conversation.id, role: "assistant", content: reply });
+    const rawCart = await getCart(conversation.id);
+    return { reply, cart: toChatTurnCart(rawCart, catalogue), offer: null, negotiation: null, restockOffer: null };
+  }
 
   const cartBeforeIntent = await getCart(conversation.id);
   const awaitingRestockEmail = conversation.pendingRestockVariantId !== null;

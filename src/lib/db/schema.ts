@@ -1707,6 +1707,13 @@ export const modelBudgets = pgTable(
     // SUM(amountPaise) of model_call_costs rows for this
     // (merchantId, useCase) since periodStart — never a mutable counter.
     budgetPaise: integer("budget_paise").notNull(),
+    // Layer 16: which non-default provider this use case should route
+    // to, when routing (not budget exhaustion) is the reason to leave
+    // Groq — nullable, and null means "use the router's built-in
+    // default for this use case" (model-router.ts), never "unroutable".
+    // One attribute of an existing per-merchant, per-use-case row, not
+    // a new table — there's exactly one decision to look up here.
+    preferredProvider: text("preferred_provider"),
     periodStart: timestamp("period_start", { withTimezone: true })
       .notNull()
       .defaultNow(),

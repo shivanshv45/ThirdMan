@@ -1,12 +1,31 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { withMoneyPathSpan, withSpan, getSpansForMoneyAction, MoneyPathCaptureProcessor } from "./tracing";
-import { trace, context, SpanProcessor } from "@opentelemetry/api";
-import { BasicTracerProvider, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { trace, context } from "@opentelemetry/api";
+import { BasicTracerProvider } from "@opentelemetry/sdk-trace-base";
+import { AsyncHooksContextManager } from "@opentelemetry/context-async-hooks";
 
-// Set up the tracer provider to actually process spans in the test
-const provider = new BasicTracerProvider();
-provider.addSpanProcessor(new MoneyPathCaptureProcessor() as any);
-provider.register();
+// Layer 16 fix: the installed @opentelemetry/sdk-trace-base version
+// takes its span processors as a constructor option and registers
+// itself as the global tracer provider via trace.setGlobalTracerProvider
+// — BasicTracerProvider no longer has addSpanProcessor/register instance
+// methods, and SpanProcessor lives in sdk-trace-base, not api. This
+// mirrors src/instrumentation.ts's real registration (registerOTel's
+// spanProcessors option), just without @vercel/otel's Next-specific
+// wrapper, which this unit test doesn't need.
+//
+// A context manager also has to be registered explicitly here: in
+// production, registerOTel installs @opentelemetry/context-async-hooks
+// so context.with(...) survives an `await` boundary (real, load-bearing
+// behavior — withSpan's finally block reads the active context after
+// awaiting fn). Without one, the default no-op context manager drops
+// that binding across the first await, and a child span never picks up
+// its moneyActionId. @opentelemetry/context-async-hooks was already a
+// real (if previously unreachable — see FAILURES.md) dependency of
+// @vercel/otel, not a new capability; added as a direct devDependency so
+// this test can register the same context manager production gets.
+const provider = new BasicTracerProvider({ spanProcessors: [new MoneyPathCaptureProcessor()] });
+trace.setGlobalTracerProvider(provider);
+context.setGlobalContextManager(new AsyncHooksContextManager().enable());
 
 describe("Layer 15 - OpenTelemetry Tracing", () => {
   it("should capture spans within a money path and record GenAI conventions", async () => {

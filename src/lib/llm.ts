@@ -6,11 +6,21 @@ import { withSpan } from "@/lib/tracing";
 
 /**
  * The only sanctioned way to call an LLM in this codebase. Feature code
- * never imports groq-sdk or @google/generative-ai directly.
+ * never imports groq-sdk, @google/generative-ai, or any other provider
+ * SDK directly, and never fetches a provider's HTTP endpoint itself.
  *
  * Groq is the default for everything. Gemini is reserved for tasks that
  * pass `needsHardReasoning: true` and hits its free-tier rate limit fast,
  * so every Gemini call falls back to Groq on any failure.
+ *
+ * Layer 16 widens the provider set to include NVIDIA NIM, OpenRouter,
+ * and Z.ai — all three expose an OpenAI-compatible /chat/completions
+ * endpoint, so they share one HTTP call path (callOpenAiCompatible)
+ * rather than three more SDKs (CLAUDE.md: "No new dependency without a
+ * clear reason it can't be done with what's installed"). None of the
+ * three is ever requested directly by feature code — model-router.ts is
+ * the only caller that names a specific non-default provider, and every
+ * such request still falls back to Groq on failure, same as Gemini.
  *
  * This module must never be asked to do arithmetic on money. Spend caps,
  * balances, and bounds are deterministic code, not LLM output. See
@@ -21,11 +31,17 @@ const CALL_TIMEOUT_MS = 15_000;
 
 const GROQ_MODEL = "openai/gpt-oss-20b";
 const GEMINI_MODEL = "gemini-3.6-flash";
+const NVIDIA_MODEL = "nvidia/nemotron-3-nano-30b-a3b";
+const OPENROUTER_MODEL = "z-ai/glm-4.6";
+const ZAI_MODEL = "glm-4.6";
+
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+const ZAI_BASE_URL = "https://api.z.ai/api/paas/v4";
 
 const groq = new Groq({ apiKey: env.GROQ_API_KEY });
 const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY);
 
-export type LlmProvider = "groq" | "gemini";
+export type LlmProvider = "groq" | "gemini" | "nvidia" | "openrouter" | "zai";
 
 export interface CompletionInput {
   prompt: string;
@@ -41,6 +57,18 @@ export interface CompletionInput {
    * needsHardReasoning routes to Gemini instead.
    */
   groqModelOverride?: string;
+  /**
+   * Layer 16: routes this one call to a specific non-default provider —
+   * only model-router.ts sets this, never feature code directly (routing
+   * decisions belong to the router, not scattered across call sites).
+   * Omitted, this function's existing needsHardReasoning/Groq-default
+   * behavior is completely unchanged. A named provider that fails still
+   * falls back to Groq, exactly like needsHardReasoning's Gemini path —
+   * CompletionResult.provider always reports who actually served the
+   * call, never the one that was requested (DECISIONS.md's tier-honesty
+   * rule, generalized past Groq/Gemini to all five providers).
+   */
+  provider?: "nvidia" | "openrouter" | "zai";
 }
 
 export interface TokenUsage {
@@ -131,12 +159,115 @@ async function callGemini(input: CompletionInput): Promise<{ text: string; usage
   });
 }
 
+interface OpenAiCompatibleUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+}
+
+interface OpenAiCompatibleResponse {
+  choices?: Array<{ message?: { content?: string | null } }>;
+  usage?: OpenAiCompatibleUsage;
+  model?: string;
+}
+
+/**
+ * Layer 16: NVIDIA NIM, OpenRouter, and Z.ai all expose the same
+ * OpenAI-compatible /chat/completions shape, so this one function
+ * serves all three rather than three separate SDK integrations — verify
+ * a provider's response shape against its own docs before routing to
+ * it; this assumes the standard shape and does not paper over a
+ * divergence.
+ */
+async function callOpenAiCompatible(
+  provider: "nvidia" | "openrouter" | "zai",
+  baseUrl: string,
+  apiKey: string,
+  modelId: string,
+  input: CompletionInput,
+): Promise<{ text: string; usage?: TokenUsage; modelId: string }> {
+  return withSpan("chat", { "gen_ai.system": provider, "gen_ai.request.model": modelId }, async (span) => {
+    const response = await withTimeout(
+      `${provider}.chat.completions.create`,
+      fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [
+            ...(input.systemPrompt ? [{ role: "system" as const, content: input.systemPrompt }] : []),
+            { role: "user" as const, content: input.prompt },
+          ],
+        }),
+      }),
+    );
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(`${provider} returned ${response.status}: ${body.slice(0, 500)}`);
+    }
+
+    const data = (await response.json()) as OpenAiCompatibleResponse;
+    const text = data.choices?.[0]?.message?.content;
+    if (!text) throw new Error(`${provider} returned an empty completion`);
+
+    const usage = data.usage?.prompt_tokens !== undefined && data.usage?.completion_tokens !== undefined
+      ? { promptTokens: data.usage.prompt_tokens, completionTokens: data.usage.completion_tokens }
+      : undefined;
+    if (usage) {
+      span.setAttribute("gen_ai.usage.input_tokens", usage.promptTokens);
+      span.setAttribute("gen_ai.usage.output_tokens", usage.completionTokens);
+    }
+    // The response's own reported model id, when present, over the
+    // requested one — some brokers (OpenRouter) can resolve a request
+    // to a specific upstream variant, and model-router.ts's cost
+    // bookkeeping must key off what actually served the call.
+    const servedModelId = data.model || modelId;
+    span.setAttribute("gen_ai.response.model", servedModelId);
+    return { text, usage, modelId: servedModelId };
+  });
+}
+
+function callNvidia(input: CompletionInput): Promise<{ text: string; usage?: TokenUsage; modelId: string }> {
+  if (!env.NVIDIA_API_KEY || !env.NVIDIA_ENDPOINT) {
+    throw new Error("NVIDIA is not configured (NVIDIA_API_KEY/NVIDIA_ENDPOINT missing)");
+  }
+  return callOpenAiCompatible("nvidia", env.NVIDIA_ENDPOINT, env.NVIDIA_API_KEY, NVIDIA_MODEL, input);
+}
+
+function callOpenRouter(input: CompletionInput): Promise<{ text: string; usage?: TokenUsage; modelId: string }> {
+  if (!env.OPENROUTER_API_KEY) {
+    throw new Error("OpenRouter is not configured (OPENROUTER_API_KEY missing)");
+  }
+  return callOpenAiCompatible("openrouter", OPENROUTER_BASE_URL, env.OPENROUTER_API_KEY, OPENROUTER_MODEL, input);
+}
+
+function callZai(input: CompletionInput): Promise<{ text: string; usage?: TokenUsage; modelId: string }> {
+  if (!env.ZAI_API_KEY) {
+    throw new Error("Z.ai is not configured (ZAI_API_KEY missing)");
+  }
+  return callOpenAiCompatible("zai", ZAI_BASE_URL, env.ZAI_API_KEY, ZAI_MODEL, input);
+}
+
 /**
  * A model call failing must never crash a money path. Callers on a money
  * path must treat a rejected promise from this function as "no answer"
  * and take the deterministic default, which is deny.
  */
 export async function complete(input: CompletionInput): Promise<CompletionResult> {
+  if (input.provider) {
+    try {
+      const caller = input.provider === "nvidia" ? callNvidia : input.provider === "openrouter" ? callOpenRouter : callZai;
+      const result = await caller(input);
+      return { ...result, provider: input.provider };
+    } catch (err) {
+      console.warn(`[llm] ${input.provider} failed, falling back to Groq:`, err);
+      // fall through to Groq below
+    }
+  }
+
   if (input.needsHardReasoning) {
     try {
       const result = await callGemini(input);

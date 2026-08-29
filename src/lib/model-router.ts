@@ -1,7 +1,7 @@
 import { eq, and, gte, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
-import { complete, type CompletionInput, type CompletionResult } from "@/lib/llm";
-import { computeCallCostPaise, isKnownModel } from "@/lib/model-pricing";
+import { complete, type CompletionInput, type CompletionResult, type LlmProvider } from "@/lib/llm";
+import { computeCallCostPaise, isKnownModel, providerForModel } from "@/lib/model-pricing";
 import { drawMerchantAiBudget } from "@/lib/treasury";
 import { logAuditEntry } from "@/lib/audit";
 
@@ -31,6 +31,21 @@ export type ModelUseCase = (typeof schema.modelUseCaseEnum.enumValues)[number];
 // scoping honesty as ai-credits.ts's fixed tier set).
 const PREMIUM_MODEL_ID = "openai/gpt-oss-120b";
 const CHEAPEST_MODEL_ID = "openai/gpt-oss-20b";
+
+/**
+ * Layer 16: which model id a merchant's explicit `preferredProvider`
+ * resolves to as that use case's "premium" tier. Only Groq's own two
+ * models are reachable without an explicit preference (unchanged
+ * default). risk.ts deliberately never sets a preference and stays on
+ * Groq — the only provider this project has real operating history for
+ * on the money path, and the one whose deterministicFallback() prefix
+ * explainability.ts depends on (see plans/layer-16, L16-3).
+ */
+const PREFERRED_PROVIDER_MODEL: Record<string, string> = {
+  nvidia: "nvidia/nemotron-3-nano-30b-a3b",
+  openrouter: "z-ai/glm-4.6",
+  zai: "glm-4.6",
+};
 
 export interface RoutedCompletionResult extends CompletionResult {
   costPaise: number;
@@ -79,21 +94,53 @@ export async function setModelBudget(merchantId: string, useCase: ModelUseCase, 
     });
 }
 
+const ROUTABLE_PROVIDERS = new Set(Object.keys(PREFERRED_PROVIDER_MODEL));
+
+/**
+ * Layer 16: sets which non-default provider a use case should route to
+ * when its budget isn't exhausted. `null` clears the preference back to
+ * the router's built-in default (Groq's premium tier). Requires a
+ * budget row to already exist — a use case with no budget row is
+ * already treated as budget-zero and would degrade regardless of any
+ * provider preference, so setting one first is a merchant no-op.
+ */
+export async function setUseCaseProvider(merchantId: string, useCase: ModelUseCase, provider: string | null): Promise<void> {
+  if (provider !== null && !ROUTABLE_PROVIDERS.has(provider)) {
+    throw new Error(`setUseCaseProvider: "${provider}" is not a routable provider`);
+  }
+  const row = await getBudgetRow(merchantId, useCase);
+  if (!row) {
+    throw new Error(`setUseCaseProvider: ${useCase} has no budget configured yet — set a budget first`);
+  }
+  await db
+    .update(schema.modelBudgets)
+    .set({ preferredProvider: provider, updatedAt: sql`now()` })
+    .where(and(eq(schema.modelBudgets.merchantId, merchantId), eq(schema.modelBudgets.useCase, useCase)));
+}
+
 export interface UseCaseBudgetStatus {
   useCase: ModelUseCase;
   budgetPaise: number;
   spentPaise: number;
   remainingPaise: number;
   configured: boolean;
+  preferredProvider: string | null;
 }
 
 export async function getUseCaseBudgetStatus(merchantId: string, useCase: ModelUseCase): Promise<UseCaseBudgetStatus> {
   const row = await getBudgetRow(merchantId, useCase);
   if (!row) {
-    return { useCase, budgetPaise: 0, spentPaise: 0, remainingPaise: 0, configured: false };
+    return { useCase, budgetPaise: 0, spentPaise: 0, remainingPaise: 0, configured: false, preferredProvider: null };
   }
   const spentPaise = await getUseCaseSpendPaise(merchantId, useCase, row.periodStart);
-  return { useCase, budgetPaise: row.budgetPaise, spentPaise, remainingPaise: Math.max(row.budgetPaise - spentPaise, 0), configured: true };
+  return {
+    useCase,
+    budgetPaise: row.budgetPaise,
+    spentPaise,
+    remainingPaise: Math.max(row.budgetPaise - spentPaise, 0),
+    configured: true,
+    preferredProvider: row.preferredProvider,
+  };
 }
 
 /**
@@ -113,10 +160,22 @@ export async function routeCompletion(merchantId: string, useCase: ModelUseCase,
   const budget = await getUseCaseBudgetStatus(merchantId, useCase);
   const wouldDegrade = !budget.configured || budget.remainingPaise <= 0;
 
-  const requestedModelId = input.groqModelOverride && isKnownModel(input.groqModelOverride) ? input.groqModelOverride : PREMIUM_MODEL_ID;
+  // A preferred provider only changes which model is requested when
+  // there's budget to spend on it — an exhausted or unconfigured use
+  // case always degrades to the cheapest known Groq tier regardless of
+  // provider preference, never to "the cheapest tier on the preferred
+  // provider," since that's not necessarily cheap at all.
+  const preferredModelId = budget.preferredProvider ? PREFERRED_PROVIDER_MODEL[budget.preferredProvider] : undefined;
+  const requestedModelId =
+    preferredModelId ?? (input.groqModelOverride && isKnownModel(input.groqModelOverride) ? input.groqModelOverride : PREMIUM_MODEL_ID);
   const modelIdToUse = wouldDegrade ? CHEAPEST_MODEL_ID : requestedModelId;
+  const providerToUse = wouldDegrade ? undefined : (providerForModel(modelIdToUse) as LlmProvider | undefined);
 
-  const result = await complete({ ...input, groqModelOverride: modelIdToUse });
+  const result = await complete({
+    ...input,
+    groqModelOverride: modelIdToUse,
+    provider: providerToUse === "nvidia" || providerToUse === "openrouter" || providerToUse === "zai" ? providerToUse : undefined,
+  });
 
   const usage = result.usage ?? { promptTokens: 0, completionTokens: 0 };
   const costPaise = isKnownModel(result.modelId) ? computeCallCostPaise(result.modelId, usage) : 0;

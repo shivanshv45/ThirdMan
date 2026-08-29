@@ -1,0 +1,1 @@
+ALTER TABLE "model_budgets" ADD COLUMN "preferred_provider" text;
