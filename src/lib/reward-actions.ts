@@ -1,5 +1,6 @@
 import { attemptMoneyAction } from "@/lib/gate";
 import { getRewardSettings, computeCoinsToIssue, coinsToValuePaise, maxRedeemableCoinsForPurchase, getCoinBalance, type RewardIdentity } from "@/lib/reward-coins";
+import { resolveRewardMultiplier, buildRuleContext } from "@/lib/reward-rules";
 
 /**
  * Orchestrates the two reward-coin money actions (Layer 6-5) through the
@@ -26,6 +27,13 @@ import { getRewardSettings, computeCoinsToIssue, coinsToValuePaise, maxRedeemabl
  * — passing the purchase's money_action id as the idempotency key means
  * a second call replays the first issuance's outcome rather than
  * crediting coins twice for one purchase.
+ *
+ * Layer 14-2: the base coin count is scaled by a merchant-configured
+ * reward rule's multiplier, if one matches this purchase's real order
+ * value/margin/returning-buyer signals (reward-rules.ts's
+ * resolveRewardMultiplier) — margin is computed from costPaise entirely
+ * within this call and never surfaces past the multiplier arithmetic
+ * itself; the coins credited are the only buyer-visible output.
  */
 export async function issueRewardCoinsForCapture(
   merchantId: string,
@@ -33,21 +41,28 @@ export async function issueRewardCoinsForCapture(
   purchaseMoneyActionId: string,
   capturedAmountPaise: number,
   identity: RewardIdentity,
+  variantId: string | null = null,
 ): Promise<void> {
   const settings = await getRewardSettings(merchantId);
   if (!settings) return;
 
-  const coins = computeCoinsToIssue(capturedAmountPaise, settings);
+  const baseCoins = computeCoinsToIssue(capturedAmountPaise, settings);
+  if (baseCoins <= 0) return;
+
+  const ctx = await buildRuleContext(merchantId, { id: purchaseMoneyActionId, agentId, amountPaise: capturedAmountPaise, variantId });
+  const { multiplierPermille, matchedDescription } = await resolveRewardMultiplier(merchantId, ctx);
+  const coins = Math.floor((baseCoins * multiplierPermille) / 1000);
   if (coins <= 0) return;
 
   const valuePaise = coinsToValuePaise(coins, settings);
+  const multiplierNote = matchedDescription ? ` (rule matched: ${matchedDescription})` : "";
 
   await attemptMoneyAction({
     agentId,
     merchantId,
     type: "reward_issue",
     amountPaise: valuePaise,
-    context: `Reward coins issued: ${coins} coins for a ₹${(capturedAmountPaise / 100).toFixed(2)} purchase`,
+    context: `Reward coins issued: ${coins} coins for a ₹${(capturedAmountPaise / 100).toFixed(2)} purchase${multiplierNote}`,
     idempotencyKey: `reward_issue:${purchaseMoneyActionId}`,
     rewardLedger: { coinsDelta: coins, reason: "purchase_issue", identity },
   });

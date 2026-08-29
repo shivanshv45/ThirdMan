@@ -42,9 +42,18 @@ export interface CompletionInput {
   groqModelOverride?: string;
 }
 
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+}
+
 export interface CompletionResult {
   text: string;
   provider: LlmProvider;
+  /** Real token counts as reported by the provider's own response — never estimated. Absent only if a provider genuinely omitted usage data. */
+  usage?: TokenUsage;
+  /** The model id that actually served this call — model-router.ts's real-cost bookkeeping keys off this, never the requested override. */
+  modelId: string;
 }
 
 function withTimeout<T>(label: string, promise: Promise<T>): Promise<T> {
@@ -59,11 +68,12 @@ function withTimeout<T>(label: string, promise: Promise<T>): Promise<T> {
   ]);
 }
 
-async function callGroq(input: CompletionInput): Promise<string> {
+async function callGroq(input: CompletionInput): Promise<{ text: string; usage?: TokenUsage; modelId: string }> {
+  const modelId = input.groqModelOverride ?? GROQ_MODEL;
   const completion = await withTimeout(
     "groq.chat.completions.create",
     groq.chat.completions.create({
-      model: input.groqModelOverride ?? GROQ_MODEL,
+      model: modelId,
       messages: [
         ...(input.systemPrompt
           ? [{ role: "system" as const, content: input.systemPrompt }]
@@ -75,10 +85,13 @@ async function callGroq(input: CompletionInput): Promise<string> {
 
   const text = completion.choices[0]?.message?.content;
   if (!text) throw new Error("Groq returned an empty completion");
-  return text;
+  const usage = completion.usage
+    ? { promptTokens: completion.usage.prompt_tokens, completionTokens: completion.usage.completion_tokens }
+    : undefined;
+  return { text, usage, modelId };
 }
 
-async function callGemini(input: CompletionInput): Promise<string> {
+async function callGemini(input: CompletionInput): Promise<{ text: string; usage?: TokenUsage; modelId: string }> {
   const model = genAI.getGenerativeModel({
     model: GEMINI_MODEL,
     ...(input.systemPrompt ? { systemInstruction: input.systemPrompt } : {}),
@@ -90,7 +103,9 @@ async function callGemini(input: CompletionInput): Promise<string> {
 
   const text = result.response.text();
   if (!text) throw new Error("Gemini returned an empty completion");
-  return text;
+  const usageMetadata = result.response.usageMetadata;
+  const usage = usageMetadata ? { promptTokens: usageMetadata.promptTokenCount, completionTokens: usageMetadata.candidatesTokenCount } : undefined;
+  return { text, usage, modelId: GEMINI_MODEL };
 }
 
 /**
@@ -101,16 +116,16 @@ async function callGemini(input: CompletionInput): Promise<string> {
 export async function complete(input: CompletionInput): Promise<CompletionResult> {
   if (input.needsHardReasoning) {
     try {
-      const text = await callGemini(input);
-      return { text, provider: "gemini" };
+      const result = await callGemini(input);
+      return { ...result, provider: "gemini" };
     } catch (err) {
       console.warn("[llm] Gemini failed, falling back to Groq:", err);
       // fall through to Groq below
     }
   }
 
-  const text = await callGroq(input);
-  return { text, provider: "groq" };
+  const result = await callGroq(input);
+  return { ...result, provider: "groq" };
 }
 
 /**
@@ -120,7 +135,7 @@ export async function complete(input: CompletionInput): Promise<CompletionResult
  */
 export async function completeStructured<T>(
   input: CompletionInput & { schema: z.ZodType<T>; schemaDescription: string },
-): Promise<{ data: T; provider: LlmProvider }> {
+): Promise<{ data: T; provider: LlmProvider; usage?: TokenUsage; modelId: string }> {
   const structuredPrompt = `${input.prompt}\n\nRespond with ONLY valid JSON matching this shape, no markdown fences, no commentary: ${input.schemaDescription}`;
 
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -128,7 +143,7 @@ export async function completeStructured<T>(
     try {
       const cleaned = result.text.trim().replace(/^```json\s*|\s*```$/g, "");
       const parsed = input.schema.parse(JSON.parse(cleaned));
-      return { data: parsed, provider: result.provider };
+      return { data: parsed, provider: result.provider, usage: result.usage, modelId: result.modelId };
     } catch (err) {
       if (attempt === 1) {
         throw new Error(

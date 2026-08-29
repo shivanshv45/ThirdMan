@@ -8,6 +8,7 @@ import { confirmCapture } from "@/lib/gate";
 import { confirmRecoveryLinkPaid } from "@/lib/recovery/sequencer";
 import { logAuditEntry } from "@/lib/audit";
 import { issueRewardCoinsForCapture } from "@/lib/reward-actions";
+import { fundTreasuryFromCapture } from "@/lib/treasury";
 import { enqueueWebhookEvent } from "@/lib/webhooks/enqueue";
 
 /**
@@ -178,9 +179,21 @@ async function handlePaymentCaptured(payload: unknown): Promise<void> {
   // check confirm the same payment.
   if (result.decision === "allow" && !moneyAction.holdOnly && moneyAction.agentId) {
     try {
-      await issueRewardCoinsForCapture(moneyAction.merchantId, moneyAction.agentId, moneyAction.id, moneyAction.amountPaise, { agentId: moneyAction.agentId });
+      await issueRewardCoinsForCapture(moneyAction.merchantId, moneyAction.agentId, moneyAction.id, moneyAction.amountPaise, { agentId: moneyAction.agentId }, moneyAction.variantId);
     } catch (err) {
       console.warn("[webhook] reward coin issuance failed:", err);
+    }
+  }
+
+  // Layer 14: fund the AI Treasury, mirroring the reward-coin issuance
+  // immediately above — same capture-only rule, same dedupe guard
+  // (treasury_ledger_capture_dedupe_idx) against this webhook and
+  // /api/checkout/verify both confirming the same payment.
+  if (result.decision === "allow" && !moneyAction.holdOnly) {
+    try {
+      await fundTreasuryFromCapture(moneyAction.merchantId, moneyAction.id, moneyAction.amountPaise);
+    } catch (err) {
+      console.warn("[webhook] treasury funding failed:", err);
     }
   }
 

@@ -516,3 +516,30 @@ export async function getDecisionCounts(merchantId: string): Promise<DecisionCou
   }
   return counts;
 }
+
+// --- Layer 14: the AI Treasury dashboard ---
+
+export interface TreasuryLedgerEntry {
+  id: string;
+  bucket: (typeof schema.treasuryLedgerBucketEnum.enumValues)[number];
+  amountPaise: number;
+  reason: (typeof schema.treasuryLedgerReasonEnum.enumValues)[number];
+  createdAt: Date;
+}
+
+/** Most recent treasury ledger rows, newest first — every figure on the dashboard traces back to a row from this table (CLAUDE.md's no-fabricated-data rule). */
+export async function getRecentTreasuryLedgerEntries(merchantId: string, limit = 30): Promise<TreasuryLedgerEntry[]> {
+  return db
+    .select({
+      id: schema.treasuryLedger.id,
+      bucket: schema.treasuryLedger.bucket,
+      amountPaise: schema.treasuryLedger.amountPaise,
+      reason: schema.treasuryLedger.reason,
+      createdAt: schema.treasuryLedger.createdAt,
+    })
+    .from(schema.treasuryLedger)
+    .where(eq(schema.treasuryLedger.merchantId, merchantId))
+    .orderBy(desc(schema.treasuryLedger.createdAt))
+    .limit(limit);
+}
+

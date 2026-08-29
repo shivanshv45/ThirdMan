@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "treasury_ledger_capture_dedupe_idx" ON "treasury_ledger" USING btree ("bucket","money_action_id") WHERE "treasury_ledger"."reason" = 'capture_allocation';

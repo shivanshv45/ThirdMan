@@ -176,6 +176,13 @@
       "when": 1788002286985,
       "tag": "0024_light_romulus",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1788002395975,
+      "tag": "0025_concerned_patriot",
+      "breakpoints": true
     }
   ]
 }

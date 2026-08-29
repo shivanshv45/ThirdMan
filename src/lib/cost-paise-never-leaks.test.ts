@@ -16,6 +16,9 @@ import { enqueueWebhookEvent } from "@/lib/webhooks/enqueue";
 import { encrypt } from "@/lib/crypto";
 import { formatPaise } from "@/lib/money";
 import { getOrCreateEmbedConfig } from "@/lib/embed";
+import { issueRewardCoinsForCapture, getRewardBalance } from "@/lib/reward-actions";
+import { createMerchantAuthoredRule } from "@/lib/reward-rules";
+import { fundTreasuryFromCapture, getTreasuryOverview } from "@/lib/treasury";
 
 /**
  * L5-8's required consolidated check: costPaise is internal-only
@@ -340,4 +343,67 @@ describe("costPaise never leaks into any agent-facing or public surface", () => 
     expect(JSON.stringify(config)).not.toMatch(String(COST_PAISE_MARKER));
     await db.delete(schema.embedConfigs).where(eq(schema.embedConfigs.merchantId, merchant.id));
   });
+
+  it("Layer 14: margin-aware reward issuance computes real margin from costPaise, but neither the coin balance, the treasury overview, nor a merchant-authored rule's compiled description ever surfaces the cost figure itself", async () => {
+    const { merchant, product, agent } = await setupMerchantWithAgent();
+    const [variant] = await db.select().from(schema.productVariants).where(eq(schema.productVariants.productId, product.id));
+
+    await db.insert(schema.merchantRewardSettings).values({ merchantId: merchant.id, paisePerCoin: 10, issueRatePermille: 100, maxRedemptionPercent: 50 });
+    const created = await createMerchantAuthoredRule(merchant.id, { conditions: [{ field: "marginPercent", operator: "gte", value: 10 }], multiplierPermille: 2000 }, 0);
+    expect(created.ok).toBe(true);
+    if (created.ok) {
+      const [ruleRow] = await db.select().from(schema.rewardRules).where(eq(schema.rewardRules.id, created.ruleId));
+      // marginPercent here is computed from pricePaise/costPaise
+      // (COST_PAISE_MARKER) but the RULE ITSELF only ever states a
+      // percent threshold — the description is the rule's own
+      // condition text, never the underlying cost figure.
+      expect(JSON.stringify(ruleRow)).not.toMatch(String(COST_PAISE_MARKER));
+    }
+
+    await db.insert(schema.spendCaps).values({
+      agentId: agent.id,
+      capPaise: 10_000_000,
+      spentPaise: 0,
+      perTransactionMaxPaise: 10_000_000,
+      windowStart: new Date(),
+      windowEnd: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      status: "active",
+    });
+
+    const [moneyAction] = await db
+      .insert(schema.moneyActions)
+      .values({ merchantId: merchant.id, agentId: agent.id, variantId: variant.id, quantity: 1, type: "order_create", amountPaise: variant.pricePaise, status: "captured" })
+      .returning();
+
+    await issueRewardCoinsForCapture(merchant.id, agent.id, moneyAction.id, variant.pricePaise, { agentId: agent.id }, variant.id);
+
+    const balance = await getRewardBalance(merchant.id, { agentId: agent.id });
+    expect(JSON.stringify(balance)).not.toMatch(String(COST_PAISE_MARKER));
+
+    await db.insert(schema.treasurySettings).values({ merchantId: merchant.id, allocationBasisPoints: 500, buyerShareBps: 4000, merchantShareBps: 4000, reserveShareBps: 2000, enabled: true });
+    await fundTreasuryFromCapture(merchant.id, moneyAction.id, variant.pricePaise);
+    const overview = await getTreasuryOverview(merchant.id);
+    expect(JSON.stringify(overview)).not.toMatch(String(COST_PAISE_MARKER));
+
+    // The reward-coin ledger entry itself and the audit trail's own
+    // reason string (the ONE place margin/multiplier context is allowed
+    // to appear, since audit_log is a merchant-facing surface, never
+    // buyer-facing) are checked too — the marker must not leak even there
+    // via an accidental full-row log, only the derived percent may.
+    const ledgerRows = await db.select().from(schema.rewardCoinLedger).where(eq(schema.rewardCoinLedger.merchantId, merchant.id));
+    expect(JSON.stringify(ledgerRows)).not.toMatch(String(COST_PAISE_MARKER));
+
+    await db.delete(schema.treasuryLedger).where(eq(schema.treasuryLedger.merchantId, merchant.id));
+    await db.delete(schema.treasurySettings).where(eq(schema.treasurySettings.merchantId, merchant.id));
+    await db.delete(schema.rewardCoinLedger).where(eq(schema.rewardCoinLedger.merchantId, merchant.id));
+    await db.delete(schema.rewardRules).where(eq(schema.rewardRules.merchantId, merchant.id));
+    // audit_log rows (this reward issuance's own money action, and
+    // treasury's fund event) reference money_actions — must clear
+    // before deleting the money_actions row itself, same FK-ordering
+    // discipline every other cleanup block in this codebase follows.
+    await db.delete(schema.auditLog).where(eq(schema.auditLog.moneyActionId, moneyAction.id));
+    await db.delete(schema.moneyActions).where(eq(schema.moneyActions.id, moneyAction.id));
+    await db.delete(schema.merchantRewardSettings).where(eq(schema.merchantRewardSettings.merchantId, merchant.id));
+    await db.delete(schema.spendCaps).where(eq(schema.spendCaps.agentId, agent.id));
+  }, 20_000);
 });

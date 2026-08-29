@@ -138,23 +138,44 @@ export async function fundTreasuryFromCapture(merchantId: string, purchaseMoneyA
   const split = computeAllocationSplit(capturedAmountPaise, settings);
   if (split.contributionPaise <= 0) return;
 
-  await db.transaction(async (tx) => {
-    const rows: { bucket: (typeof schema.treasuryLedgerBucketEnum.enumValues)[number]; amountPaise: number }[] = [
-      { bucket: "buyer_credits", amountPaise: split.buyerPaise },
-      { bucket: "merchant_ai_budget", amountPaise: split.merchantPaise },
-      { bucket: "reserve", amountPaise: split.reservePaise },
-    ];
-    for (const row of rows) {
-      if (row.amountPaise <= 0) continue;
-      await tx.insert(schema.treasuryLedger).values({
+  // Idempotency guard: the checkout-signature path and the payment
+  // webhook both call this for the same capture (the same "fastest
+  // signal wins, second is a no-op" contract confirmCapture itself
+  // keeps — see gate.ts). treasury_ledger_capture_dedupe_idx (a partial
+  // unique index on (bucket, moneyActionId) where reason =
+  // 'capture_allocation') is the real guarantee against a race; this
+  // onConflictDoNothing is what makes a second call land as a silent
+  // no-op instead of a constraint-violation error, same shape as
+  // webhook_deliveries' and notification_deliveries' own dedupe (see
+  // FAILURES.md — the partial index's WHERE predicate must be repeated
+  // in the target here or Postgres rejects the insert outright).
+  const rows: { bucket: (typeof schema.treasuryLedgerBucketEnum.enumValues)[number]; amountPaise: number }[] = [
+    { bucket: "buyer_credits", amountPaise: split.buyerPaise },
+    { bucket: "merchant_ai_budget", amountPaise: split.merchantPaise },
+    { bucket: "reserve", amountPaise: split.reservePaise },
+  ];
+
+  let fundedAny = false;
+  for (const row of rows) {
+    if (row.amountPaise <= 0) continue;
+    const inserted = await db
+      .insert(schema.treasuryLedger)
+      .values({
         merchantId,
         bucket: row.bucket,
         amountPaise: row.amountPaise,
         reason: "capture_allocation",
         moneyActionId: purchaseMoneyActionId,
-      });
-    }
-  });
+      })
+      .onConflictDoNothing({
+        target: [schema.treasuryLedger.bucket, schema.treasuryLedger.moneyActionId],
+        where: sql`${schema.treasuryLedger.reason} = 'capture_allocation'`,
+      })
+      .returning({ id: schema.treasuryLedger.id });
+    if (inserted.length > 0) fundedAny = true;
+  }
+
+  if (!fundedAny) return;
 
   await logAuditEntry({
     merchantId,

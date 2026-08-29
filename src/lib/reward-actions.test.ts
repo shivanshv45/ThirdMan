@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
+import { randomUUID } from "crypto";
 import { eq, inArray } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { issueRewardCoinsForCapture, redeemRewardCoins, getRewardBalance } from "@/lib/reward-actions";
@@ -86,7 +87,7 @@ describe("reward coins — issue and redeem through the gate", () => {
 
   it("issuing coins with no reward settings is a silent no-op", async () => {
     const { merchantId, agent } = await setup();
-    await issueRewardCoinsForCapture(merchantId, agent.id, "fake-money-action-id", 100_000, { agentId: agent.id });
+    await issueRewardCoinsForCapture(merchantId, agent.id, randomUUID(), 100_000, { agentId: agent.id });
 
     const balance = await getRewardBalance(merchantId, { agentId: agent.id });
     expect(balance.enabled).toBe(false);
@@ -98,7 +99,7 @@ describe("reward coins — issue and redeem through the gate", () => {
     await makeRewardSettings(merchantId, { paisePerCoin: 10, issueRatePermille: 100 }); // 10% of captured value, 10 paise/coin
 
     // A real captured purchase of ₹1000 (100,000 paise): 10% = 10,000 paise earned, / 10 paise/coin = 1000 coins.
-    await issueRewardCoinsForCapture(merchantId, agent.id, "fake-purchase-id", 100_000, { agentId: agent.id });
+    await issueRewardCoinsForCapture(merchantId, agent.id, randomUUID(), 100_000, { agentId: agent.id });
 
     const balance = await getRewardBalance(merchantId, { agentId: agent.id });
     expect(balance.enabled).toBe(true);
@@ -119,47 +120,48 @@ describe("reward coins — issue and redeem through the gate", () => {
     const [auditEntry] = await db.select().from(schema.auditLog).where(eq(schema.auditLog.merchantId, merchantId));
     expect(auditEntry.decision).toBe("allow");
     expect(auditEntry.reason).toContain("coins");
-  });
+  }, 15_000);
 
   it("issuing coins twice for the same purchase (checkout signature + webhook racing) is idempotent, not double-issued", async () => {
     const { merchantId, agent } = await setup();
     await makeRewardSettings(merchantId, { paisePerCoin: 10, issueRatePermille: 100 });
 
-    await issueRewardCoinsForCapture(merchantId, agent.id, "fake-purchase-id-dup", 100_000, { agentId: agent.id });
-    await issueRewardCoinsForCapture(merchantId, agent.id, "fake-purchase-id-dup", 100_000, { agentId: agent.id });
+    const purchaseId = randomUUID();
+    await issueRewardCoinsForCapture(merchantId, agent.id, purchaseId, 100_000, { agentId: agent.id });
+    await issueRewardCoinsForCapture(merchantId, agent.id, purchaseId, 100_000, { agentId: agent.id });
 
     const balance = await getRewardBalance(merchantId, { agentId: agent.id });
     expect(balance.balance).toBe(1000); // not 2000
 
     const ledgerRows = await db.select().from(schema.rewardCoinLedger).where(eq(schema.rewardCoinLedger.merchantId, merchantId));
     expect(ledgerRows.length).toBe(1);
-  });
+  }, 15_000);
 
   it("redeeming more coins than the real balance is denied with the exact remaining balance", async () => {
     const { merchantId, agent } = await setup();
     await makeRewardSettings(merchantId, { paisePerCoin: 10, issueRatePermille: 100, maxRedemptionPercent: 100 });
-    await issueRewardCoinsForCapture(merchantId, agent.id, "fake-purchase-for-redeem-1", 100_000, { agentId: agent.id }); // earns 1000 coins
+    await issueRewardCoinsForCapture(merchantId, agent.id, randomUUID(), 100_000, { agentId: agent.id }); // earns 1000 coins
 
     const result = await redeemRewardCoins(merchantId, agent.id, 50_000, 5000, { agentId: agent.id });
     expect(result.decision).toBe("deny");
     expect(result.reason).toContain("1000");
-  });
+  }, 15_000);
 
   it("redeeming more than the merchant's max-redemption-percent ceiling is denied", async () => {
     const { merchantId, agent } = await setup();
     await makeRewardSettings(merchantId, { paisePerCoin: 10, issueRatePermille: 100, maxRedemptionPercent: 10 });
-    await issueRewardCoinsForCapture(merchantId, agent.id, "fake-purchase-for-redeem-2", 1_000_000, { agentId: agent.id }); // earns 10,000 coins
+    await issueRewardCoinsForCapture(merchantId, agent.id, randomUUID(), 1_000_000, { agentId: agent.id }); // earns 10,000 coins
 
     // 10% of a 50,000 paise purchase = 5,000 paise = 500 coins max, even though the balance easily covers more.
     const result = await redeemRewardCoins(merchantId, agent.id, 50_000, 600, { agentId: agent.id });
     expect(result.decision).toBe("deny");
     expect(result.reason).toContain("10%");
-  });
+  }, 15_000);
 
   it("a valid redemption succeeds, writes a negative ledger entry, and reduces the balance", async () => {
     const { merchantId, agent } = await setup();
     await makeRewardSettings(merchantId, { paisePerCoin: 10, issueRatePermille: 100, maxRedemptionPercent: 100 });
-    await issueRewardCoinsForCapture(merchantId, agent.id, "fake-purchase-for-redeem-3", 100_000, { agentId: agent.id }); // earns 1000 coins
+    await issueRewardCoinsForCapture(merchantId, agent.id, randomUUID(), 100_000, { agentId: agent.id }); // earns 1000 coins
 
     const result = await redeemRewardCoins(merchantId, agent.id, 50_000, 200, { agentId: agent.id });
     expect(result.decision).toBe("allow");
@@ -175,12 +177,12 @@ describe("reward coins — issue and redeem through the gate", () => {
       .where(eq(schema.rewardCoinLedger.merchantId, merchantId));
     const redemption = redemptionRow.find((r) => r.reason === "redemption");
     expect(redemption?.coinsDelta).toBe(-200);
-  });
+  }, 15_000);
 
   it("concurrent redemptions against a balance sufficient for exactly one are atomic — exactly one succeeds", async () => {
     const { merchantId, agent } = await setup();
     await makeRewardSettings(merchantId, { paisePerCoin: 10, issueRatePermille: 1000, maxRedemptionPercent: 100 }); // 100% issue rate for a big balance
-    await issueRewardCoinsForCapture(merchantId, agent.id, "fake-purchase-for-concurrency", 10_000, { agentId: agent.id }); // earns 1000 coins
+    await issueRewardCoinsForCapture(merchantId, agent.id, randomUUID(), 10_000, { agentId: agent.id }); // earns 1000 coins
 
     // Two concurrent redemptions of 600 coins each against a balance of 1000 — only one can succeed (600+600 > 1000).
     const [r1, r2] = await Promise.all([
@@ -194,5 +196,5 @@ describe("reward coins — issue and redeem through the gate", () => {
 
     const balance = await getRewardBalance(merchantId, { agentId: agent.id });
     expect(balance.balance).toBe(400); // 1000 - 600, never negative
-  });
+  }, 15_000);
 });

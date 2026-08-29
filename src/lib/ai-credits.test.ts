@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
+import { randomUUID } from "crypto";
 import { eq, inArray } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { redeemAiCredit, getEnabledTiers } from "@/lib/ai-credits";
@@ -116,7 +117,7 @@ describe("redeemAiCredit", () => {
     await makeRewardSettings(merchant.id);
     const tier = await makeTier(merchant.id, 20);
 
-    await issueRewardCoinsForCapture(merchant.id, agent.id, "fake-purchase-for-ai-credit-test", 500_000, { agentId: agent.id });
+    await issueRewardCoinsForCapture(merchant.id, agent.id, randomUUID(), 500_000, { agentId: agent.id });
     const before = await getRewardBalance(merchant.id, { agentId: agent.id });
     expect(before.balance).toBeGreaterThanOrEqual(20);
 
@@ -151,7 +152,7 @@ describe("redeemAiCredit", () => {
       .values({ merchantId: merchant.id, modelId: "not-a-real-groq-model-id", displayName: "Broken tier (test fixture)", provider: "groq", coinsPerRequest: 15 })
       .returning();
 
-    await issueRewardCoinsForCapture(merchant.id, agent.id, "fake-purchase-for-refund-test", 500_000, { agentId: agent.id });
+    await issueRewardCoinsForCapture(merchant.id, agent.id, randomUUID(), 500_000, { agentId: agent.id });
     const before = await getRewardBalance(merchant.id, { agentId: agent.id });
     expect(before.balance).toBeGreaterThanOrEqual(15);
 

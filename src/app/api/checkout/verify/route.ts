@@ -7,6 +7,7 @@ import { decrypt } from "@/lib/crypto";
 import { confirmCapture } from "@/lib/gate";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 import { issueRewardCoinsForCapture } from "@/lib/reward-actions";
+import { fundTreasuryFromCapture } from "@/lib/treasury";
 import { embedCorsHeaders, handleEmbedPreflight, resolveEmbedRequest } from "@/lib/embed-cors";
 import { enqueueWebhookEvent } from "@/lib/webhooks/enqueue";
 
@@ -98,9 +99,22 @@ export async function POST(req: NextRequest) {
   // id) protects against the webhook also triggering this.
   if (result.decision === "allow" && !moneyAction.holdOnly && moneyAction.agentId) {
     try {
-      await issueRewardCoinsForCapture(moneyAction.merchantId, moneyAction.agentId, moneyAction.id, moneyAction.amountPaise, { agentId: moneyAction.agentId });
+      await issueRewardCoinsForCapture(moneyAction.merchantId, moneyAction.agentId, moneyAction.id, moneyAction.amountPaise, { agentId: moneyAction.agentId }, moneyAction.variantId);
     } catch (err) {
       console.warn("[checkout/verify] reward coin issuance failed:", err);
+    }
+  }
+
+  // Layer 14: fund the AI Treasury from this same genuine capture, never
+  // a hold — same reasoning and the same idempotency-key protection
+  // (fundTreasuryFromCapture is a no-op if treasury_settings is absent
+  // or disabled) as the reward-coin issuance immediately above. Never
+  // lets a failure here affect the checkout's own success response.
+  if (result.decision === "allow" && !moneyAction.holdOnly) {
+    try {
+      await fundTreasuryFromCapture(moneyAction.merchantId, moneyAction.id, moneyAction.amountPaise);
+    } catch (err) {
+      console.warn("[checkout/verify] treasury funding failed:", err);
     }
   }
 

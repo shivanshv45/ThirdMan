@@ -19,6 +19,7 @@ import {
   Settings,
   ShieldAlert,
   FlaskConical,
+  Landmark,
   type LucideIcon,
 } from "lucide-react";
 
@@ -34,6 +35,7 @@ const ICONS: Record<string, LucideIcon> = {
   "/dashboard/offers": Tag,
   "/dashboard/negotiations": MessagesSquare,
   "/dashboard/rewards": Coins,
+  "/dashboard/treasury": Landmark,
   "/dashboard/explain": ScrollText,
   "/dashboard/readiness": Gauge,
   "/dashboard/guardian": ShieldAlert,

@@ -1607,24 +1607,39 @@ export const treasuryLedgerReasonEnum = pgEnum("treasury_ledger_reason", [
 // a mutable column — same "one number derived from evidence" discipline
 // as every other ledger in this codebase. amountPaise is signed:
 // positive on a capture funding the pool, negative on a draw.
-export const treasuryLedger = pgTable("treasury_ledger", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  merchantId: uuid("merchant_id")
-    .notNull()
-    .references(() => merchants.id),
-  bucket: treasuryLedgerBucketEnum("bucket").notNull(),
-  amountPaise: integer("amount_paise").notNull(),
-  reason: treasuryLedgerReasonEnum("reason").notNull(),
-  // The captured purchase that funded this row (capture_allocation) or
-  // the spend it paid for (model_spend/buyer_credit_funding) — nullable
-  // since not every draw traces to one specific money_actions row (a
-  // model call charged against the merchant budget has no Razorpay
-  // counterpart of its own).
-  moneyActionId: uuid("money_action_id").references(() => moneyActions.id),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const treasuryLedger = pgTable(
+  "treasury_ledger",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id),
+    bucket: treasuryLedgerBucketEnum("bucket").notNull(),
+    amountPaise: integer("amount_paise").notNull(),
+    reason: treasuryLedgerReasonEnum("reason").notNull(),
+    // The captured purchase that funded this row (capture_allocation) or
+    // the spend it paid for (model_spend/buyer_credit_funding) — nullable
+    // since not every draw traces to one specific money_actions row (a
+    // model call charged against the merchant budget has no Razorpay
+    // counterpart of its own).
+    moneyActionId: uuid("money_action_id").references(() => moneyActions.id),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // Dedupes a capture's allocation across the same race the reward-
+    // coin ledger and webhook_deliveries both already guard against —
+    // the checkout-signature path and the payment webhook can both
+    // observe "allow" for the same capture. Partial: only
+    // capture_allocation rows have exactly one row per (bucket,
+    // moneyActionId); model_spend/buyer_credit_funding draws have no
+    // such uniqueness requirement.
+    uniqueIndex("treasury_ledger_capture_dedupe_idx")
+      .on(table.bucket, table.moneyActionId)
+      .where(sql`${table.reason} = 'capture_allocation'`),
+  ],
+);
 
 // L14-2/L14-3: margin-aware reward multipliers, expressed as a small
 // merchant-authored (or LLM-drafted, merchant-approved) rule AST rather
