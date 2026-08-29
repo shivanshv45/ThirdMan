@@ -8,6 +8,7 @@ import { resolveOffer, loadOfferItems, type ResolvedOffer } from "@/lib/discount
 import { resolveNegotiation, markNegotiationRedeemed, type ResolvedNegotiation } from "@/lib/negotiation";
 import { resolveCartForCheckout, snapshotCartPurchase, loadCartPurchaseItems, type ResolvedCart } from "@/lib/cart";
 import { enqueueWebhookEvent } from "@/lib/webhooks/enqueue";
+import { evaluateAndTransition } from "@/lib/guardian";
 
 /**
  * Loads and decrypts a merchant's own Razorpay credentials. The gate is
@@ -412,6 +413,19 @@ async function checkBounds(
     return {
       reason: `Denied — agent "${agent.name}" is ${agent.status}, not active. Revoked agents can never transact.`,
       boundApplied: `agent_status:${agent.id}`,
+    };
+  }
+
+  // Layer 13-4: the Runtime Guardian is a BOUND, not a passive observer —
+  // a suspended/revoked agent denies here, before budget is ever
+  // reserved. evaluateAndTransition also runs inline (not just on the
+  // periodic sweep) so a breach is caught on the very request that
+  // trips it, not only on the next cron tick.
+  const guardianResult = await evaluateAndTransition(agent.id);
+  if (guardianResult.state === "suspended" || guardianResult.state === "revoked") {
+    return {
+      reason: `Denied — agent "${agent.name}" is ${guardianResult.state} by the Runtime Guardian${guardianResult.transitioned ? `: ${guardianResult.evaluation.reason}` : ", pending merchant review."}`,
+      boundApplied: `guardian_state:${agent.id}`,
     };
   }
 

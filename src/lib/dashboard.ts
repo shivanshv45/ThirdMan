@@ -13,6 +13,8 @@ export interface AgentWithCap {
   id: string;
   name: string;
   status: (typeof schema.agentStatusEnum.enumValues)[number];
+  mandateRequired: boolean;
+  capabilities: (typeof schema.agentCapabilityEnum.enumValues)[number][];
   cap: {
     id: string;
     capPaise: number;
@@ -51,12 +53,28 @@ export async function getAgentsWithCaps(merchantId: string): Promise<AgentWithCa
     }
   }
 
+  // Layer 13-2: every agent's granted capabilities, one query rather than
+  // one per row — same batching discipline as allCaps above.
+  const allCapabilities = await db
+    .select()
+    .from(schema.agentCapabilities)
+    .where(inArray(schema.agentCapabilities.agentId, agents.map((a) => a.id)));
+
+  const capabilitiesByAgentId = new Map<string, (typeof schema.agentCapabilityEnum.enumValues)[number][]>();
+  for (const row of allCapabilities) {
+    const list = capabilitiesByAgentId.get(row.agentId) ?? [];
+    list.push(row.capability);
+    capabilitiesByAgentId.set(row.agentId, list);
+  }
+
   return agents.map((agent) => {
     const cap = latestCapByAgentId.get(agent.id);
     return {
       id: agent.id,
       name: agent.name,
       status: agent.status,
+      mandateRequired: agent.mandateRequired,
+      capabilities: capabilitiesByAgentId.get(agent.id) ?? [],
       cap: cap
         ? {
             id: cap.id,
@@ -75,6 +93,45 @@ export async function getAgentsWithCaps(merchantId: string): Promise<AgentWithCa
 
 export async function getAuditTrail(merchantId: string, limit = 100) {
   return getRecentAuditEntries(merchantId, limit);
+}
+
+/**
+ * Layer 13-4: every agent belonging to this merchant currently
+ * throttled or suspended, with the transition that put it there — the
+ * incident list a merchant reads to decide whether to re-arm. Agents in
+ * "normal" state are omitted; this is an incident view, not a status
+ * board for every agent (that's /dashboard/agents).
+ */
+export async function getGuardianIncidents(merchantId: string) {
+  const rows = await db
+    .select({
+      agentId: schema.agents.id,
+      agentName: schema.agents.name,
+      state: schema.agentGuardianState.state,
+      lastSignal: schema.agentGuardianState.lastSignal,
+      lastObservedValue: schema.agentGuardianState.lastObservedValue,
+      lastBaselineValue: schema.agentGuardianState.lastBaselineValue,
+      updatedAt: schema.agentGuardianState.updatedAt,
+    })
+    .from(schema.agentGuardianState)
+    .innerJoin(schema.agents, eq(schema.agents.id, schema.agentGuardianState.agentId))
+    .where(and(eq(schema.agents.merchantId, merchantId), sql`${schema.agentGuardianState.state} != 'normal'`))
+    .orderBy(desc(schema.agentGuardianState.updatedAt));
+
+  return rows;
+}
+
+/** The full transition history for one agent — the transcript behind an incident, same "re-check ownership independently" discipline as getTranscript()/getDecisionForMoneyAction(). */
+export async function getGuardianTransitions(merchantId: string, agentId: string) {
+  const [agent] = await db.select({ id: schema.agents.id }).from(schema.agents).where(and(eq(schema.agents.id, agentId), eq(schema.agents.merchantId, merchantId)));
+  if (!agent) return [];
+
+  return db
+    .select()
+    .from(schema.guardianTransitions)
+    .where(eq(schema.guardianTransitions.agentId, agentId))
+    .orderBy(desc(schema.guardianTransitions.createdAt))
+    .limit(50);
 }
 
 /**

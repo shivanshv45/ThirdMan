@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { getSessionMerchant } from "@/lib/auth";
-import { getPendingEscalations } from "@/lib/dashboard";
+import { getPendingEscalations, getGuardianIncidents } from "@/lib/dashboard";
 import { logout } from "./actions";
 import { SidebarNav, type NavGroup } from "./sidebar-nav";
 import { Reveal } from "@/components/ui";
@@ -10,6 +10,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
   if (!merchant) redirect("/login");
 
   const escalations = await getPendingEscalations(merchant.id);
+  const guardianIncidents = await getGuardianIncidents(merchant.id);
 
   const groups: NavGroup[] = [
     {
@@ -41,6 +42,15 @@ export default async function DashboardLayout({ children }: { children: React.Re
       items: [
         { href: "/dashboard/explain", label: "Decisions" },
         { href: "/dashboard/readiness", label: "Readiness" },
+        {
+          href: "/dashboard/guardian",
+          label: "Guardian",
+          badge: guardianIncidents.length,
+          badgeTooltip: guardianIncidents.length
+            ? `${guardianIncidents.length} agent${guardianIncidents.length === 1 ? "" : "s"} throttled or suspended`
+            : undefined,
+        },
+        { href: "/dashboard/preflight", label: "Preflight" },
       ],
     },
     {

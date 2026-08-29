@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
-import { authenticateAgent, extractBearerKey } from "@/lib/agent-auth";
+import { authenticateAgent, extractBearerKey, requireCapability } from "@/lib/agent-auth";
 import { attemptMoneyAction } from "@/lib/gate";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { verifyPaymentMandate } from "@/lib/mandates";
 
 // Keyed by agent id, not IP — an authenticated agent can legitimately
 // call this from a shared or rotating IP, and the spend cap already
@@ -33,6 +34,14 @@ const purchaseRequestSchema = z
     idempotencyKey: z.string().min(1).max(200).optional(),
     /** Escrow (Layer 4-5): authorise the payment but don't auto-capture it — held until the merchant releases or refunds it. */
     holdOnly: z.boolean().optional(),
+    /**
+     * Layer 13-3: the Payment Mandate's checkout binding — the exact
+     * Checkout JWT the merchant signed for this cart, obtained after the
+     * agent got human approval. Required only when the calling agent has
+     * mandateRequired set; omitted entirely for agents that don't opt in,
+     * so existing demo flows are unaffected.
+     */
+    checkoutMandateJwt: z.string().min(1).optional(),
   })
   .refine((v) => v.variantId !== undefined || (v.amountPaise !== undefined && v.context !== undefined), {
     message: "either variantId, or both amountPaise and context, is required",
@@ -47,6 +56,13 @@ export async function POST(req: NextRequest) {
   const agent = await authenticateAgent(extractBearerKey(req.headers.get("authorization")));
   if (!agent) {
     return NextResponse.json({ error: "invalid or missing agent API key" }, { status: 401 });
+  }
+
+  if (!(await requireCapability(agent, "purchase:create"))) {
+    return NextResponse.json(
+      { error: "This agent does not hold the purchase:create capability." },
+      { status: 403 },
+    );
   }
 
   const rateLimit = checkRateLimit(`agent-purchase:${agent.id}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
@@ -69,7 +85,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "invalid request body", details: parsed.error.flatten() }, { status: 400 });
   }
 
-  const { variantId, quantity, idempotencyKey, holdOnly } = parsed.data;
+  const { variantId, quantity, idempotencyKey, holdOnly, checkoutMandateJwt } = parsed.data;
   let { amountPaise, context } = parsed.data;
 
   if (variantId) {
@@ -83,6 +99,28 @@ export async function POST(req: NextRequest) {
     // mismatch, rather than silently overwritten here.
     context ??= `Agent purchase: ${variant.sku}`;
     amountPaise ??= variant.pricePaise * (quantity ?? 1);
+  }
+
+  // Layer 13-3: mandate verification runs BEFORE attemptMoneyAction (and
+  // therefore before checkBounds) whenever this agent has opted in — a
+  // failing mandate denies without the gate, the risk layer, or a model
+  // ever being consulted, per the plan's "the demo this unlocks."
+  if (agent.mandateRequired) {
+    if (!checkoutMandateJwt) {
+      return NextResponse.json(
+        { decision: "deny", reason: "Denied — this agent requires a signed Payment Mandate (checkoutMandateJwt) for every purchase, and none was presented." },
+        { status: 200 },
+      );
+    }
+    const verification = await verifyPaymentMandate({
+      merchantId: agent.merchantId,
+      agentId: agent.id,
+      checkoutJwt: checkoutMandateJwt,
+      assertedAmountPaise: amountPaise!,
+    });
+    if (!verification.ok) {
+      return NextResponse.json({ decision: "deny", reason: verification.reason }, { status: 200 });
+    }
   }
 
   const result = await attemptMoneyAction({

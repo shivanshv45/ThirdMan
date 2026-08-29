@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { authenticateAgent, extractBearerKey } from "@/lib/agent-auth";
+import { authenticateAgent, extractBearerKey, requireCapability } from "@/lib/agent-auth";
 import { getPublicCatalogue } from "@/lib/storefront-catalogue";
 
 /**
@@ -14,6 +14,10 @@ export async function GET(req: NextRequest) {
   const agent = await authenticateAgent(extractBearerKey(req.headers.get("authorization")));
   if (!agent) {
     return NextResponse.json({ error: "invalid or missing agent API key" }, { status: 401 });
+  }
+
+  if (!(await requireCapability(agent, "products:read"))) {
+    return NextResponse.json({ error: "This agent does not hold the products:read capability." }, { status: 403 });
   }
 
   const products = await getPublicCatalogue(agent.merchantId);

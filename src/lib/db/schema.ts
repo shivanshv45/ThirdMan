@@ -144,6 +144,16 @@ export const merchants = pgTable("merchants", {
   // "iv:tag:ciphertext", base64 segments. Decrypted only in src/lib/crypto.ts.
   razorpayKeyIdEncrypted: text("razorpay_key_id_encrypted"),
   razorpayKeySecretEncrypted: text("razorpay_key_secret_encrypted"),
+  // Layer 13-3: the merchant's own ECDSA P-256 signing key for AP2
+  // Checkout Mandates. Both nullable — generated lazily on first mandate
+  // use (mandates.ts's getOrCreateMandateKeypair), so an existing
+  // merchant is unaffected until they actually transact with mandates.
+  // Private key AES-256-GCM encrypted at rest, same crypto.ts helper and
+  // format as the Razorpay credentials above. Public key stored
+  // plaintext — any counterparty must be able to verify a signature
+  // without a secret.
+  mandateSigningKeyEncrypted: text("mandate_signing_key_encrypted"),
+  mandatePublicKey: text("mandate_public_key"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -282,6 +292,11 @@ export const agents = pgTable("agents", {
   // Hash of the agent's API key. The raw key is never stored.
   apiKeyHash: text("api_key_hash").notNull().unique(),
   status: agentStatusEnum("status").notNull().default("active"),
+  // Layer 13-3: opt-in per agent, so existing demo flows keep working
+  // while the mandate path is exercised — false means purchase requests
+  // from this agent need no mandate at all (today's behavior, unchanged).
+  // A merchant flips this on per-agent once satisfied with the flow.
+  mandateRequired: boolean("mandate_required").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -1363,6 +1378,171 @@ export const merchantAlertSettings = pgTable("merchant_alert_settings", {
   // it summarises several).
   lastDigestSentAt: timestamp("last_digest_sent_at", { withTimezone: true }),
   updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// --- Layer 13: authorization, supervision, and proof ---
+// See plans/layer-13-authorization-supervision-proof.md. Three additions
+// to the trust core: capability scoping (authentication is not
+// authorization), AP2 mandate verification (proof a human authorized
+// this specific checkout), and the Runtime Guardian (is this agent
+// behaving normally right now). None of this replaces gate.ts's existing
+// bound arithmetic — every check here composes BEFORE checkBounds runs.
+
+// L13-2: a closed set of capabilities, queryable and constrained by the
+// database rather than a jsonb blob a caller could shape freely. Refunds
+// and payouts are deliberately NOT in this enum at all — no agent can
+// ever hold them, a stronger statement than granting-then-revoking. See
+// DECISIONS.md.
+export const agentCapabilityEnum = pgEnum("agent_capability", [
+  "products:read",
+  "policy:read",
+  "offers:read",
+  "rewards:read",
+  "rewards:redeem",
+  "negotiation:create",
+  "purchase:create",
+]);
+
+// One row per (agent, capability) granted. A capability not present here
+// is denied — deny by default, same discipline as merchant_policies'
+// "absence is real, not a permissive default." Existing agents are
+// backfilled at migration time with the set matching what they could
+// already do (see drizzle/0023's data migration), never left empty.
+export const agentCapabilities = pgTable(
+  "agent_capabilities",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    capability: agentCapabilityEnum("capability").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [uniqueIndex("agent_capabilities_agent_capability_idx").on(table.agentId, table.capability)],
+);
+
+// L13-3: AP2 mandate verification. A documented subset — the Checkout
+// Mandate and Payment Mandate verification path, as ES256-signed JWTs —
+// not the full W3C Verifiable Credential / SD-JWT stack. See
+// DECISIONS.md for the scoping and mandates.ts for why ECDSA P-256, not
+// Ed25519 (the AP2 spec forbids a deterministic signature scheme here:
+// it would enable rainbow-table attacks against checkout_hash).
+
+export const checkoutMandateStatusEnum = pgEnum("checkout_mandate_status", [
+  "issued",
+  "consumed",
+  "expired",
+]);
+
+// One row per Checkout JWT the merchant has signed for an agent's cart.
+// jwt is the exact signed token — verification always re-derives
+// checkoutHash from THIS value, never trusts a caller-supplied hash.
+// status transitions issued -> consumed exactly once (replay
+// protection — see mandates.ts's verifyPaymentMandate) or -> expired on
+// a stale redemption attempt.
+export const checkoutMandates = pgTable("checkout_mandates", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  merchantId: uuid("merchant_id")
+    .notNull()
+    .references(() => merchants.id),
+  agentId: uuid("agent_id")
+    .notNull()
+    .references(() => agents.id),
+  jwt: text("jwt").notNull(),
+  // SHA-256 of jwt, hex — stored so a Payment Mandate's own checkout_hash
+  // claim can be compared without re-hashing the JWT on every lookup.
+  checkoutHash: text("checkout_hash").notNull(),
+  totalPaise: integer("total_paise").notNull(),
+  status: checkoutMandateStatusEnum("status").notNull().default("issued"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const mandateVerificationOutcomeEnum = pgEnum("mandate_verification_outcome", [
+  "verified",
+  "failed",
+]);
+
+// Every verification attempt, pass or fail — the evidence a merchant (or
+// a judge) reads to see exactly which deterministic check ran and what
+// it found. Mirrors offer_decisions' "one row per run, not just per
+// success" discipline.
+export const mandateVerifications = pgTable("mandate_verifications", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  merchantId: uuid("merchant_id")
+    .notNull()
+    .references(() => merchants.id),
+  checkoutMandateId: uuid("checkout_mandate_id").references(() => checkoutMandates.id),
+  outcome: mandateVerificationOutcomeEnum("outcome").notNull(),
+  // Which of the six deterministic steps failed, e.g.
+  // "checkout_hash_mismatch" | "signature_invalid" | "expired" |
+  // "already_consumed" | "amount_mismatch" | "constraint_violated".
+  // Free text, not an enum — mandates.ts owns the closed list in code,
+  // the same choice notification_deliveries.notificationType makes.
+  failureReason: text("failure_reason"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// L13-4: the Runtime Guardian. Supervision — is this agent behaving
+// normally right now — computed entirely from tables this codebase
+// already owns (money_actions, audit_log, ai_credit_redemptions). No new
+// telemetry source, no model consulted: "is this anomalous" is
+// arithmetic against a rolling baseline, never a judgment call.
+export const guardianStateEnum = pgEnum("guardian_state", [
+  "normal",
+  "throttled",
+  "suspended",
+  "revoked",
+]);
+
+// Current state per agent — the row checkBounds reads to deny outright
+// when an agent is suspended/revoked (see gate.ts's resolveGuardianBound).
+// One row per agent, created lazily on first evaluation, "normal" until
+// a real breach moves it.
+export const agentGuardianState = pgTable("agent_guardian_state", {
+  agentId: uuid("agent_id")
+    .primaryKey()
+    .references(() => agents.id),
+  state: guardianStateEnum("state").notNull().default("normal"),
+  // The signal that most recently changed state, and its observed vs.
+  // baseline value — what a merchant reads on the incident view without
+  // having to reconstruct it from guardian_transitions.
+  lastSignal: text("last_signal"),
+  lastObservedValue: text("last_observed_value"),
+  lastBaselineValue: text("last_baseline_value"),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// Append-only history of every state change — the transcript a merchant
+// reads to understand not just "suspended" but why, same reasoning
+// negotiation_turns exists instead of relying on audit_log alone (a
+// dedicated table survives even if a single audit write were ever
+// dropped, and is the natural home for a strictly ordered transcript).
+export const guardianTransitions = pgTable("guardian_transitions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  agentId: uuid("agent_id")
+    .notNull()
+    .references(() => agents.id),
+  fromState: guardianStateEnum("from_state").notNull(),
+  toState: guardianStateEnum("to_state").notNull(),
+  // Which signal triggered this transition, e.g. "denied_ratio" |
+  // "retry_count" | "escalation_rate" | "transaction_velocity" |
+  // "ai_spend_rate" | "merchant_rearm". Free text, not an enum — same
+  // reasoning as mandateVerifications.failureReason.
+  triggerSignal: text("trigger_signal").notNull(),
+  observedValue: text("observed_value").notNull(),
+  baselineValue: text("baseline_value"),
+  createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
 });

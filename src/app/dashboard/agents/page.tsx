@@ -1,10 +1,21 @@
 import { redirect } from "next/navigation";
 import { getAgentsWithCaps } from "@/lib/dashboard";
 import { getSessionMerchant } from "@/lib/auth";
-import { setSpendCap, revokeAgent, reactivateAgent } from "../actions";
-import { CreateAgentForm, RotateKeyButton } from "../agent-key-reveal";
+import { setSpendCap, revokeAgent, reactivateAgent, setAgentCapabilities } from "../actions";
+import { CreateAgentForm, RotateKeyButton, MandateRequiredToggle } from "../agent-key-reveal";
 import { formatPaise as rupees } from "@/lib/money";
 import { PageHeader, Surface, Button, Field, Input, EmptyState, DetailsToggle } from "@/components/ui";
+import { schema } from "@/lib/db";
+
+const CAPABILITY_LABELS: Record<(typeof schema.agentCapabilityEnum.enumValues)[number], string> = {
+  "products:read": "Read the catalogue",
+  "policy:read": "Read return/refund policy",
+  "offers:read": "Read upsell offers",
+  "rewards:read": "Read reward-coin balance",
+  "rewards:redeem": "Redeem reward coins",
+  "negotiation:create": "Negotiate a price",
+  "purchase:create": "Make a purchase",
+};
 
 function formatDate(d: Date): string {
   return new Date(d).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
@@ -130,6 +141,46 @@ export default async function AgentsPage() {
                       </Button>
                     </form>
                   </DetailsToggle>
+                </div>
+
+                {/* Layer 13-2: authentication is not authorization — an
+                    agent holds only what's checked here, regardless of its
+                    spend cap. Deny by default: a new agent starts with
+                    none checked. */}
+                <div className="mt-3 pt-3 border-t border-ink-line-soft">
+                  <DetailsToggle
+                    summary={`Capabilities (${agent.capabilities.length} of ${Object.keys(CAPABILITY_LABELS).length} granted)`}
+                    variant="plain"
+                  >
+                    <form action={setAgentCapabilities} className="flex flex-col gap-2">
+                      <input type="hidden" name="agentId" value={agent.id} />
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                        {Object.entries(CAPABILITY_LABELS).map(([capability, label]) => (
+                          <label key={capability} className="flex items-center gap-2 text-sm text-on-ink-dim">
+                            <input
+                              type="checkbox"
+                              name="capabilities"
+                              value={capability}
+                              defaultChecked={agent.capabilities.includes(capability as (typeof schema.agentCapabilityEnum.enumValues)[number])}
+                              className="accent-[var(--accent)]"
+                            />
+                            {label}
+                          </label>
+                        ))}
+                      </div>
+                      <div>
+                        <Button type="submit" variant="secondary" size="sm" pendingLabel="Saving…">
+                          Save capabilities
+                        </Button>
+                      </div>
+                    </form>
+                  </DetailsToggle>
+                </div>
+
+                {/* Layer 13-3: opt-in AP2 mandate requirement per agent —
+                    off by default so existing demo flows keep working. */}
+                <div className="mt-3 pt-3 border-t border-ink-line-soft">
+                  <MandateRequiredToggle agentId={agent.id} defaultChecked={agent.mandateRequired} />
                 </div>
               </Surface>
             );

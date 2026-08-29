@@ -11,6 +11,8 @@ import { runOfferEngine, getOpenOfferForIdentity } from "@/lib/offer-engine";
 import { acceptOffer } from "@/lib/discount";
 import { getRewardBalance, redeemRewardCoins } from "@/lib/reward-actions";
 import { openNegotiation, submitBuyerCounter, getOpenNegotiationForIdentity, MAX_BUYER_COUNTERS } from "@/lib/negotiation";
+import { requireCapability } from "@/lib/agent-auth";
+import { issueCheckoutMandate, verifyPaymentMandate } from "@/lib/mandates";
 
 /**
  * This product's own MCP server (Layer 5-4) — the headline of the layer.
@@ -66,6 +68,9 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
       },
     },
     async ({ category, availability, minPricePaise, maxPricePaise, page, pageSize }) => {
+      if (!(await requireCapability(agent, "products:read"))) {
+        return toolText(JSON.stringify({ error: "This agent does not hold the products:read capability." }));
+      }
       let catalogue = await getPublicCatalogue(agent.merchantId);
 
       if (category) catalogue = catalogue.filter((p) => p.category === category);
@@ -108,6 +113,9 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
       inputSchema: { productId: z.string().uuid() },
     },
     async ({ productId }) => {
+      if (!(await requireCapability(agent, "products:read"))) {
+        return toolText(JSON.stringify({ error: "This agent does not hold the products:read capability." }));
+      }
       const catalogue = await getPublicCatalogue(agent.merchantId);
       const product = catalogue.find((p) => p.id === productId);
       if (!product) return toolText(JSON.stringify({ found: false, reason: `No product ${productId} found for this merchant.` }));
@@ -124,6 +132,9 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
       inputSchema: { query: z.string().min(1) },
     },
     async ({ query }) => {
+      if (!(await requireCapability(agent, "products:read"))) {
+        return toolText(JSON.stringify({ error: "This agent does not hold the products:read capability." }));
+      }
       const catalogue = await getPublicCatalogue(agent.merchantId);
       const needle = query.trim().toLowerCase();
       const words = needle.split(/\s+/).filter((w) => w.length > 1);
@@ -158,6 +169,9 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
       inputSchema: { sku: z.string().min(1), quantity: z.number().int().positive().default(1) },
     },
     async ({ sku, quantity }) => {
+      if (!(await requireCapability(agent, "products:read"))) {
+        return toolText(JSON.stringify({ error: "This agent does not hold the products:read capability." }));
+      }
       const catalogue = await getPublicCatalogue(agent.merchantId);
       const found = findVariantBySku(catalogue, sku);
       if (!found) return toolText(JSON.stringify({ found: false, reason: `No SKU "${sku}" found for this merchant.` }));
@@ -189,6 +203,9 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
       inputSchema: {},
     },
     async () => {
+      if (!(await requireCapability(agent, "policy:read"))) {
+        return toolText(JSON.stringify({ error: "This agent does not hold the policy:read capability." }));
+      }
       const policy = await getMerchantPolicy(agent.merchantId);
       return toolText(
         JSON.stringify(
@@ -265,6 +282,9 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
       inputSchema: {},
     },
     async () => {
+      if (!(await requireCapability(agent, "rewards:read"))) {
+        return toolText(JSON.stringify({ error: "This agent does not hold the rewards:read capability." }));
+      }
       const balance = await getRewardBalance(agent.merchantId, { agentId: agent.id });
       return toolText(JSON.stringify(balance));
     },
@@ -282,6 +302,9 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
       },
     },
     async ({ purchaseAmountPaise, coins }) => {
+      if (!(await requireCapability(agent, "rewards:redeem"))) {
+        return toolText(JSON.stringify({ decision: "deny", reason: "This agent does not hold the rewards:redeem capability." }));
+      }
       const result = await redeemRewardCoins(agent.merchantId, agent.id, purchaseAmountPaise, coins, { agentId: agent.id });
       return toolText(JSON.stringify(result));
     },
@@ -296,6 +319,9 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
       inputSchema: { sku: z.string().min(1) },
     },
     async ({ sku }) => {
+      if (!(await requireCapability(agent, "offers:read"))) {
+        return toolText(JSON.stringify({ error: "This agent does not hold the offers:read capability." }));
+      }
       const catalogue = await getPublicCatalogue(agent.merchantId);
       const found = findVariantBySku(catalogue, sku);
       if (!found) return toolText(JSON.stringify({ found: false, reason: `No SKU "${sku}" found for this merchant.` }));
@@ -336,6 +362,9 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
       },
     },
     async ({ sku, quantity, negotiationId, offerUnitPricePaise }) => {
+      if (!(await requireCapability(agent, "negotiation:create"))) {
+        return toolText(JSON.stringify({ outcome: "refused", message: "This agent does not hold the negotiation:create capability." }));
+      }
       if (negotiationId) {
         if (offerUnitPricePaise === undefined) {
           return toolText(JSON.stringify({ outcome: "refused", message: "offerUnitPricePaise is required when continuing a negotiation." }));
@@ -400,20 +429,79 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
   );
 
   server.registerTool(
+    "issue_checkout_mandate",
+    {
+      title: "Issue checkout mandate",
+      description:
+        "Layer 13-3 (AP2 subset): asks the merchant to sign a Checkout Mandate for a specific SKU/quantity at the catalogue's real price. Only needed if this agent has been configured by the merchant to require a signed payment mandate for purchases (check get_spend_status or just try purchase without one — it will tell you). Returns a signed JWT and its expiry; get human approval, then pass the JWT back as checkoutMandateJwt to purchase.",
+      inputSchema: {
+        sku: z.string().min(1),
+        quantity: z.number().int().positive().max(999).default(1),
+      },
+    },
+    async ({ sku, quantity }) => {
+      const catalogue = await getPublicCatalogue(agent.merchantId);
+      const found = findVariantBySku(catalogue, sku);
+      if (!found) return toolText(JSON.stringify({ error: `No SKU "${sku}" found for this merchant.` }));
+
+      const totalPaise = found.variant.pricePaise * quantity;
+      const { jwt, checkoutHash, expiresAt } = await issueCheckoutMandate({
+        merchantId: agent.merchantId,
+        agentId: agent.id,
+        currency: "INR",
+        totalPaise,
+        lines: [{ variantId: found.variant.id, sku: found.variant.sku, quantity, unitPricePaise: found.variant.pricePaise }],
+      });
+
+      return toolText(
+        JSON.stringify({
+          checkoutMandateJwt: jwt,
+          checkoutHash,
+          totalPaise,
+          amountFormatted: formatPaise(totalPaise),
+          expiresAt,
+          note: "Get human approval, then present this exact JWT as purchase's checkoutMandateJwt parameter before it expires.",
+        }),
+      );
+    },
+  );
+
+  server.registerTool(
     "purchase",
     {
       title: "Purchase",
       description:
-        "Buys a specific variant by its SKU, at the catalogue's real price — you cannot set the price yourself. Quantity defaults to 1. Alternatively, pass offerId (from get_offers) to buy an accepted bundle upsell at ITS real price, or negotiationId (from negotiate, once its outcome is \"agreed\") to buy at that agreed price — in both cases the price is re-derived from the merchant's own record, never one you assert. Subject to your own spend cap (see get_spend_status); a purchase that would exceed it, or a variant that's out of stock, comes back as a successful tool result describing exactly why it was refused, not a protocol error — read the result to see if you were allowed, denied, or escalated for human review.",
+        "Buys a specific variant by its SKU, at the catalogue's real price — you cannot set the price yourself. Quantity defaults to 1. Alternatively, pass offerId (from get_offers) to buy an accepted bundle upsell at ITS real price, or negotiationId (from negotiate, once its outcome is \"agreed\") to buy at that agreed price — in both cases the price is re-derived from the merchant's own record, never one you assert. Subject to your own spend cap (see get_spend_status); a purchase that would exceed it, or a variant that's out of stock, comes back as a successful tool result describing exactly why it was refused, not a protocol error — read the result to see if you were allowed, denied, or escalated for human review. If this agent has been configured to require a payment mandate, pass checkoutMandateJwt (from issue_checkout_mandate) or the purchase will be refused with a specific reason.",
       inputSchema: {
         sku: z.string().min(1).optional(),
         quantity: z.number().int().positive().max(999).default(1),
         offerId: z.string().uuid().optional().describe("Buy a bundle offer from get_offers instead of a single SKU. Mutually exclusive with sku and negotiationId."),
         negotiationId: z.string().uuid().optional().describe("Buy at an agreed negotiated price from negotiate. Mutually exclusive with sku and offerId."),
         idempotencyKey: z.string().min(1).max(200).optional().describe("Optional. A repeated call with the same key returns the original outcome instead of buying twice."),
+        checkoutMandateJwt: z.string().min(1).optional().describe("The signed Checkout Mandate JWT from issue_checkout_mandate, required only if this agent has mandates turned on."),
       },
     },
-    async ({ sku, quantity, offerId, negotiationId, idempotencyKey }) => {
+    async ({ sku, quantity, offerId, negotiationId, idempotencyKey, checkoutMandateJwt }) => {
+      if (!(await requireCapability(agent, "purchase:create"))) {
+        return toolText(JSON.stringify({ decision: "deny", reason: "This agent does not hold the purchase:create capability." }));
+      }
+
+      // Layer 13-3: verified before any purchase path below — same
+      // "before checkBounds" ordering as /api/agent/purchase.
+      const verifyMandateIfRequired = async (assertedAmountPaise: number): Promise<string | null> => {
+        if (!agent.mandateRequired) return null;
+        if (!checkoutMandateJwt) {
+          return "Denied — this agent requires a signed Payment Mandate (checkoutMandateJwt) for every purchase, and none was presented. Call issue_checkout_mandate first.";
+        }
+        const verification = await verifyPaymentMandate({
+          merchantId: agent.merchantId,
+          agentId: agent.id,
+          checkoutJwt: checkoutMandateJwt,
+          assertedAmountPaise,
+        });
+        return verification.ok ? null : verification.reason;
+      };
+
       if (negotiationId) {
         const [negotiation] = await db.select().from(schema.negotiations).where(eq(schema.negotiations.id, negotiationId));
         if (!negotiation || negotiation.merchantId !== agent.merchantId) {
@@ -424,6 +512,9 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
         }
 
         const amountPaise = negotiation.agreedUnitPricePaise * negotiation.quantity;
+        const mandateFailure = await verifyMandateIfRequired(amountPaise);
+        if (mandateFailure) return toolText(JSON.stringify({ decision: "deny", reason: mandateFailure }));
+
         const result = await attemptMoneyAction({
           agentId: agent.id,
           merchantId: agent.merchantId,
@@ -444,6 +535,9 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
         }
         const [bundle] = await db.select().from(schema.bundles).where(eq(schema.bundles.id, offer.bundleId));
         if (!bundle) return toolText(JSON.stringify({ decision: "deny", reason: `No offer ${offerId} found for this merchant.` }));
+
+        const mandateFailure = await verifyMandateIfRequired(bundle.bundlePricePaise);
+        if (mandateFailure) return toolText(JSON.stringify({ decision: "deny", reason: mandateFailure }));
 
         if (offer.status === "offered") {
           await acceptOffer(agent.merchantId, offerId, { agentId: agent.id });
@@ -472,6 +566,9 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
       }
 
       const amountPaise = found.variant.pricePaise * quantity;
+      const mandateFailure = await verifyMandateIfRequired(amountPaise);
+      if (mandateFailure) return toolText(JSON.stringify({ decision: "deny", reason: mandateFailure }));
+
       const result = await attemptMoneyAction({
         agentId: agent.id,
         merchantId: agent.merchantId,

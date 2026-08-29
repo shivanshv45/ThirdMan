@@ -105,6 +105,60 @@ export async function createAgent(merchantId: string, name: string) {
 }
 
 /**
+ * Layer 13-2: replaces the exact set of capabilities an agent holds.
+ * Full-replace, not incremental add/remove — a merchant sees a checkbox
+ * form reflecting current state and submits the new complete set, the
+ * same "one form is the whole truth" shape setMerchantPolicy already
+ * uses. A newly created agent starts with none granted (deny by
+ * default); only an existing merchant's explicit backfill (this
+ * migration) or this action ever grants one.
+ */
+export async function setAgentCapabilities(
+  merchantId: string,
+  agentId: string,
+  capabilities: (typeof schema.agentCapabilityEnum.enumValues)[number][],
+) {
+  const agent = await requireOwnedAgent(merchantId, agentId);
+
+  const validCapabilities = new Set(schema.agentCapabilityEnum.enumValues);
+  const deduped = [...new Set(capabilities)].filter((c) => validCapabilities.has(c));
+
+  await db.transaction(async (tx) => {
+    await tx.delete(schema.agentCapabilities).where(eq(schema.agentCapabilities.agentId, agentId));
+    if (deduped.length > 0) {
+      await tx.insert(schema.agentCapabilities).values(deduped.map((capability) => ({ agentId, capability })));
+    }
+  });
+
+  await logAuditEntry({
+    merchantId,
+    actor: "merchant",
+    event: "agent_capabilities_set",
+    decision: "n/a",
+    reason: `Merchant set agent "${agent.name}"'s capabilities to: ${deduped.length > 0 ? deduped.join(", ") : "none"}.`,
+    metadata: { agentId, capabilities: deduped },
+  });
+
+  return deduped;
+}
+
+/** Layer 13-3: turns AP2 mandate presentation on/off per agent. Opt-in — false (the default) means today's unchanged purchase flow. */
+export async function setAgentMandateRequired(merchantId: string, agentId: string, required: boolean) {
+  const agent = await requireOwnedAgent(merchantId, agentId);
+
+  await db.update(schema.agents).set({ mandateRequired: required }).where(eq(schema.agents.id, agentId));
+
+  await logAuditEntry({
+    merchantId,
+    actor: "merchant",
+    event: "agent_mandate_requirement_set",
+    decision: "n/a",
+    reason: `Merchant ${required ? "required" : "no longer requires"} an AP2 payment mandate for agent "${agent.name}"'s purchases.`,
+    metadata: { agentId, mandateRequired: required },
+  });
+}
+
+/**
  * Replaces an agent's API key. The old key stops working immediately —
  * this is how a merchant responds to a leak without losing the agent's
  * caps or audit history, which deleting and recreating would orphan.

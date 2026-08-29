@@ -17,6 +17,8 @@ import {
   Scale,
   Code,
   Settings,
+  ShieldAlert,
+  FlaskConical,
   type LucideIcon,
 } from "lucide-react";
 
@@ -34,6 +36,8 @@ const ICONS: Record<string, LucideIcon> = {
   "/dashboard/rewards": Coins,
   "/dashboard/explain": ScrollText,
   "/dashboard/readiness": Gauge,
+  "/dashboard/guardian": ShieldAlert,
+  "/dashboard/preflight": FlaskConical,
   "/dashboard/agents": KeyRound,
   "/dashboard/policies": Scale,
   "/dashboard/embed": Code,

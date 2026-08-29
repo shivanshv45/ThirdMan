@@ -1,7 +1,7 @@
 "use client";
 
-import { useActionState } from "react";
-import { createAgentAction, rotateAgentKeyAction, type AgentKeyActionState } from "./actions";
+import { useActionState, useTransition } from "react";
+import { createAgentAction, rotateAgentKeyAction, setAgentMandateRequired, type AgentKeyActionState } from "./actions";
 import { Button, Input, Field } from "@/components/ui";
 
 const initialState: AgentKeyActionState = null;
@@ -49,6 +49,40 @@ export function RotateKeyButton({ agentId }: { agentId: string }) {
         Rotate key
       </Button>
       {state?.error && <p className="text-deny-bright text-xs mt-1">{state.error}</p>}
+    </form>
+  );
+}
+
+/**
+ * Layer 13-3: submits the moment the checkbox is toggled, rather than
+ * needing a separate save button — a mandate requirement is binary and
+ * a merchant expects it to take effect immediately, the same instant
+ * feedback revokeAgent/reactivateAgent's single-button forms already give.
+ */
+export function MandateRequiredToggle({ agentId, defaultChecked }: { agentId: string; defaultChecked: boolean }) {
+  const [isPending, startTransition] = useTransition();
+
+  return (
+    <form
+      action={(formData) => {
+        startTransition(() => {
+          setAgentMandateRequired(formData);
+        });
+      }}
+      className="flex items-center gap-2"
+    >
+      <input type="hidden" name="agentId" value={agentId} />
+      <label className="flex items-center gap-2 text-sm text-on-ink-dim">
+        <input
+          type="checkbox"
+          name="mandateRequired"
+          defaultChecked={defaultChecked}
+          disabled={isPending}
+          onChange={(e) => e.currentTarget.form?.requestSubmit()}
+          className="accent-[var(--accent)]"
+        />
+        Require a signed AP2 payment mandate for this agent&apos;s purchases
+      </label>
     </form>
   );
 }

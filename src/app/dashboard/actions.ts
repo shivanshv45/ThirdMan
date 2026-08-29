@@ -5,7 +5,11 @@ import * as mutations from "@/lib/dashboard-mutations";
 import { resolveEscalation } from "@/lib/gate";
 import { requireSessionMerchant, destroySession } from "@/lib/auth";
 import { getAuditTrail } from "@/lib/dashboard";
+import { schema } from "@/lib/db";
+import { rearmAgent } from "@/lib/guardian";
 import { redirect } from "next/navigation";
+
+type AgentCapability = (typeof schema.agentCapabilityEnum.enumValues)[number];
 
 export type AuditEntry = Awaited<ReturnType<typeof getAuditTrail>>[number];
 
@@ -76,6 +80,22 @@ export async function rotateAgentKeyAction(
   }
 }
 
+export async function setAgentCapabilities(formData: FormData) {
+  const merchant = await requireSessionMerchant();
+  const agentId = String(formData.get("agentId"));
+  const capabilities = formData.getAll("capabilities").map(String) as AgentCapability[];
+  await mutations.setAgentCapabilities(merchant.id, agentId, capabilities);
+  revalidatePath("/dashboard/agents");
+}
+
+export async function setAgentMandateRequired(formData: FormData) {
+  const merchant = await requireSessionMerchant();
+  const agentId = String(formData.get("agentId"));
+  const required = formData.get("mandateRequired") === "on";
+  await mutations.setAgentMandateRequired(merchant.id, agentId, required);
+  revalidatePath("/dashboard/agents");
+}
+
 export async function revokeAgent(formData: FormData) {
   const merchant = await requireSessionMerchant();
   await mutations.revokeAgent(merchant.id, String(formData.get("agentId")));
@@ -104,6 +124,15 @@ export async function rejectEscalation(formData: FormData) {
   if (!escalationId) throw new Error("Missing escalationId");
   await resolveEscalation(merchant.id, escalationId, "rejected");
   revalidatePath("/dashboard");
+}
+
+export async function rearmAgentAction(formData: FormData) {
+  const merchant = await requireSessionMerchant();
+  const agentId = String(formData.get("agentId"));
+  if (!agentId) throw new Error("Missing agentId");
+  await rearmAgent(merchant.id, agentId);
+  revalidatePath("/dashboard/guardian");
+  revalidatePath("/dashboard/agents");
 }
 
 export async function logout() {
