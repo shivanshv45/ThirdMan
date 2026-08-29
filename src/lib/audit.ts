@@ -1,5 +1,6 @@
 import { desc, eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
+import { withSpan } from "@/lib/tracing";
 
 type AuditActor = (typeof schema.auditActorEnum.enumValues)[number];
 type AuditDecision = (typeof schema.auditDecisionEnum.enumValues)[number];
@@ -40,24 +41,31 @@ export async function logAuditEntry(input: LogEntryInput): Promise<void> {
     );
   }
 
-  try {
-    await db.insert(schema.auditLog).values({
-      merchantId: input.merchantId,
-      actor: input.actor,
-      event: input.event,
-      decision: input.decision,
-      reason,
-      boundApplied: input.boundApplied,
-      moneyActionId: input.moneyActionId,
-      metadata: input.metadata ?? {},
-    });
-  } catch (err) {
-    // Surface loudly, but never propagate. See docstring above.
-    console.error(
-      `[audit] FAILED to write audit entry for event "${input.event}":`,
-      err,
-    );
-  }
+  // Layer 15-1: wrapped in its own span so a decision's waterfall shows
+  // the audit write as its own step, distinct from whatever money-moving
+  // work preceded it. Outside an active withMoneyPathSpan (most
+  // non-money audit calls in the app) this span simply carries no
+  // moneyActionId and is never captured — see tracing.ts.
+  await withSpan("audit_write", { "thirdman.event": input.event }, async () => {
+    try {
+      await db.insert(schema.auditLog).values({
+        merchantId: input.merchantId,
+        actor: input.actor,
+        event: input.event,
+        decision: input.decision,
+        reason,
+        boundApplied: input.boundApplied,
+        moneyActionId: input.moneyActionId,
+        metadata: input.metadata ?? {},
+      });
+    } catch (err) {
+      // Surface loudly, but never propagate. See docstring above.
+      console.error(
+        `[audit] FAILED to write audit entry for event "${input.event}":`,
+        err,
+      );
+    }
+  });
 }
 
 /**

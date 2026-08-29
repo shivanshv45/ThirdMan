@@ -9,6 +9,7 @@ import { resolveNegotiation, markNegotiationRedeemed, type ResolvedNegotiation }
 import { resolveCartForCheckout, snapshotCartPurchase, loadCartPurchaseItems, type ResolvedCart } from "@/lib/cart";
 import { enqueueWebhookEvent } from "@/lib/webhooks/enqueue";
 import { evaluateAndTransition } from "@/lib/guardian";
+import { withMoneyPathSpan, withSpan } from "@/lib/tracing";
 
 /**
  * Loads and decrypts a merchant's own Razorpay credentials. The gate is
@@ -435,7 +436,7 @@ async function checkBounds(
   // reserved. evaluateAndTransition also runs inline (not just on the
   // periodic sweep) so a breach is caught on the very request that
   // trips it, not only on the next cron tick.
-  const guardianResult = await evaluateAndTransition(agent.id);
+  const guardianResult = await withSpan("guardian_state", { "thirdman.agent_id": agent.id }, () => evaluateAndTransition(agent.id));
   if (guardianResult.state === "suspended" || guardianResult.state === "revoked") {
     return {
       reason: `Denied — agent "${agent.name}" is ${guardianResult.state} by the Runtime Guardian${guardianResult.transitioned ? `: ${guardianResult.evaluation.reason}` : ", pending merchant review."}`,
@@ -750,10 +751,9 @@ async function executeAndSettle(input: ExecuteAndSettleInput): Promise<GateResul
         return { decision: "deny", reason, moneyActionId: input.moneyActionId };
       }
 
-      await db
-        .update(schema.moneyActions)
-        .set({ status: "executed" })
-        .where(eq(schema.moneyActions.id, input.moneyActionId));
+      await withSpan("ledger_commit", { "thirdman.money_action_id": input.moneyActionId }, () =>
+        db.update(schema.moneyActions).set({ status: "executed" }).where(eq(schema.moneyActions.id, input.moneyActionId)),
+      );
 
       const reason = `${input.allowReasonPrefix} and the reward-coin ledger was updated (${coinsDelta > 0 ? "+" : ""}${coinsDelta} coins).`;
       await logAuditEntry({
@@ -806,17 +806,18 @@ async function executeAndSettle(input: ExecuteAndSettleInput): Promise<GateResul
       return { decision: "allow", reason, moneyActionId: input.moneyActionId, paymentLinkUrl: link.shortUrl, paymentLinkId: link.id };
     }
 
-    const order = await createOrder(credentials, {
-      amountPaise: input.amountPaise,
-      receipt: input.moneyActionId,
-      notes: { agentId: input.agentId, context: input.context },
-      autoCapture: !input.holdOnly,
-    });
+    const order = await withSpan("razorpay_authorize", { "thirdman.amount_paise": input.amountPaise }, () =>
+      createOrder(credentials, {
+        amountPaise: input.amountPaise,
+        receipt: input.moneyActionId,
+        notes: { agentId: input.agentId, context: input.context },
+        autoCapture: !input.holdOnly,
+      }),
+    );
 
-    await db
-      .update(schema.moneyActions)
-      .set({ status: "executed", razorpayEntityId: order.id })
-      .where(eq(schema.moneyActions.id, input.moneyActionId));
+    await withSpan("ledger_commit", { "thirdman.money_action_id": input.moneyActionId }, () =>
+      db.update(schema.moneyActions).set({ status: "executed", razorpayEntityId: order.id }).where(eq(schema.moneyActions.id, input.moneyActionId)),
+    );
 
     const reason = `${input.allowReasonPrefix} and executed successfully.`;
     await logAuditEntry({
@@ -890,6 +891,13 @@ function resultFromExistingAction(
 export async function attemptMoneyAction(
   request: MoneyActionRequest,
 ): Promise<GateResult> {
+  return withMoneyPathSpan("attempt_money_action", (setMoneyActionId) => attemptMoneyActionTraced(request, setMoneyActionId));
+}
+
+async function attemptMoneyActionTraced(
+  request: MoneyActionRequest,
+  setMoneyActionId: (id: string) => void,
+): Promise<GateResult> {
   try {
     if (request.idempotencyKey) {
       const [existing] = await db
@@ -902,11 +910,12 @@ export async function attemptMoneyAction(
           ),
         );
       if (existing) {
+        setMoneyActionId(existing.id);
         return resultFromExistingAction(existing);
       }
     }
 
-    const boundsResult = await checkBounds(request);
+    const boundsResult = await withSpan("policy_evaluation", { "thirdman.agent_id": request.agentId, "thirdman.amount_paise": request.amountPaise }, () => checkBounds(request));
     if (isBoundFailure(boundsResult)) {
       const reason = request.dryRun ? `Preflight — this request would be DENIED: ${boundsResult.reason}` : boundsResult.reason;
       await logAuditEntry({
@@ -1069,7 +1078,7 @@ export async function attemptMoneyAction(
     // deny, since attemptMoneyAction only reaches here after every
     // deterministic check has already passed.
     const signals = await computeRiskSignals(request.agentId, request.amountPaise, cap);
-    const risk = await assessRisk(signals, request.context);
+    const risk = await withSpan("risk_assessment", { "thirdman.agent_id": request.agentId }, () => assessRisk(signals, request.context));
 
     if (risk.decision === "escalate") {
       const { action: moneyAction, wasReplay } = await insertMoneyActionOrReplay(cap.id, {
@@ -1086,6 +1095,7 @@ export async function attemptMoneyAction(
         status: "pending_escalation",
         idempotencyKey: request.idempotencyKey,
       });
+      setMoneyActionId(moneyAction.id);
 
       if (wasReplay) return resultFromExistingAction(moneyAction);
 
@@ -1128,6 +1138,7 @@ export async function attemptMoneyAction(
       status: "allowed",
       idempotencyKey: request.idempotencyKey,
     });
+    setMoneyActionId(moneyAction.id);
 
     if (wasReplay) return resultFromExistingAction(moneyAction);
 
@@ -1143,22 +1154,24 @@ export async function attemptMoneyAction(
               ? `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for "${request.context}" x${quantity} is within this agent's remaining cap`
               : `Allowed — ₹${(request.amountPaise / 100).toFixed(2)} for "${request.context}" is within this agent's remaining cap`;
 
-    const result = await executeAndSettle({
-      merchantId: request.merchantId,
-      moneyActionId: moneyAction.id,
-      capId: cap.id,
-      amountPaise: request.amountPaise,
-      context: request.context,
-      agentId: request.agentId,
-      actor: "agent",
-      allowReasonPrefix,
-      variantId: variant?.id ?? negotiation?.variantId,
-      offerItems: offer?.items ?? cart?.lines,
-      quantity,
-      holdOnly: request.holdOnly ?? false,
-      paymentLink: request.paymentLink,
-      rewardLedger: request.rewardLedger,
-    });
+    const result = await withSpan("execute_and_settle", { "thirdman.amount_paise": request.amountPaise }, () =>
+      executeAndSettle({
+        merchantId: request.merchantId,
+        moneyActionId: moneyAction.id,
+        capId: cap.id,
+        amountPaise: request.amountPaise,
+        context: request.context,
+        agentId: request.agentId,
+        actor: "agent",
+        allowReasonPrefix,
+        variantId: variant?.id ?? negotiation?.variantId,
+        offerItems: offer?.items ?? cart?.lines,
+        quantity,
+        holdOnly: request.holdOnly ?? false,
+        paymentLink: request.paymentLink,
+        rewardLedger: request.rewardLedger,
+      }),
+    );
 
     // A negotiation is redeemed at most once — marking it here, only on a
     // genuine allow (never on a failure path, which leaves it "agreed"

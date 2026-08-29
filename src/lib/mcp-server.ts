@@ -13,6 +13,7 @@ import { getRewardBalance, redeemRewardCoins } from "@/lib/reward-actions";
 import { openNegotiation, submitBuyerCounter, getOpenNegotiationForIdentity, MAX_BUYER_COUNTERS } from "@/lib/negotiation";
 import { requireCapability } from "@/lib/agent-auth";
 import { issueCheckoutMandate, verifyPaymentMandate } from "@/lib/mandates";
+import { withMoneyPathSpan, withSpan } from "@/lib/tracing";
 
 /**
  * This product's own MCP server (Layer 5-4) — the headline of the layer.
@@ -481,8 +482,13 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
         checkoutMandateJwt: z.string().min(1).optional().describe("The signed Checkout Mandate JWT from issue_checkout_mandate, required only if this agent has mandates turned on."),
       },
     },
-    async ({ sku, quantity, offerId, negotiationId, idempotencyKey, checkoutMandateJwt }) => {
-      if (!(await requireCapability(agent, "purchase:create"))) {
+    async ({ sku, quantity, offerId, negotiationId, idempotencyKey, checkoutMandateJwt }) =>
+      // Layer 15-1: one trace per purchase tool call — capability check,
+      // mandate verification, and whichever branch below calls
+      // attemptMoneyAction all land on the same decision's waterfall,
+      // mirroring /api/agent/purchase's own instrumentation.
+      withMoneyPathSpan("mcp_purchase_request", async () => {
+      if (!(await withSpan("capability_check", { "thirdman.capability": "purchase:create" }, () => requireCapability(agent, "purchase:create")))) {
         return toolText(JSON.stringify({ decision: "deny", reason: "This agent does not hold the purchase:create capability." }));
       }
 
@@ -493,12 +499,14 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
         if (!checkoutMandateJwt) {
           return "Denied — this agent requires a signed Payment Mandate (checkoutMandateJwt) for every purchase, and none was presented. Call issue_checkout_mandate first.";
         }
-        const verification = await verifyPaymentMandate({
-          merchantId: agent.merchantId,
-          agentId: agent.id,
-          checkoutJwt: checkoutMandateJwt,
-          assertedAmountPaise,
-        });
+        const verification = await withSpan("mandate_verification", { "thirdman.agent_id": agent.id }, () =>
+          verifyPaymentMandate({
+            merchantId: agent.merchantId,
+            agentId: agent.id,
+            checkoutJwt: checkoutMandateJwt,
+            assertedAmountPaise,
+          }),
+        );
         return verification.ok ? null : verification.reason;
       };
 
@@ -592,7 +600,7 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
           2,
         ),
       );
-    },
+      }),
   );
 
   return server;

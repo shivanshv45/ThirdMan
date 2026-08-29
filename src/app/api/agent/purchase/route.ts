@@ -6,6 +6,7 @@ import { authenticateAgent, extractBearerKey, requireCapability } from "@/lib/ag
 import { attemptMoneyAction } from "@/lib/gate";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { verifyPaymentMandate } from "@/lib/mandates";
+import { withMoneyPathSpan, withSpan } from "@/lib/tracing";
 
 // Keyed by agent id, not IP — an authenticated agent can legitimately
 // call this from a shared or rotating IP, and the spend cap already
@@ -58,13 +59,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "invalid or missing agent API key" }, { status: 401 });
   }
 
-  if (!(await requireCapability(agent, "purchase:create"))) {
-    return NextResponse.json(
-      { error: "This agent does not hold the purchase:create capability." },
-      { status: 403 },
-    );
-  }
-
   const rateLimit = checkRateLimit(`agent-purchase:${agent.id}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
   if (!rateLimit.allowed) {
     return NextResponse.json(
@@ -101,39 +95,56 @@ export async function POST(req: NextRequest) {
     amountPaise ??= variant.pricePaise * (quantity ?? 1);
   }
 
-  // Layer 13-3: mandate verification runs BEFORE attemptMoneyAction (and
-  // therefore before checkBounds) whenever this agent has opted in — a
-  // failing mandate denies without the gate, the risk layer, or a model
-  // ever being consulted, per the plan's "the demo this unlocks."
-  if (agent.mandateRequired) {
-    if (!checkoutMandateJwt) {
+  // Layer 15-1: capability, mandate verification, and the gate's own
+  // steps all share one trace — the waterfall on /dashboard/explain
+  // reads them back as one decision's timeline, not three unrelated ones.
+  return withMoneyPathSpan("agent_purchase_request", async () => {
+    const hasCapability = await withSpan("capability_check", { "thirdman.capability": "purchase:create" }, () =>
+      requireCapability(agent, "purchase:create"),
+    );
+    if (!hasCapability) {
       return NextResponse.json(
-        { decision: "deny", reason: "Denied — this agent requires a signed Payment Mandate (checkoutMandateJwt) for every purchase, and none was presented." },
-        { status: 200 },
+        { error: "This agent does not hold the purchase:create capability." },
+        { status: 403 },
       );
     }
-    const verification = await verifyPaymentMandate({
-      merchantId: agent.merchantId,
-      agentId: agent.id,
-      checkoutJwt: checkoutMandateJwt,
-      assertedAmountPaise: amountPaise!,
-    });
-    if (!verification.ok) {
-      return NextResponse.json({ decision: "deny", reason: verification.reason }, { status: 200 });
+
+    // Layer 13-3: mandate verification runs BEFORE attemptMoneyAction (and
+    // therefore before checkBounds) whenever this agent has opted in — a
+    // failing mandate denies without the gate, the risk layer, or a model
+    // ever being consulted, per the plan's "the demo this unlocks."
+    if (agent.mandateRequired) {
+      if (!checkoutMandateJwt) {
+        return NextResponse.json(
+          { decision: "deny", reason: "Denied — this agent requires a signed Payment Mandate (checkoutMandateJwt) for every purchase, and none was presented." },
+          { status: 200 },
+        );
+      }
+      const verification = await withSpan("mandate_verification", { "thirdman.agent_id": agent.id }, () =>
+        verifyPaymentMandate({
+          merchantId: agent.merchantId,
+          agentId: agent.id,
+          checkoutJwt: checkoutMandateJwt,
+          assertedAmountPaise: amountPaise!,
+        }),
+      );
+      if (!verification.ok) {
+        return NextResponse.json({ decision: "deny", reason: verification.reason }, { status: 200 });
+      }
     }
-  }
 
-  const result = await attemptMoneyAction({
-    agentId: agent.id,
-    merchantId: agent.merchantId,
-    type: "order_create",
-    amountPaise: amountPaise!,
-    context: context!,
-    idempotencyKey,
-    variantId,
-    quantity,
-    holdOnly,
+    const result = await attemptMoneyAction({
+      agentId: agent.id,
+      merchantId: agent.merchantId,
+      type: "order_create",
+      amountPaise: amountPaise!,
+      context: context!,
+      idempotencyKey,
+      variantId,
+      quantity,
+      holdOnly,
+    });
+
+    return NextResponse.json(result, { status: 200 });
   });
-
-  return NextResponse.json(result, { status: 200 });
 }

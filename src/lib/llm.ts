@@ -2,6 +2,7 @@ import Groq from "groq-sdk";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { z } from "zod";
 import { env } from "@/lib/env";
+import { withSpan } from "@/lib/tracing";
 
 /**
  * The only sanctioned way to call an LLM in this codebase. Feature code
@@ -68,44 +69,66 @@ function withTimeout<T>(label: string, promise: Promise<T>): Promise<T> {
   ]);
 }
 
+// Layer 15-1: span attribute names follow the OpenTelemetry GenAI semantic
+// conventions (gen_ai.request.model / gen_ai.usage.*) so a model call's
+// cost is a first-class, standard-shaped span attribute rather than a
+// bespoke field — this is what the waterfall's "risk assessment ...
+// groq/openai-gpt-oss-20b · 847 tokens · ₹0.83" row reads from. The real
+// token counts and provider come from the response itself, same as the
+// CompletionResult this function already returns; the span only makes
+// them visible per-decision, it computes nothing new.
 async function callGroq(input: CompletionInput): Promise<{ text: string; usage?: TokenUsage; modelId: string }> {
   const modelId = input.groqModelOverride ?? GROQ_MODEL;
-  const completion = await withTimeout(
-    "groq.chat.completions.create",
-    groq.chat.completions.create({
-      model: modelId,
-      messages: [
-        ...(input.systemPrompt
-          ? [{ role: "system" as const, content: input.systemPrompt }]
-          : []),
-        { role: "user" as const, content: input.prompt },
-      ],
-    }),
-  );
+  return withSpan("chat", { "gen_ai.system": "groq", "gen_ai.request.model": modelId }, async (span) => {
+    const completion = await withTimeout(
+      "groq.chat.completions.create",
+      groq.chat.completions.create({
+        model: modelId,
+        messages: [
+          ...(input.systemPrompt
+            ? [{ role: "system" as const, content: input.systemPrompt }]
+            : []),
+          { role: "user" as const, content: input.prompt },
+        ],
+      }),
+    );
 
-  const text = completion.choices[0]?.message?.content;
-  if (!text) throw new Error("Groq returned an empty completion");
-  const usage = completion.usage
-    ? { promptTokens: completion.usage.prompt_tokens, completionTokens: completion.usage.completion_tokens }
-    : undefined;
-  return { text, usage, modelId };
+    const text = completion.choices[0]?.message?.content;
+    if (!text) throw new Error("Groq returned an empty completion");
+    const usage = completion.usage
+      ? { promptTokens: completion.usage.prompt_tokens, completionTokens: completion.usage.completion_tokens }
+      : undefined;
+    if (usage) {
+      span.setAttribute("gen_ai.usage.input_tokens", usage.promptTokens);
+      span.setAttribute("gen_ai.usage.output_tokens", usage.completionTokens);
+    }
+    span.setAttribute("gen_ai.response.model", modelId);
+    return { text, usage, modelId };
+  });
 }
 
 async function callGemini(input: CompletionInput): Promise<{ text: string; usage?: TokenUsage; modelId: string }> {
-  const model = genAI.getGenerativeModel({
-    model: GEMINI_MODEL,
-    ...(input.systemPrompt ? { systemInstruction: input.systemPrompt } : {}),
-  });
-  const result = await withTimeout(
-    "gemini.generateContent",
-    model.generateContent(input.prompt),
-  );
+  return withSpan("chat", { "gen_ai.system": "gemini", "gen_ai.request.model": GEMINI_MODEL }, async (span) => {
+    const model = genAI.getGenerativeModel({
+      model: GEMINI_MODEL,
+      ...(input.systemPrompt ? { systemInstruction: input.systemPrompt } : {}),
+    });
+    const result = await withTimeout(
+      "gemini.generateContent",
+      model.generateContent(input.prompt),
+    );
 
-  const text = result.response.text();
-  if (!text) throw new Error("Gemini returned an empty completion");
-  const usageMetadata = result.response.usageMetadata;
-  const usage = usageMetadata ? { promptTokens: usageMetadata.promptTokenCount, completionTokens: usageMetadata.candidatesTokenCount } : undefined;
-  return { text, usage, modelId: GEMINI_MODEL };
+    const text = result.response.text();
+    if (!text) throw new Error("Gemini returned an empty completion");
+    const usageMetadata = result.response.usageMetadata;
+    const usage = usageMetadata ? { promptTokens: usageMetadata.promptTokenCount, completionTokens: usageMetadata.candidatesTokenCount } : undefined;
+    if (usage) {
+      span.setAttribute("gen_ai.usage.input_tokens", usage.promptTokens);
+      span.setAttribute("gen_ai.usage.output_tokens", usage.completionTokens);
+    }
+    span.setAttribute("gen_ai.response.model", GEMINI_MODEL);
+    return { text, usage, modelId: GEMINI_MODEL };
+  });
 }
 
 /**
