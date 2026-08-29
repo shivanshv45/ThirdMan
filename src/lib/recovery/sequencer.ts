@@ -416,7 +416,7 @@ export async function confirmRecoveryLinkPaid(
  * merchant chooses to cap it. It is never returned by the dashboard's
  * agent list.
  */
-async function getOrCreateRecoveryAgent(merchantId: string) {
+export async function getOrCreateRecoveryAgent(merchantId: string) {
   const RECOVERY_AGENT_NAME = "__recovery_pipeline";
 
   const [existing] = await db

@@ -190,6 +190,13 @@
       "when": 1788022628225,
       "tag": "0026_shocking_spot",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1788026922411,
+      "tag": "0027_tough_darkhawk",
+      "breakpoints": true
     }
   ]
 }

@@ -9,6 +9,7 @@ import { sendDueMerchantDigests } from "@/lib/notifications/merchant-alerts";
 import { sweepExpiredHolds } from "@/lib/escrow";
 import { sweepExpiredOffers } from "@/lib/discount";
 import { sweepAllAgents } from "@/lib/guardian";
+import { drainDueTasks } from "@/lib/runtime/runner";
 
 /**
  * The one scheduled entrypoint this stack has (Layer 11-3). There is no
@@ -82,6 +83,7 @@ export async function POST(req: NextRequest) {
   results.push(await runJob("restock:scan", () => scanForRestockedVariants()));
   results.push(await runJob("merchant-digests:send", () => sendDueMerchantDigests()));
   results.push(await runJob("guardian:sweep", () => sweepAllAgents()));
+  results.push(await runJob("runtime:drain", () => drainDueTasks()));
 
   // Layer 10's outbound webhook queue, if it has landed — registered
   // here rather than each feature building its own trigger. Optional

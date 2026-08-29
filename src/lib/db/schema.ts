@@ -1750,3 +1750,102 @@ export const modelCallCosts = pgTable("model_call_costs", {
     .notNull()
     .defaultNow(),
 });
+
+// --- Layer 17: the Agent Runtime ---
+// See plans/layer-17-agent-runtime.md. Durable, resumable, long-running
+// task execution as a Postgres-backed state machine advanced by
+// /api/cron/run's existing tick — there is no worker process on this
+// stack, so a task's state has to survive between ticks as rows, not as
+// anything held in memory. Every money action a task takes still goes
+// through attemptMoneyAction() under the task's own agentId — this
+// schema adds no new authority, only a durable place to resume from.
+
+export const agentTaskKindEnum = pgEnum("agent_task_kind", [
+  "recovery_sequence",
+]);
+
+export const agentTaskStatusEnum = pgEnum("agent_task_status", [
+  "pending",
+  "claimed",
+  "waiting",
+  "succeeded",
+  "failed",
+  "cancelled",
+]);
+
+// One row per unit of long-running work. "waiting" (correctly blocked
+// until runAfter) is a distinct status from "pending" (ready to run
+// now) on purpose — collapsing them loses the ability to tell a stalled
+// task from a patient one on the merchant-facing task view.
+export const agentTasks = pgTable(
+  "agent_tasks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id),
+    // The identity this task acts under — every money action it takes is
+    // this agent's action, bounded exactly as if the agent made the call
+    // itself in a request (capability, Guardian state, spend cap, all of
+    // it). Nullable only for a task kind that provably takes no money
+    // action; runner.ts refuses to create a money-taking task with no
+    // agent rather than defaulting to some implicit authority.
+    agentId: uuid("agent_id").references(() => agents.id),
+    kind: agentTaskKindEnum("kind").notNull(),
+    status: agentTaskStatusEnum("status").notNull().default("pending"),
+    // When this task next becomes eligible to be claimed — what makes
+    // backoff and long waits expressible without a sleeping process.
+    runAfter: timestamp("run_after", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull(),
+    // The claim lease — a task claimed past this timestamp is void and
+    // reclaimable, so a process that dies mid-step doesn't strand the
+    // task forever. Null when unclaimed.
+    claimedUntil: timestamp("claimed_until", { withTimezone: true }),
+    // Task-specific progress, constrained by a zod schema per kind at
+    // every read/write boundary (never trusted as-is) — same discipline
+    // reward_rules.ts's AST column already uses for a jsonb column whose
+    // shape must stay closed.
+    state: jsonb("state").notNull().default(sql`'{}'::jsonb`),
+    idempotencyKey: text("idempotency_key"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // Creating the same logical task twice (by idempotencyKey) yields
+    // one runner, not two racing ones — scoped per merchant since a key
+    // is only meaningful within one merchant's own task set.
+    uniqueIndex("agent_tasks_merchant_idempotency_idx")
+      .on(table.merchantId, table.idempotencyKey)
+      .where(sql`${table.idempotencyKey} is not null`),
+  ],
+);
+
+// Append-only — one row per attempted step, the task's own audit trail.
+// What makes a task reconstructable after the fact, the same reasoning
+// guardian_transitions and treasury_ledger are append-only rather than
+// mutable columns.
+export const agentTaskSteps = pgTable("agent_task_steps", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  taskId: uuid("task_id")
+    .notNull()
+    .references(() => agentTasks.id),
+  stepName: text("step_name").notNull(),
+  outcome: text("outcome").notNull(), // "succeeded" | "failed" | "stopped" — free text, matching mandateVerifications.failureReason's own precedent for a small, code-owned vocabulary
+  reason: text("reason").notNull(),
+  // Set only when this step took a real money action — the proof this
+  // step actually passed through the gate, not a bypass, same field
+  // recovery_attempts.moneyActionId already plays for the recovery
+  // pipeline this layer's first migration wraps.
+  moneyActionId: uuid("money_action_id").references(() => moneyActions.id),
+  durationMs: integer("duration_ms"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
