@@ -150,6 +150,20 @@ export interface MoneyActionRequest {
    * and quantity it covers.
    */
   cartConversationId?: string;
+  /**
+   * Layer 13-5: preflight/dry-run. When true, attemptMoneyAction runs
+   * every check up through checkBounds (capability — checked by the
+   * caller before this is invoked, mandate verification, Guardian
+   * state, spend cap, stock, price-match, everything checkBounds does)
+   * and then stops — no budget or stock reservation, no money_actions
+   * row, no Razorpay call. The ONE rule that makes this honest: this is
+   * not a parallel reimplementation of the rules, it is the exact same
+   * checkBounds() call every real attempt makes, just not committed to.
+   * Still writes an audit entry (event: "preflight_evaluated",
+   * decision: "n/a") so a simulation is visible in the trail without
+   * ever being confused with a real money action.
+   */
+  dryRun?: boolean;
 }
 
 export interface GateResult {
@@ -894,18 +908,38 @@ export async function attemptMoneyAction(
 
     const boundsResult = await checkBounds(request);
     if (isBoundFailure(boundsResult)) {
+      const reason = request.dryRun ? `Preflight — this request would be DENIED: ${boundsResult.reason}` : boundsResult.reason;
       await logAuditEntry({
         merchantId: request.merchantId,
         actor: "agent",
-        event: `money_action_attempt:${request.type}`,
-        decision: "deny",
-        reason: boundsResult.reason,
+        event: request.dryRun ? "preflight_evaluated" : `money_action_attempt:${request.type}`,
+        decision: request.dryRun ? "n/a" : "deny",
+        reason,
         boundApplied: boundsResult.boundApplied,
-        metadata: { agentId: request.agentId, amountPaise: request.amountPaise, context: request.context, variantId: request.variantId },
+        metadata: { agentId: request.agentId, amountPaise: request.amountPaise, context: request.context, variantId: request.variantId, ...(request.dryRun && { wouldAllow: false }) },
       });
-      return { decision: "deny", reason: boundsResult.reason };
+      return { decision: "deny", reason };
     }
     const { variant, offer, negotiation, cart } = boundsResult;
+
+    if (request.dryRun) {
+      // Every deterministic check that would have run for a real
+      // attempt already ran inside checkBounds above (including the
+      // Guardian's inline evaluation) — this only stops short of
+      // reserving anything. decision: "n/a" on the audit row keeps a
+      // preflight visually distinct from a real allow/deny/escalate,
+      // per the plan's own instruction not to confuse the two.
+      const reason = `Preflight — this request would be ALLOWED: every deterministic check passed (spend cap, stock, price match, Guardian state). The risk layer's live judgment on escalation is not simulated, since that call is only made once budget is actually reserved.`;
+      await logAuditEntry({
+        merchantId: request.merchantId,
+        actor: "agent",
+        event: "preflight_evaluated",
+        decision: "n/a",
+        reason,
+        metadata: { agentId: request.agentId, amountPaise: request.amountPaise, context: request.context, variantId: request.variantId, wouldAllow: true },
+      });
+      return { decision: "allow", reason };
+    }
 
     // Re-fetch rather than thread the cap through from checkBounds, so
     // the reservation's WHERE clause is the sole source of truth on balance.

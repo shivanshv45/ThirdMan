@@ -1,6 +1,7 @@
 import { sql, eq, and } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { logAuditEntry } from "@/lib/audit";
+import { enqueueNotification } from "@/lib/notifications/enqueue";
 
 /**
  * Layer 13-4: the Runtime Guardian. Supervision — is this agent behaving
@@ -302,6 +303,27 @@ export async function evaluateAndTransition(agentId: string): Promise<{ state: G
     boundApplied: `guardian:${evaluation.signal}`,
     metadata: { agentId, fromState: currentState, toState: nextState, signal: evaluation.signal },
   });
+
+  // Merchant notification through Layer 11's existing delivery spine —
+  // no new notification code, only a real event this codebase already
+  // owns the pipeline for. Only on the real incident (suspended), not
+  // every throttle step, so a merchant isn't paged for a soft warning.
+  // Enqueue only, never awaited into the money path's own success —
+  // same discipline as gate.ts's webhook enqueue after a refund.
+  if (nextState === "suspended") {
+    try {
+      await enqueueNotification({
+        merchantId: agent.merchantId,
+        recipientKind: "merchant",
+        notificationType: "guardian_trip",
+        subject: `Agent "${agent.name}" suspended by the Runtime Guardian`,
+        bodyText: `Your agent "${agent.name}" was automatically suspended: ${evaluation.reason}\n\nIts reserved budget for the flagged request has been released. Review this in the dashboard's Guardian view and re-arm the agent once you've confirmed the activity is legitimate.`,
+        relatedEntityId: agentId,
+      });
+    } catch (err) {
+      console.warn("[guardian] notification enqueue failed after suspension:", err);
+    }
+  }
 
   return { state: nextState, transitioned: true, evaluation };
 }

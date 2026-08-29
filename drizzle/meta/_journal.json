@@ -169,6 +169,13 @@
       "when": 1787993777531,
       "tag": "0023_ordinary_jackpot",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1788002286985,
+      "tag": "0024_light_romulus",
+      "breakpoints": true
     }
   ]
 }

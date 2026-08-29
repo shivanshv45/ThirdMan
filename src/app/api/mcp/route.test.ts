@@ -69,6 +69,12 @@ async function makeAgentWithCap(merchantId: string) {
     status: "active",
   });
 
+  // Layer 13-2: this shared helper backs tests across nearly every MCP
+  // tool (list_products, purchase, negotiate, get_merchant_policy, ...),
+  // each gated by its own capability — grant the full set, the same
+  // backfill every pre-Layer-13 agent got at migration time.
+  await db.insert(schema.agentCapabilities).values(schema.agentCapabilityEnum.enumValues.map((capability) => ({ agentId: agent.id, capability })));
+
   return { agent, rawKey };
 }
 
@@ -114,6 +120,7 @@ describe("POST /api/mcp", () => {
     await db.delete(schema.negotiations).where(eq(schema.negotiations.merchantId, currentMerchantId));
 
     if (currentAgentIds.length > 0) {
+      await db.delete(schema.agentCapabilities).where(inArray(schema.agentCapabilities.agentId, currentAgentIds));
       await db.delete(schema.spendCaps).where(inArray(schema.spendCaps.agentId, currentAgentIds));
     }
     await db.delete(schema.agents).where(eq(schema.agents.merchantId, currentMerchantId));
@@ -222,6 +229,7 @@ describe("POST /api/mcp", () => {
       .values({ merchantId: merchant.id, name: "__mcp_tiny_cap_agent__", apiKeyHash: hashApiKey(rawKey), status: "active" })
       .returning();
     agentIds.push(agent.id);
+    await db.insert(schema.agentCapabilities).values({ agentId: agent.id, capability: "purchase:create" });
     const now = new Date();
     await db.insert(schema.spendCaps).values({
       agentId: agent.id,

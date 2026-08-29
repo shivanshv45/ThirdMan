@@ -58,6 +58,12 @@ async function makeAgentWithCap(merchantId: string) {
     status: "active",
   });
 
+  // Layer 13-2: the route now checks purchase:create before anything
+  // else — an agent created directly in the DB (bypassing the dashboard's
+  // capability form) needs it granted explicitly, same as a real
+  // merchant would via /dashboard/agents.
+  await db.insert(schema.agentCapabilities).values({ agentId: agent.id, capability: "purchase:create" });
+
   return { agent, rawKey };
 }
 
@@ -96,6 +102,7 @@ describe("POST /api/agent/purchase", () => {
     productIds = [];
 
     if (currentAgentIds.length > 0) {
+      await db.delete(schema.agentCapabilities).where(inArray(schema.agentCapabilities.agentId, currentAgentIds));
       await db.delete(schema.spendCaps).where(inArray(schema.spendCaps.agentId, currentAgentIds));
     }
     await db.delete(schema.auditLog).where(eq(schema.auditLog.merchantId, currentMerchantId));
@@ -148,13 +155,16 @@ describe("POST /api/agent/purchase", () => {
   it("a denial is HTTP 200 with decision: deny in the body, not an error status", async () => {
     const merchant = await makeMerchant();
     merchantId = merchant.id;
-    // No spend cap at all — a guaranteed deny.
+    // No spend cap at all — a guaranteed deny (at the spend_cap_exists
+    // bound, not the capability check — this agent still needs
+    // purchase:create granted to reach that far).
     const rawKey = generateApiKey();
     const [agent] = await db
       .insert(schema.agents)
       .values({ merchantId: merchant.id, name: "__no_cap_agent__", apiKeyHash: hashApiKey(rawKey), status: "active" })
       .returning();
     agentIds.push(agent.id);
+    await db.insert(schema.agentCapabilities).values({ agentId: agent.id, capability: "purchase:create" });
 
     const res = await POST(request({ amountPaise: 10_000, context: "test" }, { authorization: `Bearer ${rawKey}` }));
     expect(res.status).toBe(200);

@@ -34,7 +34,9 @@ const createdMerchantIds: string[] = [];
 
 afterEach(async () => {
   for (const merchantId of createdMerchantIds) {
-    await db.delete(schema.spendCaps).where(inArray(schema.spendCaps.agentId, db.select({ id: schema.agents.id }).from(schema.agents).where(eq(schema.agents.merchantId, merchantId))));
+    const agentIdsSubquery = db.select({ id: schema.agents.id }).from(schema.agents).where(eq(schema.agents.merchantId, merchantId));
+    await db.delete(schema.agentCapabilities).where(inArray(schema.agentCapabilities.agentId, agentIdsSubquery));
+    await db.delete(schema.spendCaps).where(inArray(schema.spendCaps.agentId, agentIdsSubquery));
     await db.delete(schema.agents).where(eq(schema.agents.merchantId, merchantId));
     await db.delete(schema.productVariants).where(eq(schema.productVariants.merchantId, merchantId));
     await db.delete(schema.products).where(eq(schema.products.merchantId, merchantId));
@@ -69,6 +71,10 @@ async function setupMerchantWithAgent() {
     .insert(schema.agents)
     .values({ merchantId: merchant.id, name: "__cost_leak_agent__", apiKeyHash: hashApiKey(rawKey), status: "active" })
     .returning();
+
+  // Layer 13-2: this helper backs MCP tool calls across several
+  // capability-gated tools (negotiate, purchase) — grant the full set.
+  await db.insert(schema.agentCapabilities).values(schema.agentCapabilityEnum.enumValues.map((capability) => ({ agentId: agent.id, capability })));
 
   return { merchant, product, rawKey, agent };
 }

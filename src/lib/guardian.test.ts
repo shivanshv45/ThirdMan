@@ -140,6 +140,11 @@ describe("Guardian — real DB, real gate integration", () => {
     agentId = undefined;
 
     if (currentAgentId) {
+      // A real suspension enqueues a real merchant notification
+      // (guardian.ts's evaluateAndTransition) — must be cleaned up
+      // before merchants, same FK-ordering discipline every other
+      // cleanup block in this codebase follows.
+      await db.delete(schema.notificationDeliveries).where(eq(schema.notificationDeliveries.relatedEntityId, currentAgentId));
       await db.delete(schema.guardianTransitions).where(eq(schema.guardianTransitions.agentId, currentAgentId));
       await db.delete(schema.agentGuardianState).where(eq(schema.agentGuardianState.agentId, currentAgentId));
       await db.delete(schema.escalations).where(eq(schema.escalations.spendCapId, db.select({ id: schema.spendCaps.id }).from(schema.spendCaps).where(eq(schema.spendCaps.agentId, currentAgentId))));

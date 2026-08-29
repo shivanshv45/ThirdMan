@@ -2,10 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 import * as mutations from "@/lib/dashboard-mutations";
-import { resolveEscalation } from "@/lib/gate";
+import { resolveEscalation, attemptMoneyAction, type GateResult } from "@/lib/gate";
 import { requireSessionMerchant, destroySession } from "@/lib/auth";
 import { getAuditTrail } from "@/lib/dashboard";
-import { schema } from "@/lib/db";
+import { db, schema } from "@/lib/db";
+import { eq, and } from "drizzle-orm";
 import { rearmAgent } from "@/lib/guardian";
 import { redirect } from "next/navigation";
 
@@ -124,6 +125,38 @@ export async function rejectEscalation(formData: FormData) {
   if (!escalationId) throw new Error("Missing escalationId");
   await resolveEscalation(merchant.id, escalationId, "rejected");
   revalidatePath("/dashboard");
+}
+
+/**
+ * Layer 13-5: the merchant-facing preflight simulator — calls the exact
+ * same attemptMoneyAction({ dryRun: true }) an agent's own
+ * /api/agent/preflight call would, so "what happens if this agent tries
+ * ₹X" answers with the real gate, not a copy of its rules. Re-verifies
+ * the agent belongs to this merchant before simulating anything against it.
+ */
+export async function runPreflightSimulation(formData: FormData): Promise<GateResult & { agentName: string }> {
+  const merchant = await requireSessionMerchant();
+  const agentId = String(formData.get("agentId"));
+  const amountRupees = Number(formData.get("amountRupees"));
+  const context = String(formData.get("context") ?? "Merchant-run preflight simulation");
+
+  const [agent] = await db.select().from(schema.agents).where(and(eq(schema.agents.id, agentId), eq(schema.agents.merchantId, merchant.id)));
+  if (!agent) throw new Error("Agent not found");
+
+  if (!Number.isFinite(amountRupees) || amountRupees <= 0) {
+    throw new Error("Enter a positive amount");
+  }
+
+  const result = await attemptMoneyAction({
+    agentId: agent.id,
+    merchantId: merchant.id,
+    type: "order_create",
+    amountPaise: Math.round(amountRupees * 100),
+    context,
+    dryRun: true,
+  });
+
+  return { ...result, agentName: agent.name };
 }
 
 export async function rearmAgentAction(formData: FormData) {
