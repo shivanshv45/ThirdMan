@@ -29,9 +29,10 @@ export function CodaHero() {
           </Link>
           <Link
             href="/signup"
-            className="inline-flex items-center h-[42px] px-[22px] rounded-full bg-on-ink text-ink text-[14.5px] font-medium hover:bg-accent hover:text-accent-ink transition-colors"
+            className="inline-flex items-center h-[42px] px-[22px] rounded-none bg-black text-[14.5px] font-medium transition-colors"
+            style={{ color: '#ffffff' }}
           >
-            Get started
+            Get a scoped key
           </Link>
         </div>
       </nav>
@@ -51,9 +52,8 @@ export function CodaHero() {
             AGENTS ARE THE NEW BUYERS &rarr;
           </div>
 
-          <h1 className="font-[family-name:var(--font-display)] text-[clamp(2.75rem,6.2vw,6.5rem)] leading-[0.88] tracking-[-0.035em] uppercase text-on-ink">
-            AUTHORIZE<br />BOUND<br />
-            <span className="text-accent">ACCOUNT FOR</span>
+          <h1 className="font-[family-name:var(--font-display)] text-[clamp(2rem,4.5vw,4.5rem)] max-w-3xl leading-[1.05] tracking-[-0.035em] uppercase text-on-ink text-balance">
+            THE THIRD MAN BETWEEN YOU AND THE BUYER
           </h1>
 
           <p className="max-w-[44ch] text-[17px] leading-[1.55] text-on-ink-dim text-pretty">
@@ -63,7 +63,8 @@ export function CodaHero() {
           <div className="flex items-center gap-5 flex-wrap justify-center">
             <Link
               href="/signup"
-              className="inline-flex items-center h-[54px] px-[30px] rounded-full bg-accent text-accent-ink text-[15px] font-semibold hover:bg-on-ink hover:text-ink transition-colors"
+              className="inline-flex items-center h-[54px] px-[30px] rounded-none bg-black text-[15px] font-semibold hover:bg-black/80 transition-colors"
+              style={{ color: '#ffffff' }}
             >
               Create a merchant account
             </Link>
