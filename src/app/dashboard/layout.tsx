@@ -4,7 +4,7 @@ import { getPendingEscalations, getGuardianIncidents, getActiveTaskCount, getPen
 import { getFreezeState } from "@/lib/guardian";
 import { getShadowModeState } from "@/lib/shadow-mode";
 import { logout } from "./actions";
-import { SidebarNav, type NavGroup } from "./sidebar-nav";
+import { TopNav, type NavGroup } from "./top-nav";
 import { KillSwitchBanner } from "./kill-switch-banner";
 import { ShadowModeBanner } from "./shadow-mode-banner";
 import { Reveal } from "@/components/ui";
@@ -121,42 +121,24 @@ export default async function DashboardLayout({ children }: { children: React.Re
   ];
 
   return (
-    <div className="flex flex-col flex-1 min-h-0">
+    <div className="dashboard-theme flex flex-col h-screen w-full overflow-hidden text-on-ink bg-ink-overlay">
       <Reveal />
-      {/* Layer 25-2: unmistakable on every dashboard surface while
-          active, not a subtle banner on one page — sits above the
-          sidebar/content split entirely, full width, on every route
-          under /dashboard. */}
       {freezeState && <KillSwitchBanner reason={freezeState.reason} frozenAt={freezeState.frozenAt} />}
       {shadowModeState && <ShadowModeBanner enabledAt={shadowModeState.enabledAt} />}
-      <div className="flex flex-col md:flex-row flex-1 min-h-0">
-        <SidebarNav
-          groups={groups}
-          statusLabel={escalations.length ? `${escalations.length} pending escalation${escalations.length === 1 ? "" : "s"}` : "All decisions resolved"}
-          statusTone={escalations.length ? "escalate" : "allow"}
-        />
-        <div className="flex-1 min-w-0 flex flex-col">
-          <div className="hidden md:flex items-center justify-between px-8 h-[var(--nav-h)] border-b border-ink-line shrink-0">
-            <div className="flex items-baseline gap-2.5 min-w-0">
-              <span className="font-[family-name:var(--font-display)] text-lg text-on-ink truncate">{merchant.name}</span>
-              <span className="text-[var(--t-label)] uppercase tracking-[0.08em] text-on-ink-faint shrink-0">
-                Merchant
-              </span>
-            </div>
-            <form action={logout}>
-              <button
-                type="submit"
-                className="text-sm px-3 py-1.5 rounded-[var(--radius)] border border-ink-line text-on-ink-dim hover:text-on-ink hover:border-on-ink-faint transition-colors duration-[var(--dur-fast)]"
-              >
-                Log out
-              </button>
-            </form>
-          </div>
-          <main className="flex-1 min-w-0 px-4 md:px-8 py-6 md:py-10 max-w-[var(--shell)] w-full mx-auto">
-            {children}
-          </main>
+
+      <TopNav
+        groups={groups}
+        merchantName={merchant.name}
+        statusLabel={escalations.length ? `${escalations.length} pending escalation${escalations.length === 1 ? "" : "s"}` : "All decisions resolved"}
+        statusTone={escalations.length ? "escalate" : "allow"}
+        logoutAction={logout}
+      />
+
+      <main className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden">
+        <div className="px-4 md:px-8 py-8 md:py-10 max-w-[var(--shell)] w-full mx-auto pb-32">
+          {children}
         </div>
-      </div>
+      </main>
     </div>
   );
 }

@@ -109,16 +109,16 @@ export function SidebarNav({
                   key={item.href}
                   href={item.href}
                   onClick={() => setOpen(false)}
-                  className={`group relative flex items-center justify-between gap-2 rounded-[var(--radius)] px-2 py-1.5 text-sm transition-colors duration-[var(--dur-fast)] ease-[var(--ease-out)] ${
+                  className={`group relative flex items-center justify-between gap-2 rounded-[var(--radius)] px-2.5 py-1.5 text-sm transition-all duration-[var(--dur-fast)] ease-[var(--ease-out)] ${
                     active
-                      ? "bg-accent-wash text-on-ink font-medium"
-                      : "text-on-ink-dim hover:text-on-ink hover:bg-ink-overlay"
+                      ? "bg-ink-line text-on-ink font-semibold shadow-sm border border-ink-line-soft"
+                      : "text-on-ink-dim hover:text-on-ink hover:bg-ink-line-soft border border-transparent"
                   }`}
                 >
                   {active && (
                     <span
                       aria-hidden="true"
-                      className="absolute left-0 top-1/2 -translate-y-1/2 h-4 w-0.5 rounded-full bg-accent"
+                      className="absolute -left-[1px] top-1/2 -translate-y-1/2 h-3.5 w-[3px] rounded-r-full bg-accent"
                     />
                   )}
                   <span className="flex items-center gap-2.5 min-w-0">
@@ -187,7 +187,7 @@ export function SidebarNav({
       )}
 
       {/* Desktop sidebar */}
-      <aside className="hidden md:flex md:flex-col w-[var(--sidebar-w)] shrink-0 border-r border-ink-line h-full">
+      <aside className="hidden md:flex md:flex-col w-[var(--sidebar-w)] shrink-0 border-r border-ink-line h-full bg-ink z-10 relative">
         <div className="flex-1 min-h-0 overflow-y-auto">{nav}</div>
         {statusLabel && (
           <div className="flex items-center gap-1.5 border-t border-ink-line px-3.5 py-2 text-xs text-on-ink-faint shrink-0">

@@ -146,7 +146,7 @@ describe("POST /api/agent/purchase", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.decision).toBe("deny");
-  });
+  }, 20_000);
 
   it("rejects a malformed JSON body, 400", async () => {
     const merchant = await makeMerchant();

@@ -764,7 +764,7 @@ export const merchantPolicies = pgTable("merchant_policies", {
     .defaultNow(),
 });
 
-export const catalogueImportSourceEnum = pgEnum("catalogue_import_source", ["csv", "pasted_text"]);
+export const catalogueImportSourceEnum = pgEnum("catalogue_import_source", ["csv", "pasted_text", "shopify"]);
 
 export const catalogueImportStatusEnum = pgEnum("catalogue_import_status", [
   "previewed",
@@ -2312,6 +2312,57 @@ export const merchantShadowMode = pgTable("merchant_shadow_mode", {
     .primaryKey()
     .references(() => merchants.id),
   enabledAt: timestamp("enabled_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// L24-3: the Shopify app. One row per installed shop — a custom/unlisted
+// app on a real dev store exercises the identical OAuth, Admin API and
+// webhook code path a listed app would, per the plan's own scoping
+// honesty note (see DECISIONS.md). accessTokenEncrypted uses crypto.ts's
+// same AES-256-GCM at rest as merchants.razorpayKeyIdEncrypted — an
+// offline Admin API access token is exactly the kind of credential that
+// column is already protected this way for, never stored plain.
+// One shop per merchant (a merchant with two Shopify stores connects a
+// second Thirdman account, matching how Razorpay credentials are scoped
+// 1:1 today) and one merchant per shop (a shop domain can't be claimed
+// twice — enforced by the unique index below, checked at install time).
+export const shopifyConnections = pgTable(
+  "shopify_connections",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id),
+    shopDomain: text("shop_domain").notNull(),
+    accessTokenEncrypted: text("access_token_encrypted").notNull(),
+    scope: text("scope").notNull(),
+    installedAt: timestamp("installed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("shopify_connections_merchant_idx").on(table.merchantId),
+    uniqueIndex("shopify_connections_shop_domain_idx").on(table.shopDomain),
+  ],
+);
+
+// L24-3: the install flow's CSRF state, the same shape oauth.ts's own
+// OAUTH_STATE_COOKIE proves out for Google/GitHub, but stored as a row
+// rather than a cookie — Shopify's install redirect happens from the
+// merchant's own admin, in a different browser context than the
+// dashboard session that initiated it, so a cookie set on this app's
+// origin isn't guaranteed to survive the round trip. Short-lived,
+// single-use, deleted on redemption exactly like cliLinkTokens.
+export const shopifyInstallStates = pgTable("shopify_install_states", {
+  state: text("state").primaryKey(),
+  merchantId: uuid("merchant_id")
+    .notNull()
+    .references(() => merchants.id),
+  shopDomain: text("shop_domain").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
 });

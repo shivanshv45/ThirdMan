@@ -75,7 +75,7 @@ export function AuditTrail({ initialEntries }: { initialEntries: AuditEntry[] })
     <section>
       <div className="flex items-end justify-between gap-4 flex-wrap mb-4">
         <div>
-          <h2 className="text-[var(--t-h3)] font-[family-name:var(--font-display)] text-on-ink">Decision stream</h2>
+          <h2 className="text-lg font-semibold tracking-tight text-on-ink">Decision stream</h2>
           <p className="text-sm text-on-ink-dim mt-1">
             Every money action, the bound that applied, and why — newest first.
           </p>
@@ -99,7 +99,7 @@ export function AuditTrail({ initialEntries }: { initialEntries: AuditEntry[] })
       {entries.length === 0 ? (
         <EmptyState title="No decisions yet" description="Every allow, deny, and escalation will appear here as it happens." />
       ) : (
-        <div className="rounded-[var(--radius-lg)] border border-ink-line overflow-hidden">
+        <div className="rounded-[var(--radius-lg)] border border-ink-line bg-ink shadow-sm overflow-hidden">
           {entries.map((entry, i) => {
             const expanded = expandedId === entry.id;
             const hasDetail = !!(entry.boundApplied || entry.moneyAction || entry.event);

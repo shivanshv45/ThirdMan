@@ -53,6 +53,18 @@ describe("adversarial buyer sequence — every hit is refused with the existing 
     agentId = undefined;
 
     await db.delete(schema.auditLog).where(eq(schema.auditLog.merchantId, currentMerchantId));
+    // A hostile purchase attempt can genuinely escalate (this test's own
+    // "risk layer's live judgment is not simulated" — see its own file
+    // header), which leaves an escalations row referencing money_actions.
+    // escalations has no merchantId of its own, so it's scoped via the
+    // money action ids it references — deleted first, same FK-ordering
+    // fix already applied elsewhere in this codebase for the identical
+    // class of miss — see FAILURES.md.
+    const moneyActionRows = await db.select({ id: schema.moneyActions.id }).from(schema.moneyActions).where(eq(schema.moneyActions.merchantId, currentMerchantId));
+    const moneyActionIds = moneyActionRows.map((r) => r.id);
+    if (moneyActionIds.length > 0) {
+      await db.delete(schema.escalations).where(inArray(schema.escalations.moneyActionId, moneyActionIds));
+    }
     await db.delete(schema.moneyActions).where(eq(schema.moneyActions.merchantId, currentMerchantId));
     await db.delete(schema.agentCapabilities).where(eq(schema.agentCapabilities.agentId, currentAgentId));
     await db.delete(schema.spendCaps).where(eq(schema.spendCaps.agentId, currentAgentId));

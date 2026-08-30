@@ -46,7 +46,6 @@ export default async function DashboardPage() {
     <div>
       <PageHeader
         title="Overview"
-        description="Where you're losing money right now, what happened with it, and what the system refused to do about it."
       />
 
       {isFirstRun && (
@@ -91,50 +90,48 @@ export default async function DashboardPage() {
 
       {escalations.length > 0 && (
         <section className="mb-12">
-          <div className="flex items-baseline gap-3 mb-4">
-            <h2 className="text-[var(--t-h3)] font-[family-name:var(--font-display)] text-on-ink">
-              Waiting on you
+          <div className="flex items-center gap-3 mb-4">
+            <h2 className="text-lg font-semibold text-on-ink tracking-tight">
+              Tasks
             </h2>
-            <span className="font-mono text-xs text-escalate-bright">
-              {escalations.length} held, nothing moves until you decide
+            <span className="text-xs font-medium text-escalate-bright px-2 py-0.5 bg-escalate-wash rounded-full">
+              {escalations.length} to review
             </span>
           </div>
-          <div className="space-y-2">
+          <Surface className="divide-y divide-ink-line-soft overflow-hidden">
             {escalations.map((esc) => (
               <div
                 key={esc.id}
-                className="relative rounded-[var(--radius-lg)] border border-ink-line bg-ink-raised pl-5 pr-4 py-4 overflow-hidden"
+                className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 hover:bg-ink-overlay transition-colors"
               >
-                <span aria-hidden="true" className="absolute left-0 inset-y-0 w-[3px] bg-escalate" />
-                <div className="flex items-start justify-between flex-wrap gap-3">
-                  <div className="min-w-0">
-                    <div className="flex items-baseline gap-2 flex-wrap">
-                      <span className="font-mono text-lg text-on-ink tabular-nums">
-                        {rupees(esc.moneyAction.amountPaise)}
-                      </span>
-                      <span className="text-sm text-on-ink-dim">{esc.agent?.name ?? "Unknown agent"}</span>
-                      <span className="text-xs text-on-ink-faint font-mono">{formatDate(esc.createdAt)}</span>
-                    </div>
-                    <p className="text-sm text-on-ink-dim mt-1.5 max-w-[var(--measure)]">{esc.riskReason}</p>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-3">
+                    <span className="font-mono text-lg font-medium text-on-ink tabular-nums">
+                      {rupees(esc.moneyAction.amountPaise)}
+                    </span>
+                    <span className="px-2 py-0.5 rounded bg-ink-line-soft text-xs font-medium text-on-ink-dim">
+                      {esc.agent?.name ?? "Unknown agent"}
+                    </span>
                   </div>
-                  <div className="flex gap-2 shrink-0">
-                    <form action={approveEscalation}>
-                      <input type="hidden" name="escalationId" value={esc.id} />
-                      <Button type="submit" variant="primary" size="sm" pendingLabel="Approving…">
-                        Approve
-                      </Button>
-                    </form>
-                    <form action={rejectEscalation}>
-                      <input type="hidden" name="escalationId" value={esc.id} />
-                      <Button type="submit" variant="destructive" size="sm" pendingLabel="Rejecting…">
-                        Reject
-                      </Button>
-                    </form>
-                  </div>
+                  <p className="text-sm text-on-ink-dim mt-1 max-w-2xl truncate">{esc.riskReason}</p>
+                </div>
+                <div className="flex gap-2 shrink-0">
+                  <form action={approveEscalation}>
+                    <input type="hidden" name="escalationId" value={esc.id} />
+                    <Button type="submit" variant="primary" size="sm" pendingLabel="Approving…">
+                      Approve
+                    </Button>
+                  </form>
+                  <form action={rejectEscalation}>
+                    <input type="hidden" name="escalationId" value={esc.id} />
+                    <Button type="submit" variant="destructive" size="sm" pendingLabel="Rejecting…">
+                      Reject
+                    </Button>
+                  </form>
                 </div>
               </div>
             ))}
-          </div>
+          </Surface>
         </section>
       )}
 
@@ -142,26 +139,30 @@ export default async function DashboardPage() {
 
       {/* The two headline facts, given the room that says so. Everything
           below this band is supporting evidence and renders smaller. */}
-      <section className="mb-6">
-        <Surface variant="raised" className="grid sm:grid-cols-2 divide-y sm:divide-y-0 sm:divide-x divide-ink-line">
-          <div className="p-6 sm:p-8">
+      <section className="mb-8">
+        <div className="grid md:grid-cols-2 gap-4">
+          <Surface variant="raised" className="p-8 flex flex-col justify-between min-h-[180px]">
             <MoneyStat
               label="Money moved"
               paise={moneyMoved.capturedPaise}
               size="primary"
-              caption={`${moneyMoved.capturedCount} captured payment${moneyMoved.capturedCount === 1 ? "" : "s"}, settled into your own Razorpay account`}
             />
-          </div>
-          <div className="p-6 sm:p-8">
+            <div className="text-sm text-on-ink-dim mt-4">
+              {moneyMoved.capturedCount} captured payment{moneyMoved.capturedCount === 1 ? "" : "s"}
+            </div>
+          </Surface>
+          <Surface variant="raised" className="p-8 flex flex-col justify-between min-h-[180px]">
             <MoneyStat
               label="Money recovered"
               paise={recoveryStats.recoveredPaise}
               tone="allow"
               size="primary"
-              caption={`${recoveryStats.recoveredCount} of ${recoveryStats.failureCount} failed payment${recoveryStats.failureCount === 1 ? "" : "s"} brought back`}
             />
-          </div>
-        </Surface>
+            <div className="text-sm text-on-ink-dim mt-4">
+              {recoveryStats.recoveredCount} of {recoveryStats.failureCount} failed payment{recoveryStats.failureCount === 1 ? "" : "s"} brought back
+            </div>
+          </Surface>
+        </div>
       </section>
 
       {/* Asymmetric on purpose: the composition bar needs real width to be

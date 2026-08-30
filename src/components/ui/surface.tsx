@@ -3,8 +3,8 @@ import type { ReactNode, HTMLAttributes } from "react";
 type SurfaceVariant = "flush" | "raised" | "inset";
 
 const VARIANT_CLASS: Record<SurfaceVariant, string> = {
-  flush: "bg-ink border border-ink-line",
-  raised: "bg-ink-raised border border-ink-line shadow-[0_1px_0_0_rgba(255,255,255,0.02)_inset]",
+  flush: "bg-ink border border-ink-line shadow-sm",
+  raised: "bg-ink-raised border border-ink-line shadow-[0_2px_12px_-2px_rgba(15,23,42,0.06),_0_4px_24px_-4px_rgba(15,23,42,0.02)]",
   inset: "bg-ink-overlay border border-ink-line-soft",
 };
 

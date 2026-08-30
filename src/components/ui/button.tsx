@@ -6,10 +6,10 @@ import { useFormStatus } from "react-dom";
 type Variant = "primary" | "secondary" | "ghost" | "destructive";
 
 const VARIANT_CLASS: Record<Variant, string> = {
-  primary: "bg-accent text-accent-ink hover:bg-accent-bright",
-  secondary: "bg-ink-overlay text-on-ink border border-ink-line hover:border-on-ink-faint",
+  primary: "bg-accent text-[#ffffff] hover:bg-accent-bright shadow-sm",
+  secondary: "bg-ink-raised text-on-ink border border-ink-line shadow-sm hover:border-ink-line-soft hover:bg-ink-overlay",
   ghost: "text-on-ink-dim hover:text-on-ink hover:bg-ink-overlay",
-  destructive: "bg-deny-wash text-deny-bright border border-deny-line hover:bg-deny/20",
+  destructive: "bg-deny text-[#ffffff] border border-transparent shadow-sm hover:bg-deny-bright",
 };
 
 const SIZE_CLASS = {
@@ -44,8 +44,8 @@ export function Button({
     <button
       {...rest}
       disabled={isPending || rest.disabled}
-      className={`inline-flex items-center justify-center gap-1.5 rounded-[var(--radius)] font-medium
-        transition-[background-color,border-color,color,opacity] duration-[var(--dur-fast)] ease-[var(--ease-out)]
+      className={`inline-flex items-center justify-center gap-1.5 rounded-full font-medium
+        transition-[background-color,border-color,color,opacity,box-shadow] duration-[var(--dur-fast)] ease-[var(--ease-out)]
         disabled:opacity-50 disabled:cursor-not-allowed
         ${VARIANT_CLASS[variant]} ${SIZE_CLASS[size]} ${className}`}
     >

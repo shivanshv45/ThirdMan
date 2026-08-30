@@ -33,7 +33,7 @@ export function DecisionComposition({
 
   return (
     <div>
-      <svg viewBox="0 0 100 10" width="100%" height="20" preserveAspectRatio="none" role="img" aria-label="Decision composition">
+      <svg viewBox="0 0 100 10" width="100%" height="20" preserveAspectRatio="none" role="img" aria-label="Decision composition" className="rounded-full overflow-hidden">
         {bars.map((b) => (
           <rect key={b.key} x={b.x} y={0} width={b.w} height={10} fill={b.color} />
         ))}

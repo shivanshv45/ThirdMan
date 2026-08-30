@@ -63,7 +63,7 @@ export function MoneyAtRisk({ summary }: { summary: MoneyAtRiskSummary }) {
 
   return (
     <section className="mb-10">
-      <h2 className="text-[var(--t-h3)] font-[family-name:var(--font-display)] text-on-ink mb-4">
+      <h2 className="text-lg font-semibold text-on-ink tracking-tight mb-4">
         Where money is at risk right now
       </h2>
 

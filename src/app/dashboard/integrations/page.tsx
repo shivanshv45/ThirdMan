@@ -3,14 +3,16 @@ import { PageHeader, Surface } from "@/components/ui";
 import { WooCommerceDownload } from "./woocommerce-download";
 import { CopyPasteArtifacts } from "./copy-paste-artifacts";
 import { UnsupportedPlatformSpec } from "./unsupported-platform-spec";
+import { ShopifyConnect } from "./shopify-connect";
 
 /**
- * Layer 24-4/24-5/24-6: three delivery surfaces for merchants not on
- * Next.js/static HTML (the CLI, Layer 20) or Shopify (Layer 24-3) — a
- * generated WooCommerce plugin, exact copy-paste artifacts for any other
- * platform, and a written spec for a platform none of the above covers.
- * All three reuse the same audit engine and generator logic the CLI and
- * the Instant Audit already use — see plans/layer-24-onboarding-surfaces.md.
+ * Layer 24-3/24-4/24-5/24-6: four delivery surfaces for merchants not
+ * on Next.js/static HTML (the CLI, Layer 20) — a real Shopify OAuth
+ * install with a live Admin API catalogue sync, a generated WooCommerce
+ * plugin, exact copy-paste artifacts for any other platform, and a
+ * written spec for a platform none of the above covers. All four reuse
+ * the same audit engine and generator logic the CLI and the Instant
+ * Audit already use — see plans/layer-24-onboarding-surfaces.md.
  */
 export default async function IntegrationsPage() {
   await requireSessionMerchant();
@@ -19,8 +21,18 @@ export default async function IntegrationsPage() {
     <div className="space-y-8">
       <PageHeader
         title="Integrations for other platforms"
-        description="Not on Next.js, static HTML, or Shopify? These three paths cover WooCommerce, any platform with exact copy-paste artifacts, and a written spec for anything else — reusing the same audit engine and generated artifacts the CLI produces."
+        description="Not on Next.js or static HTML? Connect Shopify directly, or use WooCommerce, exact copy-paste artifacts, or a written spec for anything else — all reusing the same audit engine and generated artifacts the CLI produces."
       />
+
+      <Surface variant="raised" className="p-5 space-y-4">
+        <div>
+          <h2 className="text-[var(--t-h4)] font-medium text-on-ink">Shopify</h2>
+          <p className="text-sm text-on-ink-dim mt-1">
+            A real OAuth install on your own store. Your catalogue syncs from the Admin API into the same preview-then-confirm import every other source uses — nothing is written until you confirm the rows.
+          </p>
+        </div>
+        <ShopifyConnect />
+      </Surface>
 
       <Surface variant="raised" className="p-5 space-y-4">
         <div>

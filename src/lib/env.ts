@@ -66,6 +66,14 @@ const envSchema = z.object({
   // separated, lowercased/trimmed at read time. Optional and empty by
   // default — most deployments need nothing here.
   AUTH_THROTTLE_EXEMPT_EMAILS: z.string().optional(),
+  // Layer 24-3: the Shopify app's own credentials, issued by Shopify's
+  // Partner Dashboard when the app is created — optional as a pair,
+  // same posture as Google/GitHub OAuth above. Absent means
+  // shopify.ts's isShopifyConfigured() returns false and the "Connect
+  // Shopify" entry point on /dashboard/integrations is simply not
+  // rendered, never a button that 500s.
+  SHOPIFY_API_KEY: z.string().optional(),
+  SHOPIFY_API_SECRET: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
