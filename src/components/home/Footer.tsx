@@ -12,7 +12,7 @@ import Link from "next/link";
  * fabrication problem as a fake table row.
  */
 
-export function Footer() {
+export function Footer({ signedIn = false }: { signedIn?: boolean }) {
   return (
     <footer
       id="start"
@@ -30,18 +30,29 @@ export function Footer() {
               Connect your own Razorpay keys, set a cap, and every purchase an agent makes is checked against it before anything moves.
             </p>
             <div className="flex gap-3.5 flex-wrap">
-              <Link
-                href="/signup"
-                className="inline-flex items-center h-[50px] px-[26px] rounded-full bg-accent text-accent-ink text-[14.5px] font-semibold hover:bg-on-ink transition-colors"
-              >
-                Create a merchant account
-              </Link>
-              <Link
-                href="/login"
-                className="inline-flex items-center h-[50px] px-[26px] rounded-full border border-ink-line text-on-ink text-[14.5px] font-medium hover:border-on-ink/40 transition-colors"
-              >
-                Sign in
-              </Link>
+              {signedIn ? (
+                <Link
+                  href="/dashboard"
+                  className="inline-flex items-center h-[50px] px-[26px] rounded-full bg-accent text-accent-ink text-[14.5px] font-semibold hover:bg-on-ink transition-colors"
+                >
+                  Go to dashboard
+                </Link>
+              ) : (
+                <>
+                  <Link
+                    href="/signup"
+                    className="inline-flex items-center h-[50px] px-[26px] rounded-full bg-accent text-accent-ink text-[14.5px] font-semibold hover:bg-on-ink transition-colors"
+                  >
+                    Create a merchant account
+                  </Link>
+                  <Link
+                    href="/login"
+                    className="inline-flex items-center h-[50px] px-[26px] rounded-full border border-ink-line text-on-ink text-[14.5px] font-medium hover:border-on-ink/40 transition-colors"
+                  >
+                    Sign in
+                  </Link>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -75,8 +86,14 @@ export function Footer() {
             <span className="font-mono text-[11px] tracking-[0.16em] text-on-ink-faint">
               ACCOUNT
             </span>
-            <Link href="/signup" className="hover:text-on-ink transition-colors">Create account</Link>
-            <Link href="/login" className="hover:text-on-ink transition-colors">Sign in</Link>
+            {signedIn ? (
+              <Link href="/dashboard" className="hover:text-on-ink transition-colors">Dashboard</Link>
+            ) : (
+              <>
+                <Link href="/signup" className="hover:text-on-ink transition-colors">Create account</Link>
+                <Link href="/login" className="hover:text-on-ink transition-colors">Sign in</Link>
+              </>
+            )}
           </div>
         </div>
 

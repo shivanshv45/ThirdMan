@@ -1,4 +1,3 @@
-import { redirect } from "next/navigation";
 import { getSessionMerchant } from "@/lib/auth";
 import { CodaHero } from "@/components/home/CodaHero";
 import { Surfaces } from "@/components/home/Surfaces";
@@ -8,15 +7,14 @@ import { Footer } from "@/components/home/Footer";
 
 export default async function Home() {
   const merchant = await getSessionMerchant();
-  if (merchant) redirect("/dashboard");
 
   return (
     <main className="coda-theme flex-1 min-h-screen relative">
-      <CodaHero />
-      <Surfaces />
+      <CodaHero signedIn={!!merchant} />
+      <Surfaces signedIn={!!merchant} />
       <RefusalSection />
       <ProofSection />
-      <Footer />
+      <Footer signedIn={!!merchant} />
     </main>
   );
 }

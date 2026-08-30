@@ -158,28 +158,37 @@ export function TopNav({
             })}
           </div>
 
-          {/* ThirdMan center brand with dipped line */}
+          {/* ThirdMan center brand with refined dipped line */}
           <Link
             href="/dashboard"
-            className="flex items-center justify-center px-6 group shrink-0 z-10"
+            className="flex items-center justify-center px-8 group shrink-0 z-10"
           >
             <div className="relative flex items-center">
               {/* Left decorative line */}
-              <span className="block w-12 h-[2.5px] bg-on-ink-dim rounded-full" />
+              <span className="block w-16 h-[2px] bg-gradient-to-r from-transparent via-on-ink-dim/40 to-on-ink-dim group-hover:to-accent transition-all duration-500" />
+              
               {/* Dip connector left */}
-              <svg width="16" height="20" viewBox="0 0 16 20" fill="none" className="shrink-0">
-                <path d="M0 2 C5 2, 6 18, 16 18" stroke="var(--on-ink-dim)" strokeWidth="2.5" fill="none" />
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" className="shrink-0 text-on-ink-dim group-hover:text-accent transition-all duration-500">
+                <path d="M0 2 C 10 2, 12 22, 24 22" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
               </svg>
+              
               {/* Text */}
-              <span className="relative text-[20px] font-black tracking-tight text-on-ink px-1.5 top-[5px]">
-                ThirdMan
-              </span>
+              <div className="relative flex items-center px-1.5 top-[8px]">
+                <span className="text-[22px] font-black tracking-tight text-on-ink drop-shadow-sm transition-colors duration-500 group-hover:text-white">
+                  Third
+                </span>
+                <span className="text-[22px] font-black tracking-tight text-accent drop-shadow-[0_0_8px_rgba(var(--accent-rgb),0.5)]">
+                  Man
+                </span>
+              </div>
+              
               {/* Dip connector right */}
-              <svg width="16" height="20" viewBox="0 0 16 20" fill="none" className="shrink-0">
-                <path d="M0 18 C10 18, 11 2, 16 2" stroke="var(--on-ink-dim)" strokeWidth="2.5" fill="none" />
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" className="shrink-0 text-on-ink-dim group-hover:text-accent transition-all duration-500">
+                <path d="M0 22 C 12 22, 14 2, 24 2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
               </svg>
+              
               {/* Right decorative line */}
-              <span className="block w-12 h-[2.5px] bg-on-ink-dim rounded-full" />
+              <span className="block w-16 h-[2px] bg-gradient-to-l from-transparent via-on-ink-dim/40 to-on-ink-dim group-hover:to-accent transition-all duration-500" />
             </div>
           </Link>
 

@@ -15,7 +15,8 @@ import Link from "next/link";
  * tokens the rest of the landing page uses — see globals.css.
  */
 
-export function Surfaces() {
+export function Surfaces({ signedIn = false }: { signedIn?: boolean }) {
+  const ctaHref = signedIn ? "/dashboard" : "/signup";
   const ref = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -78,7 +79,7 @@ export function Surfaces() {
         <div className="flex flex-col gap-5">
           <div className="grid grid-cols-1 lg:grid-cols-[1.62fr_1fr] gap-5">
             <Link
-              href="/signup"
+              href={ctaHref}
               data-rise
               className="group flex flex-col gap-4 p-[34px] min-h-[260px] rounded-[20px] bg-ink-raised border border-ink-line transition-colors duration-300 hover:border-on-ink/30"
             >
@@ -107,7 +108,7 @@ export function Surfaces() {
             </Link>
 
             <Link
-              href="/signup"
+              href={ctaHref}
               data-rise
               data-rise-delay="70"
               className="group flex flex-col gap-4 p-[34px] rounded-[20px] bg-ink-raised border border-ink-line transition-colors duration-300 hover:border-on-ink/30"
@@ -131,7 +132,7 @@ export function Surfaces() {
 
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.28fr] gap-5">
             <Link
-              href="/signup"
+              href={ctaHref}
               data-rise
               data-rise-delay="140"
               className="group flex flex-col gap-4 p-[34px] rounded-[20px] bg-ink-raised border border-ink-line transition-colors duration-300 hover:border-on-ink/30"
@@ -151,7 +152,7 @@ export function Surfaces() {
             </Link>
 
             <Link
-              href="/signup"
+              href={ctaHref}
               data-rise
               data-rise-delay="210"
               className="group flex flex-col gap-4 p-[34px] rounded-[20px] bg-ink-raised border border-ink-line transition-colors duration-300 hover:border-on-ink/30"

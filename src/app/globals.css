@@ -355,3 +355,13 @@ a {
   color: var(--on-ink);
 }
 
+
+@keyframes wave-stickman {
+  0%, 100% { transform: rotate(0deg); }
+  25% { transform: rotate(15deg) translateY(-2px); }
+  75% { transform: rotate(-15deg) translateY(-2px); }
+}
+@keyframes bounce-stickman {
+  0%, 100% { transform: translateY(0) scaleY(1); }
+  50% { transform: translateY(-4px) scaleY(1.05); }
+}

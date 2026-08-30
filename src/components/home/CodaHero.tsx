@@ -11,29 +11,46 @@ import { AntCanvas } from "./AntCanvas";
  * atmosphere rather than competing with the headline for attention.
  */
 
-export function CodaHero() {
+export function CodaHero({ signedIn = false }: { signedIn?: boolean }) {
   return (
     <div className="relative font-[family-name:var(--font-body)]">
       <nav className="w-full flex items-center justify-between px-6 py-5 md:px-10">
-        <span className="font-[family-name:var(--font-display)] text-2xl tracking-tighter uppercase text-on-ink">
-          THIRDMAN
-        </span>
+        <div className="relative flex items-center group cursor-pointer select-none">
+          <span className="text-[24px] font-black tracking-tight text-on-ink drop-shadow-sm transition-colors duration-500 group-hover:text-white">
+            Third
+          </span>
+          <span className="text-[24px] font-black tracking-tight text-accent drop-shadow-[0_0_8px_rgba(var(--accent-rgb),0.5)]">
+            Man
+          </span>
+        </div>
         <div className="hidden md:flex items-center gap-8 text-[14.5px] font-medium text-on-ink">
           <Link href="#surfaces" className="hover:opacity-65 transition-opacity">Products</Link>
           <Link href="#refusal" className="hover:opacity-65 transition-opacity">The refusal</Link>
           <Link href="#proof" className="hover:opacity-65 transition-opacity">Proof</Link>
         </div>
         <div className="flex items-center gap-4">
-          <Link href="/login" className="hidden md:block text-[14.5px] font-medium hover:opacity-65 transition-opacity">
-            Sign in
-          </Link>
-          <Link
-            href="/signup"
-            className="inline-flex items-center h-[42px] px-[22px] rounded-none bg-black text-[14.5px] font-medium transition-colors"
-            style={{ color: '#ffffff' }}
-          >
-            Get a scoped key
-          </Link>
+          {signedIn ? (
+            <Link
+              href="/dashboard"
+              className="inline-flex items-center h-[42px] px-[22px] rounded-none bg-black text-[14.5px] font-medium transition-colors"
+              style={{ color: '#ffffff' }}
+            >
+              Dashboard
+            </Link>
+          ) : (
+            <>
+              <Link href="/login" className="hidden md:block text-[14.5px] font-medium hover:opacity-65 transition-opacity">
+                Sign in
+              </Link>
+              <Link
+                href="/signup"
+                className="inline-flex items-center h-[42px] px-[22px] rounded-none bg-black text-[14.5px] font-medium transition-colors"
+                style={{ color: '#ffffff' }}
+              >
+                Get a scoped key
+              </Link>
+            </>
+          )}
         </div>
       </nav>
 
@@ -53,7 +70,7 @@ export function CodaHero() {
           </div>
 
           <h1 className="font-[family-name:var(--font-display)] text-[clamp(2rem,4.5vw,4.5rem)] max-w-3xl leading-[1.05] tracking-[-0.035em] uppercase text-on-ink text-balance">
-            THE THIRD MAN BETWEEN YOU AND THE BUYER
+            THE &ldquo;THIRD&rdquo; MAN BETWEEN YOU AND THE BUYER
           </h1>
 
           <p className="max-w-[44ch] text-[17px] leading-[1.55] text-on-ink-dim text-pretty">
@@ -62,11 +79,11 @@ export function CodaHero() {
 
           <div className="flex items-center gap-5 flex-wrap justify-center">
             <Link
-              href="/signup"
+              href={signedIn ? "/dashboard" : "/signup"}
               className="inline-flex items-center h-[54px] px-[30px] rounded-none bg-black text-[15px] font-semibold hover:bg-black/80 transition-colors"
               style={{ color: '#ffffff' }}
             >
-              Create a merchant account
+              {signedIn ? "Go to dashboard" : "Create a merchant account"}
             </Link>
             <Link
               href="#surfaces"

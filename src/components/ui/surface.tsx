@@ -6,7 +6,7 @@ const VARIANT_CLASS: Record<SurfaceVariant, string> = {
   flush: "bg-ink border border-ink-line shadow-sm",
   raised: "bg-ink-raised border border-ink-line shadow-[0_2px_12px_-2px_rgba(0,0,0,0.5),_0_4px_24px_-4px_rgba(0,0,0,0.3)]",
   inset: "bg-ink-overlay border border-ink-line-soft",
-  glass: "bg-white/5 border border-white/10 backdrop-blur-[20px] shadow-[0_4px_30px_rgba(0,0,0,0.1)]",
+  glass: "bg-ink/70 border border-white/10 backdrop-blur-[24px] shadow-[0_8px_30px_rgba(0,0,0,0.3)]",
 };
 
 export function Surface({
