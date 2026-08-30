@@ -1439,6 +1439,8 @@ export const merchantAlertSettings = pgTable("merchant_alert_settings", {
   // Layer 26-3: a burst of failed logins on one of this merchant's
   // accounts crossing the free-attempts threshold — see login-throttle.ts.
   loginBurstEnabled: boolean("login_burst_enabled").notNull().default(true),
+  // Layer 22: a return request awaiting the merchant's decision.
+  returnPendingEnabled: boolean("return_pending_enabled").notNull().default(true),
   // When the last digest was actually sent — the dedupe bound for "at
   // most one digest per merchant per day" (notifications/merchant-
   // alerts.ts), read instead of relying on notification_deliveries'
@@ -2149,6 +2151,117 @@ export const decisionShareTokens = pgTable("decision_share_tokens", {
   auditLogId: uuid("audit_log_id")
     .notNull()
     .references(() => auditLog.id),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// --- Layer 22: the returns desk ---
+// See plans/layer-22-returns-desk.md. The governing rule: the model
+// decides whether a request is worth the merchant's attention; code
+// decides that only the merchant can approve it, and code computes
+// every rupee. There is no function a model's output can reach that
+// issues a refund — approve always routes through gate.ts's existing
+// issueRefund, called only from the merchant's own dashboard action.
+
+// Deliberately distinct terminal states rather than collapsing into
+// escalations.outcome's shape: "declined_by_desk" is the model refusing
+// to forward a request before a merchant ever saw it, and conflating
+// that with "rejected" (a merchant's own decision) would misattribute
+// a decision to a human who never made it — the same reasoning that
+// keeps negotiations.status and the Agent Runtime's pending/waiting
+// distinct (see DECISIONS.md).
+export const returnRequestStatusEnum = pgEnum("return_request_status", [
+  "awaiting_merchant",
+  "declined_by_desk",
+  "approved",
+  "rejected",
+  "expired",
+  "refunded",
+]);
+
+export const returnRecommendationEnum = pgEnum("return_recommendation", [
+  "approve",
+  "reject",
+  "needs_merchant_judgement",
+]);
+
+// A return request references a completed, CAPTURED purchase and may
+// never produce a money action at all (most are declined by the desk or
+// rejected) — unlike escalations, whose moneyActionId always points at
+// a still-pending action. Forcing one table to serve both shapes would
+// make the existing escalation-expiry sweep operate on rows it was
+// never written for (see the plan's L22-1).
+export const returnRequests = pgTable(
+  "return_requests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    merchantId: uuid("merchant_id")
+      .notNull()
+      .references(() => merchants.id),
+    moneyActionId: uuid("money_action_id")
+      .notNull()
+      .references(() => moneyActions.id),
+    // The requester's real, durable identity — never a session token.
+    // Exactly one of these two is set, matching how memory subjects
+    // (Layer 18) are anchored only to identities this product actually
+    // has.
+    requesterContactId: uuid("requester_contact_id").references(() => customerContacts.id),
+    requesterAgentId: uuid("requester_agent_id").references(() => agents.id),
+    // The buyer's stated reason, stored as the untrusted text it is —
+    // never trusted as a fact, only ever shown as a quote.
+    statedReason: text("stated_reason").notNull(),
+    status: returnRequestStatusEnum("status").notNull().default("awaiting_merchant"),
+    // Code-computed from the real money_actions row at L22-2 eligibility
+    // time — the model never sees a chance to produce this number.
+    refundableAmountPaise: integer("refundable_amount_paise").notNull(),
+    // Set by the merchant on approval; defaults to refundableAmountPaise
+    // but may be reduced for a partial refund. Still only ever a
+    // merchant-entered or code-computed integer, never model output.
+    approvedAmountPaise: integer("approved_amount_paise"),
+    // Why the request ended where it did — either a deterministic
+    // eligibility failure (L22-2), the desk's own decline reason, or
+    // the merchant's typed decision reason. Always real prose, never
+    // fabricated.
+    resolutionReason: text("resolution_reason"),
+    // The model's structured recommendation — stored as generated text,
+    // clearly labelled as such everywhere it renders. This column and
+    // the two below are drafting only; nothing reads them to decide
+    // anything (see returns-desk.ts's structural isolation).
+    modelSummary: text("model_summary"),
+    modelRecommendation: returnRecommendationEnum("model_recommendation"),
+    modelReasoning: text("model_reasoning"),
+    // Set deterministically at creation from merchant_policies or a
+    // default, mirroring escalations.expiresAt. Past this, the request
+    // resolves as "expired" — never "approved". Silence is not consent.
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // A buyer cannot open five parallel requests for one purchase — but
+    // once a request has resolved (declined/rejected/expired), a new
+    // one may be opened, e.g. after clarifying a claim. Partial unique
+    // index scoped to the one open status, same pattern
+    // restock_requests_waiting_idx already uses.
+    uniqueIndex("return_requests_open_idx")
+      .on(table.moneyActionId)
+      .where(sql`${table.status} = 'awaiting_merchant'`),
+  ],
+);
+
+// One row per turn in the returns-desk conversation, kept separate from
+// chatMessages since a return conversation is scoped to one request and
+// one completed purchase, not a storefront session/cart.
+export const returnRequestMessages = pgTable("return_request_messages", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  returnRequestId: uuid("return_request_id")
+    .notNull()
+    .references(() => returnRequests.id),
+  role: text("role").notNull(), // "buyer" | "assistant"
+  content: text("content").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

@@ -13,7 +13,7 @@ import { MAX_NOTIFICATIONS_PER_CONTACT_PER_DAY, frequencyCapWindowStart } from "
  * a successful capture into an error.
  */
 
-export type NotificationType = "recovery_link" | "restock_alert" | "escalation_pending" | "hold_expiring" | "notification_exhausted" | "webhook_exhausted" | "guardian_trip";
+export type NotificationType = "recovery_link" | "restock_alert" | "escalation_pending" | "hold_expiring" | "notification_exhausted" | "webhook_exhausted" | "guardian_trip" | "return_request_resolved";
 
 export interface EnqueueNotificationInput {
   merchantId: string;

@@ -34,6 +34,7 @@ export async function getAlertSettings(merchantId: string) {
       notificationExhaustedEnabled: true,
       webhookExhaustedEnabled: true,
       loginBurstEnabled: true,
+      returnPendingEnabled: true,
       lastDigestSentAt: null as Date | null,
       updatedAt: new Date(),
     }
@@ -46,6 +47,16 @@ interface DigestCounts {
   exhaustedNotifications: number;
   exhaustedWebhooks: number;
   loginBursts: number;
+  pendingReturns: number;
+}
+
+/** Layer 22: return requests genuinely awaiting a merchant decision right now — same live count the returns desk dashboard page shows, not a since-window count. */
+async function countPendingReturns(merchantId: string): Promise<number> {
+  const [row] = await db
+    .select({ count: sql<string>`count(*)` })
+    .from(schema.returnRequests)
+    .where(and(eq(schema.returnRequests.merchantId, merchantId), eq(schema.returnRequests.status, "awaiting_merchant")));
+  return Number(row?.count ?? 0);
 }
 
 async function countExhaustedNotifications(merchantId: string, since: Date): Promise<number> {
@@ -90,6 +101,7 @@ function composeDigestBody(counts: DigestCounts, merchantName: string): { subjec
   if (counts.exhaustedNotifications > 0) lines.push(`- ${counts.exhaustedNotifications} customer notification(s) failed to deliver — ${APP_URL}/dashboard/recovery`);
   if (counts.exhaustedWebhooks > 0) lines.push(`- ${counts.exhaustedWebhooks} webhook delivery(ies) to your server failed — ${APP_URL}/dashboard/embed`);
   if (counts.loginBursts > 0) lines.push(`- ${counts.loginBursts} burst(s) of failed login attempts on your account — ${APP_URL}/dashboard/settings`);
+  if (counts.pendingReturns > 0) lines.push(`- ${counts.pendingReturns} return request(s) waiting on your decision — ${APP_URL}/dashboard/returns`);
 
   return {
     subject: `${merchantName}: ${lines.length} thing${lines.length === 1 ? "" : "s"} need your attention`,
@@ -120,9 +132,10 @@ export async function sendMerchantDigestIfDue(merchantId: string): Promise<{ sen
     exhaustedNotifications: settings.notificationExhaustedEnabled ? await countExhaustedNotifications(merchantId, since) : 0,
     exhaustedWebhooks: settings.webhookExhaustedEnabled ? await countExhaustedWebhooks(merchantId, since) : 0,
     loginBursts: settings.loginBurstEnabled ? await countLoginBursts(merchantId, since) : 0,
+    pendingReturns: settings.returnPendingEnabled ? await countPendingReturns(merchantId) : 0,
   };
 
-  const total = counts.pendingEscalations + counts.holdsExpiringSoon + counts.exhaustedNotifications + counts.exhaustedWebhooks + counts.loginBursts;
+  const total = counts.pendingEscalations + counts.holdsExpiringSoon + counts.exhaustedNotifications + counts.exhaustedWebhooks + counts.loginBursts + counts.pendingReturns;
   if (total === 0) return { sent: false, reason: "Nothing to report." };
 
   const { subject, text } = composeDigestBody(counts, merchant.name);

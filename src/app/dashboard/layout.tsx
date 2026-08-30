@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { getSessionMerchant } from "@/lib/auth";
-import { getPendingEscalations, getGuardianIncidents, getActiveTaskCount, getPendingMemoryConfirmCount, getActiveReservations, getActiveTheatreRunCount } from "@/lib/dashboard";
+import { getPendingEscalations, getGuardianIncidents, getActiveTaskCount, getPendingMemoryConfirmCount, getActiveReservations, getActiveTheatreRunCount, getActiveReturnRequestCount } from "@/lib/dashboard";
 import { getFreezeState } from "@/lib/guardian";
 import { logout } from "./actions";
 import { SidebarNav, type NavGroup } from "./sidebar-nav";
@@ -17,6 +17,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const activeReservations = await getActiveReservations(merchant.id);
   const pendingMemoryCount = await getPendingMemoryConfirmCount(merchant.id);
   const activeTheatreRunCount = await getActiveTheatreRunCount(merchant.id);
+  const activeReturnRequestCount = await getActiveReturnRequestCount(merchant.id);
   const freezeState = await getFreezeState(merchant.id);
 
   const groups: NavGroup[] = [
@@ -33,6 +34,14 @@ export default async function DashboardLayout({ children }: { children: React.Re
         },
         { href: "/dashboard/recovery", label: "Recovery" },
         { href: "/dashboard/escrow", label: "Escrow" },
+        {
+          href: "/dashboard/returns",
+          label: "Returns desk",
+          badge: activeReturnRequestCount,
+          badgeTooltip: activeReturnRequestCount
+            ? `${activeReturnRequestCount} return request${activeReturnRequestCount === 1 ? "" : "s"} awaiting your decision`
+            : undefined,
+        },
         {
           href: "/dashboard/reservations",
           label: "Reservations",

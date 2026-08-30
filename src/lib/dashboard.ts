@@ -990,3 +990,68 @@ export async function verifyMoneyActionIds(merchantId: string, claimedIds: strin
   return new Set(rows.map((r) => r.id));
 }
 
+// --- Layer 22: the returns desk ---
+
+export interface OpenReturnRequestRow {
+  id: string;
+  statedReason: string;
+  refundableAmountPaise: number;
+  modelSummary: string | null;
+  modelRecommendation: (typeof schema.returnRecommendationEnum.enumValues)[number] | null;
+  modelReasoning: string | null;
+  expiresAt: Date;
+  createdAt: Date;
+  requesterLabel: string;
+  moneyAction: { id: string; amountPaise: number; type: string };
+  messages: { role: string; content: string; createdAt: Date }[];
+}
+
+/** Every return request genuinely awaiting a merchant decision right now, with the conversation and the model's (clearly-labelled-as-generated) recommendation attached. */
+export async function getOpenReturnRequests(merchantId: string): Promise<OpenReturnRequestRow[]> {
+  const rows = await db
+    .select({
+      request: schema.returnRequests,
+      moneyAction: schema.moneyActions,
+      contactAddress: schema.customerContacts.address,
+      agentName: schema.agents.name,
+    })
+    .from(schema.returnRequests)
+    .innerJoin(schema.moneyActions, eq(schema.returnRequests.moneyActionId, schema.moneyActions.id))
+    .leftJoin(schema.customerContacts, eq(schema.returnRequests.requesterContactId, schema.customerContacts.id))
+    .leftJoin(schema.agents, eq(schema.returnRequests.requesterAgentId, schema.agents.id))
+    .where(and(eq(schema.returnRequests.merchantId, merchantId), eq(schema.returnRequests.status, "awaiting_merchant")))
+    .orderBy(desc(schema.returnRequests.createdAt));
+
+  const result: OpenReturnRequestRow[] = [];
+  for (const r of rows) {
+    const messages = await db
+      .select({ role: schema.returnRequestMessages.role, content: schema.returnRequestMessages.content, createdAt: schema.returnRequestMessages.createdAt })
+      .from(schema.returnRequestMessages)
+      .where(eq(schema.returnRequestMessages.returnRequestId, r.request.id))
+      .orderBy(schema.returnRequestMessages.createdAt);
+
+    result.push({
+      id: r.request.id,
+      statedReason: r.request.statedReason,
+      refundableAmountPaise: r.request.refundableAmountPaise,
+      modelSummary: r.request.modelSummary,
+      modelRecommendation: r.request.modelRecommendation,
+      modelReasoning: r.request.modelReasoning,
+      expiresAt: r.request.expiresAt,
+      createdAt: r.request.createdAt,
+      requesterLabel: r.contactAddress ?? (r.agentName ? `Agent: ${r.agentName}` : "Unknown requester"),
+      moneyAction: { id: r.moneyAction.id, amountPaise: r.moneyAction.amountPaise, type: r.moneyAction.type },
+      messages,
+    });
+  }
+  return result;
+}
+
+export async function getActiveReturnRequestCount(merchantId: string): Promise<number> {
+  const [row] = await db
+    .select({ count: sql<string>`count(*)` })
+    .from(schema.returnRequests)
+    .where(and(eq(schema.returnRequests.merchantId, merchantId), eq(schema.returnRequests.status, "awaiting_merchant")));
+  return Number(row?.count ?? 0);
+}
+

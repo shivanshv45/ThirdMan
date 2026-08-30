@@ -13,6 +13,7 @@ import { confirmStatedMemory } from "@/lib/memory/stated";
 import { deleteMemory, correctMemory } from "@/lib/memory/retrieve";
 import { getTrustScore, type TrustReport } from "@/lib/trust-score";
 import { simulateBoundChange, type BoundSimulationResult } from "@/lib/bound-simulator";
+import { approveReturnRequest, rejectReturnRequest } from "@/lib/returns-desk-decision";
 import { redirect } from "next/navigation";
 
 type AgentCapability = (typeof schema.agentCapabilityEnum.enumValues)[number];
@@ -130,6 +131,35 @@ export async function rejectEscalation(formData: FormData) {
   if (!escalationId) throw new Error("Missing escalationId");
   await resolveEscalation(merchant.id, escalationId, "rejected");
   revalidatePath("/dashboard");
+}
+
+/**
+ * Layer 22 — the ONLY two entrypoints from the UI that can resolve a
+ * return request. Both delegate to returns-desk-decision.ts, which is
+ * itself the only module in this codebase that both reads a
+ * return_requests row and calls gate.ts's issueRefund — the model's
+ * conversation module (returns-desk.ts) has no path here at all. See
+ * returns-desk.isolation.test.ts.
+ */
+export async function approveReturnRequestAction(formData: FormData) {
+  const merchant = await requireSessionMerchant();
+  const returnRequestId = String(formData.get("returnRequestId"));
+  if (!returnRequestId) throw new Error("Missing returnRequestId");
+  const amountRupees = formData.get("amountRupees");
+  const amountPaise = amountRupees && String(amountRupees).trim() ? Math.round(Number(amountRupees) * 100) : undefined;
+  const result = await approveReturnRequest(merchant.id, returnRequestId, amountPaise);
+  if (!result.ok) throw new Error(result.reason);
+  revalidatePath("/dashboard/returns");
+}
+
+export async function rejectReturnRequestAction(formData: FormData) {
+  const merchant = await requireSessionMerchant();
+  const returnRequestId = String(formData.get("returnRequestId"));
+  if (!returnRequestId) throw new Error("Missing returnRequestId");
+  const reason = String(formData.get("reason") ?? "");
+  const result = await rejectReturnRequest(merchant.id, returnRequestId, reason);
+  if (!result.ok) throw new Error(result.reason);
+  revalidatePath("/dashboard/returns");
 }
 
 /**

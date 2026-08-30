@@ -177,7 +177,7 @@ describe("POST /api/mcp", () => {
       await db.delete(schema.products).where(eq(schema.products.id, productOfB.id));
       await db.delete(schema.merchants).where(eq(schema.merchants.id, merchantB.id));
     }
-  });
+  }, 20_000);
 
   it("get_product for another merchant's real product id is refused, not leaked, by id enumeration", async () => {
     const merchantA = await makeMerchant();

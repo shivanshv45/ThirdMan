@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db, schema } from "@/lib/db";
 import { getPublicCatalogue, type PublicProduct } from "@/lib/storefront-catalogue";
@@ -15,6 +15,7 @@ import { requireCapability, recordCatalogueRead } from "@/lib/agent-auth";
 import { issueCheckoutMandate, verifyPaymentMandate } from "@/lib/mandates";
 import { issueRefusalReceipt } from "@/lib/refusal-receipt";
 import { withMoneyPathSpan, withSpan } from "@/lib/tracing";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 /**
  * This product's own MCP server (Layer 5-4) — the headline of the layer.
@@ -624,6 +625,55 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
         ),
       );
       }),
+  );
+
+  server.registerTool(
+    "open_return_request",
+    {
+      title: "Open a return request",
+      description:
+        "Requests a return/refund on a purchase you made. This can NEVER return a refund directly — refunds are not a capability any agent can hold in this product. The best possible outcome is 'escalated to the merchant', with a request id you can poll via get_return_status; the merchant makes the actual decision. Deterministic checks (this purchase is really yours, it's really captured, it's within any published return window, and no other request is already open for it) run before anything else — a request may be refused immediately with a specific reason.",
+      inputSchema: {
+        moneyActionId: z.string().uuid().describe("The id of the money action (purchase) you're requesting a return for."),
+        reason: z.string().min(1).max(2000).describe("Why you're requesting this return."),
+      },
+    },
+    async ({ moneyActionId, reason }) => {
+      if (!(await requireCapability(agent, "purchase:create"))) {
+        return toolText(JSON.stringify({ status: "refused", reason: "This agent does not hold the purchase:create capability." }));
+      }
+      const { openReturnRequest } = await import("@/lib/returns-desk");
+      const rateLimit = await checkRateLimit(`returns-mcp:${agent.id}`, 10, 60_000);
+      if (!rateLimit.allowed) {
+        return toolText(JSON.stringify({ status: "refused", reason: "Too many return requests — please slow down." }));
+      }
+      const result = await openReturnRequest(agent.merchantId, moneyActionId, { agentId: agent.id }, reason);
+      return toolText(JSON.stringify(result));
+    },
+  );
+
+  server.registerTool(
+    "get_return_status",
+    {
+      title: "Get return request status",
+      description: "Checks the status of a return request you previously opened via open_return_request. Poll this to learn the merchant's decision once it's made — this tool never returns a refund itself, only the current status and, where resolved, the reason.",
+      inputSchema: { requestId: z.string().uuid() },
+    },
+    async ({ requestId }) => {
+      const [row] = await db
+        .select()
+        .from(schema.returnRequests)
+        .where(and(eq(schema.returnRequests.id, requestId), eq(schema.returnRequests.merchantId, agent.merchantId), eq(schema.returnRequests.requesterAgentId, agent.id)));
+      if (!row) return toolText(JSON.stringify({ error: "No return request found with that id for this agent." }));
+      return toolText(
+        JSON.stringify({
+          status: row.status,
+          resolutionReason: row.resolutionReason,
+          approvedAmountPaise: row.approvedAmountPaise,
+          expiresAt: row.expiresAt,
+        }),
+      );
+    },
   );
 
   return server;
