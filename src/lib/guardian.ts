@@ -368,6 +368,61 @@ export async function rearmAgent(merchantId: string, agentId: string): Promise<v
   });
 }
 
+// A handful of reads with zero purchases yet is just an agent that
+// hasn't gotten to its first purchase — not worth a merchant's
+// attention. Below this many reads, never flag regardless of purchases.
+const READ_PURCHASE_MIN_READS = 50;
+// Genuinely thorough browsing before committing is normal — a buyer
+// comparing ten variants before buying one is not scraping. This is
+// deliberately high so it only flags what looks like a competitor or a
+// broken loop, not careful shopping. See L23-3: surfacing, not blocking.
+const READ_PURCHASE_LOPSIDED_THRESHOLD = 50;
+
+export interface ReadPurchaseRatio {
+  agentId: string;
+  catalogueReadCount: number;
+  purchaseCount: number;
+  ratio: number | null;
+  lopsided: boolean;
+}
+
+/**
+ * Layer 23-3: is this agent reading far more than it buys? Pure
+ * arithmetic — agents.catalogueReadCount (a running counter incremented
+ * by agent-auth.ts's recordCatalogueRead on every real catalogue read)
+ * against a real count of this agent's own money_actions rows, both
+ * durable and already owned by this codebase. No model judges whether
+ * an agent is "scraping" — that judgment stays with the merchant, who
+ * sees this ratio and decides whether to revoke a key or do nothing.
+ * Surfacing only: nothing here denies or throttles automatically.
+ */
+export async function computeReadPurchaseRatio(agentId: string): Promise<ReadPurchaseRatio> {
+  const [agent] = await db.select({ catalogueReadCount: schema.agents.catalogueReadCount }).from(schema.agents).where(eq(schema.agents.id, agentId));
+  const [purchaseRow] = await db.execute<{ count: string }>(
+    sql`select count(*) as count from ${schema.moneyActions} where agent_id = ${agentId}`,
+  );
+
+  const catalogueReadCount = agent?.catalogueReadCount ?? 0;
+  const purchaseCount = Number(purchaseRow?.count ?? 0);
+  // null ratio (never bought) is the maximally lopsided case, not an
+  // undefined one — an agent with 500 reads and 0 purchases is exactly
+  // the "reads far more than it buys" signal this function exists to
+  // catch, not something the ratio's arithmetic should hide behind a
+  // divide-by-zero. purchaseCount is still surfaced separately so the
+  // dashboard can say "never purchased" rather than a fabricated number.
+  const ratio = purchaseCount > 0 ? catalogueReadCount / purchaseCount : null;
+
+  return {
+    agentId,
+    catalogueReadCount,
+    purchaseCount,
+    ratio,
+    lopsided:
+      catalogueReadCount >= READ_PURCHASE_MIN_READS &&
+      (ratio === null || ratio > READ_PURCHASE_LOPSIDED_THRESHOLD),
+  };
+}
+
 /**
  * Periodic sweep across every active agent — registered in
  * /api/cron/run alongside every other Layer 11 job, so an agent that

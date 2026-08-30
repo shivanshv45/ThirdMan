@@ -1,7 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
-import { evaluateGuardianSignals, evaluateAndTransition, rearmAgent, getGuardianState, type GuardianSignals } from "@/lib/guardian";
+import { evaluateGuardianSignals, evaluateAndTransition, rearmAgent, getGuardianState, computeReadPurchaseRatio, type GuardianSignals } from "@/lib/guardian";
+import { recordCatalogueRead } from "@/lib/agent-auth";
 import { attemptMoneyAction } from "@/lib/gate";
 import { encrypt } from "@/lib/crypto";
 import { env } from "@/lib/env";
@@ -264,4 +265,97 @@ describe("Guardian — real DB, real gate integration", () => {
       await db.delete(schema.merchants).where(eq(schema.merchants.id, merchantB.id));
     }
   });
+});
+
+describe("computeReadPurchaseRatio — Layer 23-3, real DB", () => {
+  let merchantId: string | undefined;
+  let agentId: string | undefined;
+
+  afterEach(async () => {
+    if (!merchantId) return;
+    const currentMerchantId = merchantId;
+    const currentAgentId = agentId;
+    merchantId = undefined;
+    agentId = undefined;
+    if (currentAgentId) {
+      await db.delete(schema.escalations).where(eq(schema.escalations.spendCapId, db.select({ id: schema.spendCaps.id }).from(schema.spendCaps).where(eq(schema.spendCaps.agentId, currentAgentId))));
+      await db.delete(schema.spendCaps).where(eq(schema.spendCaps.agentId, currentAgentId));
+    }
+    await db.delete(schema.auditLog).where(eq(schema.auditLog.merchantId, currentMerchantId));
+    await db.delete(schema.moneyActions).where(eq(schema.moneyActions.merchantId, currentMerchantId));
+    await db.delete(schema.agents).where(eq(schema.agents.merchantId, currentMerchantId));
+    await db.delete(schema.merchants).where(eq(schema.merchants.id, currentMerchantId));
+  });
+
+  it("a brand-new agent with no reads and no purchases is not lopsided", async () => {
+    const merchant = await makeMerchant();
+    merchantId = merchant.id;
+    const agent = await makeAgent(merchantId);
+    agentId = agent.id;
+
+    const result = await computeReadPurchaseRatio(agent.id);
+    expect(result.catalogueReadCount).toBe(0);
+    expect(result.purchaseCount).toBe(0);
+    expect(result.ratio).toBeNull();
+    expect(result.lopsided).toBe(false);
+  });
+
+  it("a handful of reads with zero purchases is not yet lopsided — below the read floor", async () => {
+    const merchant = await makeMerchant();
+    merchantId = merchant.id;
+    const agent = await makeAgent(merchantId);
+    agentId = agent.id;
+
+    for (let i = 0; i < 5; i++) await recordCatalogueRead(agent.id);
+
+    const result = await computeReadPurchaseRatio(agent.id);
+    expect(result.catalogueReadCount).toBe(5);
+    expect(result.purchaseCount).toBe(0);
+    expect(result.lopsided).toBe(false);
+  }, 20_000);
+
+  it("many reads with zero real purchases is flagged lopsided", async () => {
+    const merchant = await makeMerchant();
+    merchantId = merchant.id;
+    const agent = await makeAgent(merchantId);
+    agentId = agent.id;
+
+    for (let i = 0; i < 60; i++) await recordCatalogueRead(agent.id);
+
+    const result = await computeReadPurchaseRatio(agent.id);
+    expect(result.catalogueReadCount).toBe(60);
+    expect(result.purchaseCount).toBe(0);
+    expect(result.ratio).toBeNull();
+    expect(result.lopsided).toBe(true);
+  }, 20_000);
+
+  it("a real purchase through the gate is counted on the purchase side, bringing a lopsided ratio back down", async () => {
+    const merchant = await makeMerchant();
+    merchantId = merchant.id;
+    const agent = await makeAgent(merchantId);
+    agentId = agent.id;
+    await makeCap(agent.id);
+
+    // A small, deliberately even read count so a handful of real
+    // purchases (each hitting live Razorpay test mode, genuinely slow)
+    // is still enough to demonstrate the ratio moving — this is a
+    // correctness proof of the arithmetic, not a load test.
+    for (let i = 0; i < 20; i++) await recordCatalogueRead(agent.id);
+
+    for (let i = 0; i < 5; i++) {
+      await attemptMoneyAction({
+        agentId: agent.id,
+        merchantId,
+        type: "order_create",
+        amountPaise: 1_000,
+        context: `read-purchase ratio test purchase ${i}`,
+      });
+    }
+
+    const result = await computeReadPurchaseRatio(agent.id);
+    expect(result.catalogueReadCount).toBe(20);
+    expect(result.purchaseCount).toBe(5);
+    expect(result.ratio).toBe(4);
+    expect(result.lopsided).toBe(false);
+  }, 60_000);
 });

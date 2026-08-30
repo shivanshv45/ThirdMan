@@ -1,0 +1,2 @@
+ALTER TABLE "money_actions" ADD COLUMN "reservation_expires_at" timestamp with time zone;--> statement-breakpoint
+CREATE INDEX "money_actions_reservation_expiry_idx" ON "money_actions" USING btree ("reservation_expires_at") WHERE "money_actions"."status" = 'allowed' and "money_actions"."reservation_expires_at" is not null;

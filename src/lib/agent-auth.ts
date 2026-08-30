@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { logAuditEntry } from "@/lib/audit";
 
@@ -58,6 +58,22 @@ export async function requireCapability(
   });
 
   return false;
+}
+
+/**
+ * Layer 23-3: increments an agent's running catalogue-read count. Called
+ * once per real catalogue read that passes its capability check — the
+ * REST /api/agent/products route and the MCP list_products/get_product/
+ * search_products/check_availability tools. Fire-and-forget from the
+ * caller's perspective (a read must never fail because this counter
+ * write failed), so this never throws into a read path — see each call
+ * site's own error handling.
+ */
+export async function recordCatalogueRead(agentId: string): Promise<void> {
+  await db
+    .update(schema.agents)
+    .set({ catalogueReadCount: sql`${schema.agents.catalogueReadCount} + 1` })
+    .where(eq(schema.agents.id, agentId));
 }
 
 /** Every capability granted to an agent, for the dashboard's checkbox UI and MCP tool gating. */

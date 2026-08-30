@@ -9,6 +9,7 @@ import { sendDueMerchantDigests } from "@/lib/notifications/merchant-alerts";
 import { sweepExpiredHolds } from "@/lib/escrow";
 import { sweepExpiredOffers } from "@/lib/discount";
 import { sweepAllAgents } from "@/lib/guardian";
+import { sweepAbandonedReservations } from "@/lib/gate";
 import { drainDueTasks } from "@/lib/runtime/runner";
 import { sweepExpiredMemories } from "@/lib/memory/retrieve";
 
@@ -84,6 +85,7 @@ export async function POST(req: NextRequest) {
   results.push(await runJob("restock:scan", () => scanForRestockedVariants()));
   results.push(await runJob("merchant-digests:send", () => sendDueMerchantDigests()));
   results.push(await runJob("guardian:sweep", () => sweepAllAgents()));
+  results.push(await runJob("reservations:sweep-abandoned", () => sweepAbandonedReservations()));
   results.push(await runJob("runtime:drain", () => drainDueTasks()));
   results.push(await runJob("memory:sweep-expired", () => sweepExpiredMemories()));
 

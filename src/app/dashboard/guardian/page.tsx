@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { getSessionMerchant } from "@/lib/auth";
-import { getGuardianIncidents, getGuardianTransitions } from "@/lib/dashboard";
+import { getGuardianIncidents, getGuardianTransitions, getAgentReadPurchaseRatios } from "@/lib/dashboard";
 import { rearmAgentAction } from "../actions";
 import { PageHeader, Surface, Button, EmptyState, DecisionBadge } from "@/components/ui";
 
@@ -26,6 +26,8 @@ export default async function GuardianPage() {
     })),
   );
   const transitionsMap = new Map(transitionsByAgent.map((t) => [t.agentId, t.transitions]));
+
+  const readRatios = await getAgentReadPurchaseRatios(merchant.id);
 
   return (
     <div className="space-y-8">
@@ -87,6 +89,32 @@ export default async function GuardianPage() {
           })}
         </div>
       )}
+
+      <section>
+        <h2 className="text-[var(--t-h3)] font-[family-name:var(--font-display)] text-on-ink mb-1">Shopping vs. buying</h2>
+        <p className="text-sm text-on-ink-dim mb-3 max-w-[var(--measure)]">
+          An agent that reads your catalogue far more than it buys isn&rsquo;t necessarily wrong — thorough comparison shopping looks the same as a competitor scraping prices until you see the ratio. This is information, not a bound: nothing here blocks a request automatically. Act on it by revoking a key or tightening its capabilities in Agents &amp; caps.
+        </p>
+        {readRatios.length === 0 ? (
+          <EmptyState title="No active agents yet" description="This section fills in once at least one agent has made a catalogue read." />
+        ) : (
+          <div className="space-y-2">
+            {readRatios.map((row) => (
+              <Surface key={row.agentId} variant="raised" className={`p-3.5 flex items-center justify-between flex-wrap gap-2 ${row.lopsided ? "border-escalate/40" : ""}`}>
+                <span className="font-medium text-on-ink truncate">{row.agentName}</span>
+                <div className="flex items-center gap-4 text-xs font-mono text-on-ink-faint">
+                  <span>{row.catalogueReadCount} reads</span>
+                  <span>{row.purchaseCount} purchases</span>
+                  <span className={row.lopsided ? "text-escalate-bright font-medium" : "text-on-ink-dim"}>
+                    {row.ratio === null ? (row.catalogueReadCount > 0 ? "never purchased" : "n/a") : `${row.ratio.toFixed(1)}:1`}
+                  </span>
+                  {row.lopsided && <DecisionBadge decision="escalate" label="worth reviewing" compact />}
+                </div>
+              </Surface>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }

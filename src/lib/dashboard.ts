@@ -5,6 +5,7 @@ import { decrypt } from "@/lib/crypto";
 import { getSpansForMoneyAction } from "@/lib/tracing";
 import { getUseCaseBudgetStatus } from "@/lib/model-router";
 import { listTasksForMerchant, getTaskSteps } from "@/lib/runtime/tasks";
+import { computeReadPurchaseRatio, type ReadPurchaseRatio } from "@/lib/guardian";
 
 /**
  * Read queries for the merchant dashboard. Every function is scoped by
@@ -124,6 +125,32 @@ export async function getGuardianIncidents(merchantId: string) {
   return rows;
 }
 
+export interface AgentReadPurchaseRow extends ReadPurchaseRatio {
+  agentName: string;
+}
+
+/**
+ * Layer 23-3: every active agent's read-to-purchase ratio, for the
+ * Guardian view's "shopping vs. buying" section. Ordered by read count
+ * descending so the agent doing the most reading — the one most worth a
+ * merchant's attention either way — sorts first, not just the lopsided
+ * ones. Extends the Guardian's own "is this agent behaving normally"
+ * question with a second one it doesn't otherwise answer: information
+ * only, never a bound this query enforces.
+ */
+export async function getAgentReadPurchaseRatios(merchantId: string): Promise<AgentReadPurchaseRow[]> {
+  const agents = await db
+    .select({ id: schema.agents.id, name: schema.agents.name })
+    .from(schema.agents)
+    .where(and(eq(schema.agents.merchantId, merchantId), eq(schema.agents.status, "active")));
+
+  const rows = await Promise.all(
+    agents.map(async (a) => ({ agentName: a.name, ...(await computeReadPurchaseRatio(a.id)) })),
+  );
+
+  return rows.sort((a, b) => b.catalogueReadCount - a.catalogueReadCount);
+}
+
 /** The full transition history for one agent — the transcript behind an incident, same "re-check ownership independently" discipline as getTranscript()/getDecisionForMoneyAction(). */
 export async function getGuardianTransitions(merchantId: string, agentId: string) {
   const [agent] = await db.select({ id: schema.agents.id }).from(schema.agents).where(and(eq(schema.agents.id, agentId), eq(schema.agents.merchantId, merchantId)));
@@ -239,6 +266,51 @@ export async function getEscrowHolds(merchantId: string): Promise<EscrowHoldRow[
       status: r.moneyAction.status,
       productId: r.moneyAction.productId,
     },
+    productName: r.productName,
+  }));
+}
+
+export interface ActiveReservationRow {
+  id: string;
+  amountPaise: number;
+  quantity: number;
+  reservationExpiresAt: Date;
+  createdAt: Date;
+  agentId: string | null;
+  agentName: string | null;
+  variantId: string | null;
+  productName: string | null;
+}
+
+/**
+ * Layer 23-2: every money action currently holding budget and stock
+ * (status "allowed", reservationExpiresAt still set) — what a merchant
+ * sees on /dashboard/reservations so locked stock is never invisible.
+ * Ordered soonest-to-expire first, since that's what a merchant would
+ * act on before sweepAbandonedReservations gets to it.
+ */
+export async function getActiveReservations(merchantId: string): Promise<ActiveReservationRow[]> {
+  const rows = await db
+    .select({
+      moneyAction: schema.moneyActions,
+      agentName: schema.agents.name,
+      productName: schema.products.name,
+    })
+    .from(schema.moneyActions)
+    .leftJoin(schema.agents, eq(schema.moneyActions.agentId, schema.agents.id))
+    .leftJoin(schema.products, eq(schema.moneyActions.productId, schema.products.id))
+    .where(and(eq(schema.moneyActions.merchantId, merchantId), eq(schema.moneyActions.status, "allowed"), sql`${schema.moneyActions.reservationExpiresAt} is not null`))
+    .orderBy(schema.moneyActions.reservationExpiresAt);
+
+  return rows.map((r) => ({
+    id: r.moneyAction.id,
+    amountPaise: r.moneyAction.amountPaise,
+    quantity: r.moneyAction.quantity,
+    reservationExpiresAt: r.moneyAction.reservationExpiresAt!,
+    createdAt: r.moneyAction.createdAt,
+    agentId: r.moneyAction.agentId,
+    agentName: r.agentName,
+    variantId: r.moneyAction.variantId,
     productName: r.productName,
   }));
 }

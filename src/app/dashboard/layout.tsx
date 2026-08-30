@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { getSessionMerchant } from "@/lib/auth";
-import { getPendingEscalations, getGuardianIncidents, getActiveTaskCount, getPendingMemoryConfirmCount } from "@/lib/dashboard";
+import { getPendingEscalations, getGuardianIncidents, getActiveTaskCount, getPendingMemoryConfirmCount, getActiveReservations } from "@/lib/dashboard";
 import { logout } from "./actions";
 import { SidebarNav, type NavGroup } from "./sidebar-nav";
 import { Reveal } from "@/components/ui";
@@ -12,6 +12,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const escalations = await getPendingEscalations(merchant.id);
   const guardianIncidents = await getGuardianIncidents(merchant.id);
   const activeTaskCount = await getActiveTaskCount(merchant.id);
+  const activeReservations = await getActiveReservations(merchant.id);
   const pendingMemoryCount = await getPendingMemoryConfirmCount(merchant.id);
 
   const groups: NavGroup[] = [
@@ -28,6 +29,14 @@ export default async function DashboardLayout({ children }: { children: React.Re
         },
         { href: "/dashboard/recovery", label: "Recovery" },
         { href: "/dashboard/escrow", label: "Escrow" },
+        {
+          href: "/dashboard/reservations",
+          label: "Reservations",
+          badge: activeReservations.length,
+          badgeTooltip: activeReservations.length
+            ? `${activeReservations.length} reservation${activeReservations.length === 1 ? "" : "s"} currently holding budget and stock`
+            : undefined,
+        },
       ],
     },
     {

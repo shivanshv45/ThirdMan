@@ -11,7 +11,7 @@ import { runOfferEngine, getOpenOfferForIdentity } from "@/lib/offer-engine";
 import { acceptOffer } from "@/lib/discount";
 import { getRewardBalance, redeemRewardCoins } from "@/lib/reward-actions";
 import { openNegotiation, submitBuyerCounter, getOpenNegotiationForIdentity, MAX_BUYER_COUNTERS } from "@/lib/negotiation";
-import { requireCapability } from "@/lib/agent-auth";
+import { requireCapability, recordCatalogueRead } from "@/lib/agent-auth";
 import { issueCheckoutMandate, verifyPaymentMandate } from "@/lib/mandates";
 import { withMoneyPathSpan, withSpan } from "@/lib/tracing";
 
@@ -91,6 +91,7 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
       const start = (page - 1) * pageSize;
       const pageItems = catalogue.slice(start, start + pageSize);
 
+      await recordCatalogueRead(agent.id);
       return toolText(
         JSON.stringify(
           {
@@ -119,6 +120,7 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
       }
       const catalogue = await getPublicCatalogue(agent.merchantId);
       const product = catalogue.find((p) => p.id === productId);
+      await recordCatalogueRead(agent.id);
       if (!product) return toolText(JSON.stringify({ found: false, reason: `No product ${productId} found for this merchant.` }));
       return toolText(JSON.stringify({ found: true, product }, null, 2));
     },
@@ -158,6 +160,7 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
         .sort((a, b) => b.score - a.score)
         .map((s) => s.product);
 
+      await recordCatalogueRead(agent.id);
       return toolText(JSON.stringify({ query, results: scored }, null, 2));
     },
   );
@@ -175,6 +178,7 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
       }
       const catalogue = await getPublicCatalogue(agent.merchantId);
       const found = findVariantBySku(catalogue, sku);
+      await recordCatalogueRead(agent.id);
       if (!found) return toolText(JSON.stringify({ found: false, reason: `No SKU "${sku}" found for this merchant.` }));
 
       const available = found.variant.availability === "in_stock" && found.variant.stock >= quantity;

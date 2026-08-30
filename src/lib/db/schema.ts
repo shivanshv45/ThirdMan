@@ -9,6 +9,7 @@ import {
   jsonb,
   pgEnum,
   uniqueIndex,
+  index,
 } from "drizzle-orm/pg-core";
 
 /**
@@ -297,6 +298,17 @@ export const agents = pgTable("agents", {
   // from this agent need no mandate at all (today's behavior, unchanged).
   // A merchant flips this on per-agent once satisfied with the flow.
   mandateRequired: boolean("mandate_required").notNull().default(false),
+  // Layer 23-3: a running count of catalogue reads (list_products/
+  // get_product/search_products/check_availability, both the REST route
+  // and their MCP equivalents), incremented atomically alongside every
+  // real call — see agent-auth.ts's recordCatalogueRead(). Paired with
+  // money_actions' own per-agent count to compute a read-to-purchase
+  // ratio: information a merchant can act on (revoke a key, tighten
+  // capabilities), never a bound a model or this column enforces on its
+  // own. A running counter, not a rolling window, because the ratio is
+  // read relative to money_actions' timestamped rows, which already
+  // give a real window to compare against.
+  catalogueReadCount: integer("catalogue_read_count").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -392,6 +404,19 @@ export const moneyActions = pgTable(
     // bought, the same reason negotiations freezes catalogueUnitPricePaise
     // at open time instead of re-reading product_variants later.
     cartId: uuid("cart_id").references((): typeof cartPurchases.id => cartPurchases.id),
+    // Layer 23-2: set only at the moment a reservation is taken (status
+    // "allowed", right before executeAndSettle runs), to
+    // now() + RESERVATION_TIMEOUT_MINUTES. Cleared (set back to null) the
+    // instant executeAndSettle resolves the row to "executed"/"held"/
+    // "failed" — a null value means "nothing to sweep," never "no
+    // deadline." This is what catches the gap executeAndSettle's own
+    // try/catch cannot: a process crash (serverless timeout, OOM, a
+    // deploy restart) between the reservation and the Razorpay call,
+    // which leaves budget and stock held with no in-process catch block
+    // left to run. sweepAbandonedReservations() in gate.ts is the release
+    // path, following the same "a hold left indefinitely is money in
+    // limbo" reasoning escrow_holds.expiresAt already established.
+    reservationExpiresAt: timestamp("reservation_expires_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -400,6 +425,12 @@ export const moneyActions = pgTable(
     uniqueIndex("money_actions_agent_idempotency_key_idx")
       .on(table.agentId, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} is not null`),
+    // Partial index backing sweepAbandonedReservations' query — only
+    // "allowed" rows ever carry a non-null reservationExpiresAt, so this
+    // index stays small regardless of total money_actions volume.
+    index("money_actions_reservation_expiry_idx")
+      .on(table.reservationExpiresAt)
+      .where(sql`${table.status} = 'allowed' and ${table.reservationExpiresAt} is not null`),
   ],
 );
 

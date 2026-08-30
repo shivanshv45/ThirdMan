@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { authenticateAgent, extractBearerKey, requireCapability } from "@/lib/agent-auth";
+import { authenticateAgent, extractBearerKey, requireCapability, recordCatalogueRead } from "@/lib/agent-auth";
 import { getPublicCatalogue } from "@/lib/storefront-catalogue";
 
 /**
@@ -21,5 +21,6 @@ export async function GET(req: NextRequest) {
   }
 
   const products = await getPublicCatalogue(agent.merchantId);
+  await recordCatalogueRead(agent.id);
   return NextResponse.json({ products });
 }

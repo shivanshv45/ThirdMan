@@ -60,6 +60,20 @@ export type GateDecision = "allow" | "deny" | "escalate";
  */
 export const ESCALATION_EXPIRY_HOURS = 48;
 
+/**
+ * How long a reservation ("allowed" status, budget and stock already
+ * held) may sit before executeAndSettle resolves it, before
+ * sweepAbandonedReservations treats it as stranded (Layer 23-2).
+ * executeAndSettle's own try/catch releases a reservation when the call
+ * throws — this window covers the case that catch block can't:
+ * the process itself dying (a serverless timeout, an OOM kill, a deploy
+ * restart) between the reservation and the Razorpay call ever
+ * returning. Sized well above the slowest real leg in that path
+ * (createOrder/createPaymentLink, a single Razorpay HTTP call) so a
+ * merely slow call is never swept out from under itself.
+ */
+export const RESERVATION_TIMEOUT_MINUTES = 5;
+
 export interface MoneyActionRequest {
   agentId: string;
   merchantId: string;
@@ -625,7 +639,14 @@ async function releaseOfferStock(items: ResolvedOffer["items"]): Promise<void> {
  */
 async function insertMoneyActionOrReplay(
   capId: string,
-  values: typeof schema.moneyActions.$inferInsert,
+  // reservationExpiresAt is allowed as a raw SQL expression (now() +
+  // interval ...) in addition to a plain Date — the reservation's
+  // deadline must be computed from the database's own clock, not the
+  // app server's, the same sql`now()` discipline model_budgets.periodStart
+  // and claimDueTasks already established (see FAILURES.md).
+  values: Omit<typeof schema.moneyActions.$inferInsert, "reservationExpiresAt"> & {
+    reservationExpiresAt?: typeof schema.moneyActions.$inferInsert.reservationExpiresAt | ReturnType<typeof sql<Date>>;
+  },
 ): Promise<{ action: typeof schema.moneyActions.$inferSelect; wasReplay: boolean }> {
   try {
     const [action] = await db.insert(schema.moneyActions).values(values).returning();
@@ -735,7 +756,7 @@ async function executeAndSettle(input: ExecuteAndSettleInput): Promise<GateResul
         // reservation — same shape as reserveStock's own concurrency
         // loss, and it releases budget the same way.
         await releaseBudget(input.capId, input.amountPaise);
-        await db.update(schema.moneyActions).set({ status: "failed" }).where(eq(schema.moneyActions.id, input.moneyActionId));
+        await db.update(schema.moneyActions).set({ status: "failed", reservationExpiresAt: null }).where(eq(schema.moneyActions.id, input.moneyActionId));
 
         const reason = "Denied — another request consumed the remaining coin balance between check and reservation. Reserved budget released.";
         await logAuditEntry({
@@ -752,7 +773,7 @@ async function executeAndSettle(input: ExecuteAndSettleInput): Promise<GateResul
       }
 
       await withSpan("ledger_commit", { "thirdman.money_action_id": input.moneyActionId }, () =>
-        db.update(schema.moneyActions).set({ status: "executed" }).where(eq(schema.moneyActions.id, input.moneyActionId)),
+        db.update(schema.moneyActions).set({ status: "executed", reservationExpiresAt: null }).where(eq(schema.moneyActions.id, input.moneyActionId)),
       );
 
       const reason = `${input.allowReasonPrefix} and the reward-coin ledger was updated (${coinsDelta > 0 ? "+" : ""}${coinsDelta} coins).`;
@@ -788,7 +809,7 @@ async function executeAndSettle(input: ExecuteAndSettleInput): Promise<GateResul
 
       await db
         .update(schema.moneyActions)
-        .set({ status: "executed", razorpayEntityId: link.id })
+        .set({ status: "executed", razorpayEntityId: link.id, reservationExpiresAt: null })
         .where(eq(schema.moneyActions.id, input.moneyActionId));
 
       const reason = `${input.allowReasonPrefix} and a real payment link was created successfully.`;
@@ -816,7 +837,7 @@ async function executeAndSettle(input: ExecuteAndSettleInput): Promise<GateResul
     );
 
     await withSpan("ledger_commit", { "thirdman.money_action_id": input.moneyActionId }, () =>
-      db.update(schema.moneyActions).set({ status: "executed", razorpayEntityId: order.id }).where(eq(schema.moneyActions.id, input.moneyActionId)),
+      db.update(schema.moneyActions).set({ status: "executed", razorpayEntityId: order.id, reservationExpiresAt: null }).where(eq(schema.moneyActions.id, input.moneyActionId)),
     );
 
     const reason = `${input.allowReasonPrefix} and executed successfully.`;
@@ -844,7 +865,7 @@ async function executeAndSettle(input: ExecuteAndSettleInput): Promise<GateResul
 
     await db
       .update(schema.moneyActions)
-      .set({ status: "failed" })
+      .set({ status: "failed", reservationExpiresAt: null })
       .where(eq(schema.moneyActions.id, input.moneyActionId));
 
     const releasedWhat = input.variantId || input.offerItems ? "budget and stock" : "budget";
@@ -1137,6 +1158,7 @@ async function attemptMoneyActionTraced(
       amountPaise: request.amountPaise,
       status: "allowed",
       idempotencyKey: request.idempotencyKey,
+      reservationExpiresAt: sql<Date>`now() + interval '${sql.raw(String(RESERVATION_TIMEOUT_MINUTES))} minutes'`,
     });
     setMoneyActionId(moneyAction.id);
 
@@ -1692,4 +1714,79 @@ export async function refundRewardCoins(
   });
 
   return { decision: "allow", reason: auditReason, moneyActionId: moneyAction.id };
+}
+
+/**
+ * Layer 23-2: releases anything still holding budget and stock past its
+ * reservationExpiresAt — a reservation whose process died between
+ * "allowed" and executeAndSettle ever resolving it, the one gap
+ * executeAndSettle's own try/catch structurally cannot cover. Ten
+ * agents hitting a catalogue and nine crashing mid-checkout is exactly
+ * the scenario this closes: without it, the stock and budget those nine
+ * reserved stay locked forever, unreachable by any other request.
+ *
+ * Idempotent under concurrent/overlapping sweeps, and safe against a
+ * reservation that resolves normally in the same instant a sweep is
+ * running: the claim is a single conditional UPDATE
+ * (status = 'allowed' AND reservationExpiresAt still in the past AND
+ * still non-null) — the identical shape reserveBudget/reserveStock/
+ * claimDueTasks already prove correct for concurrent writers racing the
+ * same row. Whichever writer's UPDATE lands first affects the row;
+ * the other affects zero, exactly like the money_actions_agent_
+ * idempotency_key_idx race insertMoneyActionOrReplay already handles.
+ */
+export async function sweepAbandonedReservations(limit = 100): Promise<{ swept: number }> {
+  const claimed = await db
+    .update(schema.moneyActions)
+    .set({ status: "failed", reservationExpiresAt: null })
+    .where(
+      and(
+        eq(schema.moneyActions.status, "allowed"),
+        sql`${schema.moneyActions.reservationExpiresAt} is not null`,
+        lte(schema.moneyActions.reservationExpiresAt, sql`now()`),
+      ),
+    )
+    .returning();
+
+  let swept = 0;
+  for (const moneyAction of claimed.slice(0, limit)) {
+    try {
+      if (moneyAction.agentId) {
+        const [cap] = await db
+          .select()
+          .from(schema.spendCaps)
+          .where(eq(schema.spendCaps.agentId, moneyAction.agentId))
+          .orderBy(sql`${schema.spendCaps.createdAt} desc`)
+          .limit(1);
+        if (cap) await releaseBudget(cap.id, moneyAction.amountPaise);
+      }
+      if (moneyAction.variantId) {
+        await releaseStock(moneyAction.variantId, moneyAction.quantity);
+      }
+      if (moneyAction.offerId) {
+        await releaseOfferStock(await loadOfferItems(moneyAction.offerId));
+      }
+      if (moneyAction.cartId) {
+        await releaseOfferStock(await loadCartPurchaseItems(moneyAction.cartId));
+      }
+
+      const releasedWhat = moneyAction.variantId || moneyAction.offerId || moneyAction.cartId ? "budget and stock" : "budget";
+      await logAuditEntry({
+        merchantId: moneyAction.merchantId,
+        actor: "system",
+        event: "reservation_abandoned",
+        decision: "deny",
+        reason: `Money action ${moneyAction.id.slice(0, 8)} reserved ${releasedWhat} for over ${RESERVATION_TIMEOUT_MINUTES} minutes without settling — the process handling it never resolved it. Reserved ${releasedWhat} released so it doesn't stay locked indefinitely.`,
+        boundApplied: "reservation_timeout",
+        moneyActionId: moneyAction.id,
+        metadata: { agentId: moneyAction.agentId, amountPaise: moneyAction.amountPaise },
+      });
+
+      swept += 1;
+    } catch (err) {
+      console.error(`[gate] sweepAbandonedReservations failed to release money action ${moneyAction.id}:`, err);
+    }
+  }
+
+  return { swept };
 }
