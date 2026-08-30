@@ -68,12 +68,6 @@ export default async function DashboardLayout({ children }: { children: React.Re
     {
       heading: "Trust",
       items: [
-        {
-          href: "/dashboard/control",
-          label: "Control surfaces",
-          badge: freezeState ? 1 : 0,
-          badgeTooltip: freezeState ? "Kill Switch is active" : undefined,
-        },
         { href: "/dashboard/explain", label: "Decisions" },
         { href: "/dashboard/readiness", label: "Readiness" },
         {
@@ -85,9 +79,14 @@ export default async function DashboardLayout({ children }: { children: React.Re
             : undefined,
         },
         { href: "/dashboard/preflight", label: "Preflight" },
+      ],
+    },
+    {
+      heading: "Runtime",
+      items: [
         {
           href: "/dashboard/tasks",
-          label: "Agent Runtime",
+          label: "Agent Tasks",
           badge: activeTaskCount,
           badgeTooltip: activeTaskCount ? `${activeTaskCount} task${activeTaskCount === 1 ? "" : "s"} active` : undefined,
         },
@@ -103,18 +102,29 @@ export default async function DashboardLayout({ children }: { children: React.Re
           badge: activeTheatreRunCount,
           badgeTooltip: activeTheatreRunCount ? `${activeTheatreRunCount} buyer-agent run${activeTheatreRunCount === 1 ? "" : "s"} still in progress` : undefined,
         },
+        {
+          href: "/dashboard/control",
+          label: "Kill Switch",
+          badge: freezeState ? 1 : 0,
+          badgeTooltip: freezeState ? "Kill Switch is active" : undefined,
+        },
       ],
     },
     {
-      heading: "Setup",
+      heading: "Config",
       items: [
-        { href: "/dashboard/setup-conversation", label: "Setup conversation" },
+        { href: "/dashboard/setup-conversation", label: "Setup convo" },
         { href: "/dashboard/agents", label: "Agents & caps" },
         { href: "/dashboard/agent-terms", label: "Agent terms" },
         { href: "/dashboard/policies", label: "Policies" },
-        { href: "/dashboard/embed", label: "Embed on your site" },
-        { href: "/dashboard/cli", label: "Codebase auditor (CLI)" },
-        { href: "/dashboard/integrations", label: "Other platforms" },
+      ],
+    },
+    {
+      heading: "Platform",
+      items: [
+        { href: "/dashboard/embed", label: "Embed on site" },
+        { href: "/dashboard/cli", label: "Codebase CLI" },
+        { href: "/dashboard/integrations", label: "Integrations" },
         { href: "/dashboard/settings", label: "Settings" },
       ],
     },

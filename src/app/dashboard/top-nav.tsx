@@ -112,9 +112,12 @@ export function TopNav({
       {/* ─── Desktop Top Navigation ─── */}
       <header className="hidden md:block border-b border-ink-line bg-ink shrink-0 sticky top-0 z-30">
         {/* Row 1: Main section blocks + ThirdMan center */}
-        <div className="flex items-stretch h-14">
+        <div className="flex items-stretch h-[64px] w-full px-4 md:px-6 relative">
+          {/* Subtle bottom border for row 1 */}
+          <div className="absolute bottom-0 left-0 right-0 h-[1px] bg-ink-line-soft/50" />
+
           {/* Left section blocks */}
-          <div className="flex items-stretch flex-1 justify-end gap-1 pr-3">
+          <div className="flex items-center flex-1 justify-around gap-2 pr-4 z-10">
             {leftGroups.map((group) => {
               const groupActive = group === activeGroup;
               const groupBadgeTotal = group.items.reduce((sum, it) => sum + (it.badge ?? 0), 0);
@@ -126,17 +129,21 @@ export function TopNav({
                     const firstHref = group.items[0]?.href;
                     if (firstHref) window.location.href = firstHref;
                   }}
-                  className={`relative flex items-center gap-1.5 px-4 py-2 text-[13px] font-semibold uppercase tracking-[0.06em] rounded-md my-1.5 transition-all duration-[var(--dur-fast)] ease-[var(--ease-out)] ${
+                  className={`relative flex items-center justify-center gap-2 px-6 py-2.5 text-[14px] font-bold uppercase tracking-[0.08em] rounded-full transition-all duration-300 ease-[var(--ease-out)] group/tab ${
                     groupActive
-                      ? "bg-accent text-[#ffffff] shadow-sm"
-                      : "text-on-ink-dim hover:text-on-ink hover:bg-ink-line-soft"
+                      ? "bg-on-ink text-ink shadow-[0_4px_12px_rgba(0,0,0,0.1)] scale-[1.02]"
+                      : "text-on-ink-dim hover:text-on-ink hover:bg-ink-line-soft/80"
                   }`}
                 >
                   {group.heading}
                   {groupBadgeTotal > 0 && (
-                    <span className="inline-flex items-center justify-center min-w-[1.125rem] h-[1.125rem] rounded-full bg-escalate text-[#ffffff] text-[10px] font-mono font-bold px-1 leading-none">
+                    <span className={`inline-flex items-center justify-center min-w-[1.25rem] h-[1.25rem] rounded-full text-[10px] font-mono font-bold px-1 leading-none transition-colors ${groupActive ? 'bg-ink text-on-ink' : 'bg-escalate text-[#ffffff]'}`}>
                       {groupBadgeTotal}
                     </span>
+                  )}
+                  {/* Glowing dot indicator for active tab */}
+                  {groupActive && (
+                    <span className="absolute -bottom-3 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-on-ink shadow-[0_0_8px_rgba(0,0,0,0.5)]" />
                   )}
                 </button>
               );
@@ -146,30 +153,30 @@ export function TopNav({
           {/* ThirdMan center brand with dipped line */}
           <Link
             href="/dashboard"
-            className="flex items-center justify-center px-5 group shrink-0"
+            className="flex items-center justify-center px-6 group shrink-0 z-10"
           >
             <div className="relative flex items-center">
               {/* Left decorative line */}
-              <span className="block w-8 h-[1.5px] bg-ink-line rounded-full group-hover:bg-on-ink-faint transition-colors duration-[var(--dur)]" />
+              <span className="block w-12 h-[2.5px] bg-on-ink-dim rounded-full" />
               {/* Dip connector left */}
-              <svg width="14" height="18" viewBox="0 0 14 18" fill="none" className="shrink-0">
-                <path d="M0 2 C4 2, 5 16, 14 16" stroke="var(--ink-line)" strokeWidth="1.5" fill="none" className="group-hover:[stroke:var(--on-ink-faint)] transition-[stroke] duration-[var(--dur)]" />
+              <svg width="16" height="20" viewBox="0 0 16 20" fill="none" className="shrink-0">
+                <path d="M0 2 C5 2, 6 18, 16 18" stroke="var(--on-ink-dim)" strokeWidth="2.5" fill="none" />
               </svg>
               {/* Text */}
-              <span className="relative text-[17px] font-bold tracking-tight text-on-ink px-0.5 top-[4px]">
+              <span className="relative text-[20px] font-black tracking-tight text-on-ink px-1.5 top-[5px]">
                 ThirdMan
               </span>
               {/* Dip connector right */}
-              <svg width="14" height="18" viewBox="0 0 14 18" fill="none" className="shrink-0">
-                <path d="M0 16 C9 16, 10 2, 14 2" stroke="var(--ink-line)" strokeWidth="1.5" fill="none" className="group-hover:[stroke:var(--on-ink-faint)] transition-[stroke] duration-[var(--dur)]" />
+              <svg width="16" height="20" viewBox="0 0 16 20" fill="none" className="shrink-0">
+                <path d="M0 18 C10 18, 11 2, 16 2" stroke="var(--on-ink-dim)" strokeWidth="2.5" fill="none" />
               </svg>
               {/* Right decorative line */}
-              <span className="block w-8 h-[1.5px] bg-ink-line rounded-full group-hover:bg-on-ink-faint transition-colors duration-[var(--dur)]" />
+              <span className="block w-12 h-[2.5px] bg-on-ink-dim rounded-full" />
             </div>
           </Link>
 
           {/* Right section blocks */}
-          <div className="flex items-stretch flex-1 justify-start gap-1 pl-3">
+          <div className="flex items-center flex-1 justify-around gap-2 pl-4 z-10">
             {rightGroups.map((group) => {
               const groupActive = group === activeGroup;
               const groupBadgeTotal = group.items.reduce((sum, it) => sum + (it.badge ?? 0), 0);
@@ -181,51 +188,32 @@ export function TopNav({
                     const firstHref = group.items[0]?.href;
                     if (firstHref) window.location.href = firstHref;
                   }}
-                  className={`relative flex items-center gap-1.5 px-4 py-2 text-[13px] font-semibold uppercase tracking-[0.06em] rounded-md my-1.5 transition-all duration-[var(--dur-fast)] ease-[var(--ease-out)] ${
+                  className={`relative flex items-center justify-center gap-2 px-6 py-2.5 text-[14px] font-bold uppercase tracking-[0.08em] rounded-full transition-all duration-300 ease-[var(--ease-out)] group/tab ${
                     groupActive
-                      ? "bg-accent text-[#ffffff] shadow-sm"
-                      : "text-on-ink-dim hover:text-on-ink hover:bg-ink-line-soft"
+                      ? "bg-on-ink text-ink shadow-[0_4px_12px_rgba(0,0,0,0.1)] scale-[1.02]"
+                      : "text-on-ink-dim hover:text-on-ink hover:bg-ink-line-soft/80"
                   }`}
                 >
                   {group.heading}
                   {groupBadgeTotal > 0 && (
-                    <span className="inline-flex items-center justify-center min-w-[1.125rem] h-[1.125rem] rounded-full bg-escalate text-[#ffffff] text-[10px] font-mono font-bold px-1 leading-none">
+                    <span className={`inline-flex items-center justify-center min-w-[1.25rem] h-[1.25rem] rounded-full text-[10px] font-mono font-bold px-1 leading-none transition-colors ${groupActive ? 'bg-ink text-on-ink' : 'bg-escalate text-[#ffffff]'}`}>
                       {groupBadgeTotal}
                     </span>
+                  )}
+                  {/* Glowing dot indicator for active tab */}
+                  {groupActive && (
+                    <span className="absolute -bottom-3 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-on-ink shadow-[0_0_8px_rgba(0,0,0,0.5)]" />
                   )}
                 </button>
               );
             })}
 
-            {/* Status + merchant name + logout — far right */}
-            <div className="flex items-center gap-3 ml-auto pr-4">
-              {statusLabel && (
-                <span className="flex items-center gap-1.5 text-[11px] text-on-ink-faint">
-                  <span
-                    aria-hidden="true"
-                    className={`h-1.5 w-1.5 rounded-full ${statusTone === "escalate" ? "bg-escalate animate-pulse" : "bg-allow"}`}
-                  />
-                  <span className="hidden lg:inline truncate max-w-[150px]">{statusLabel}</span>
-                </span>
-              )}
-              <span className="text-[11px] text-on-ink-faint truncate max-w-[120px] hidden xl:inline">
-                {merchantName}
-              </span>
-              <form action={logoutAction}>
-                <button
-                  type="submit"
-                  className="text-[12px] px-3 py-1.5 rounded-full border border-ink-line text-on-ink-dim hover:text-on-ink hover:bg-ink-line-soft transition-all duration-[var(--dur-fast)] font-medium"
-                >
-                  Log out
-                </button>
-              </form>
-            </div>
           </div>
         </div>
 
-        {/* Row 2: Browser-tab sub-nav for active group */}
+        {/* Row 2: Browser-tab sub-nav for active group (Evenly distributed Edge-to-Edge) */}
         {activeGroup && (
-          <div className="flex items-end gap-0 px-4 overflow-x-auto">
+          <div className="flex items-end gap-1 w-full px-2 pt-2 bg-ink-overlay/30 border-t border-ink-line-soft shadow-[inset_0_4px_6px_-4px_rgba(0,0,0,0.05)]">
             {activeGroup.items.map((item) => {
               const active = isActive(item.href);
               const Icon = ICONS[item.href];
@@ -233,24 +221,33 @@ export function TopNav({
                 <Link
                   key={item.href}
                   href={item.href}
-                  className={`group relative flex items-center gap-1.5 px-4 py-2.5 text-[13px] font-medium whitespace-nowrap transition-all duration-[var(--dur-fast)] ease-[var(--ease-out)] border-b-2 ${
+                  className={`group relative flex-1 flex items-center justify-center gap-2 px-4 py-3.5 text-[14px] font-semibold whitespace-nowrap transition-all duration-[var(--dur-fast)] ease-[var(--ease-out)] rounded-t-xl border-x border-t ${
                     active
-                      ? "text-on-ink border-accent"
-                      : "text-on-ink-dim hover:text-on-ink border-transparent hover:border-ink-line"
+                      ? "text-on-ink bg-ink border-ink-line-soft shadow-[0_-4px_12px_rgba(0,0,0,0.03)] z-10"
+                      : "text-on-ink-dim hover:text-on-ink bg-transparent border-transparent hover:bg-ink-line-soft/40 hover:border-ink-line-soft/50 z-0"
                   }`}
                 >
+                  {/* Subtle active indicator top bar */}
+                  {active && (
+                    <span className="absolute top-0 left-0 right-0 h-[3px] rounded-t-xl bg-accent" />
+                  )}
+                  {/* Bottom mask to overlap the container border smoothly */}
+                  {active && (
+                    <span className="absolute -bottom-[1px] left-0 right-0 h-[2px] bg-ink" />
+                  )}
+
                   {Icon && (
                     <Icon
-                      size={14}
-                      strokeWidth={active ? 2 : 1.75}
+                      size={16}
+                      strokeWidth={active ? 2.5 : 2}
                       aria-hidden="true"
-                      className={`shrink-0 ${active ? "text-accent" : "text-on-ink-faint group-hover:text-on-ink-dim"}`}
+                      className={`shrink-0 transition-transform group-hover:scale-110 ${active ? "text-accent" : "text-on-ink-faint"}`}
                     />
                   )}
                   <span>{item.label}</span>
                   {!!item.badge && (
-                    <span className="relative">
-                      <span className="inline-flex items-center justify-center min-w-[1.125rem] h-[1.125rem] rounded-full bg-escalate-wash text-escalate-bright text-[10px] font-mono font-bold px-1 leading-none">
+                    <span className="relative ml-1">
+                      <span className="inline-flex items-center justify-center min-w-[1.25rem] h-[1.25rem] rounded-full bg-escalate-wash text-escalate-bright text-[10px] font-mono font-black px-1 leading-none">
                         {item.badge}
                       </span>
                       {item.badgeTooltip && (
@@ -355,11 +352,6 @@ export function TopNav({
               ))}
               <div className="border-t border-ink-line pt-3 mt-3 flex items-center justify-between">
                 <span className="text-xs text-on-ink-faint">{merchantName}</span>
-                <form action={logoutAction}>
-                  <button type="submit" className="text-xs px-3 py-1.5 rounded-full border border-ink-line text-on-ink-dim hover:text-on-ink font-medium">
-                    Log out
-                  </button>
-                </form>
               </div>
             </nav>
           </div>
