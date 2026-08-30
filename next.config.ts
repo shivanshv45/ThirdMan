@@ -34,9 +34,11 @@ import type { NextConfig } from "next";
  * pass, which is out of scope for this layer (see DECISIONS.md).
  */
 
+const isDev = process.env.NODE_ENV !== "production";
+
 const dashboardCsp = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' https://checkout.razorpay.com",
+  `script-src 'self' 'unsafe-inline' ${isDev ? "'unsafe-eval'" : ""} https://checkout.razorpay.com`,
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' https://fonts.gstatic.com data:",
   "img-src 'self' data: https:",
