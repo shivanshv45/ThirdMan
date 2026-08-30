@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { authenticateAgent, extractBearerKey } from "@/lib/agent-auth";
 import { getDecisionForMoneyAction } from "@/lib/explainability";
+import { getMandateProofForMoneyAction } from "@/lib/mandates";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const agent = await authenticateAgent(extractBearerKey(req.headers.get("authorization")));
@@ -29,6 +30,14 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   // show; an allowed/executed action has no refusal to explain.
   const decision = await getDecisionForMoneyAction(agent.merchantId, action.id, agent.id);
 
+  // Layer 21-4: proof of agency in the calling agent's own outcome —
+  // it's the party that needs to fix a mandate that failed to verify
+  // (expired, tampered) or simply knows whether it presented one at
+  // all. mandate.present: false is the honest, common case (mandates
+  // are opt-in) and must render as an explicit "no mandate," never be
+  // omitted in a way that could read as ambiguous.
+  const mandateProof = await getMandateProofForMoneyAction(action.checkoutMandateId);
+
   return NextResponse.json({
     id: action.id,
     type: action.type,
@@ -36,6 +45,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     status: action.status,
     razorpayOrderId: action.razorpayEntityId,
     createdAt: action.createdAt,
+    mandate: mandateProof,
     ...(decision && {
       why: {
         reason: decision.reason,

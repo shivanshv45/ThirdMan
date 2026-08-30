@@ -12,6 +12,8 @@ import { sweepAllAgents } from "@/lib/guardian";
 import { sweepAbandonedReservations } from "@/lib/gate";
 import { drainDueTasks } from "@/lib/runtime/runner";
 import { sweepExpiredMemories } from "@/lib/memory/retrieve";
+import { sweepStaleRateLimitWindows } from "@/lib/rate-limit";
+import { sweepExpiredSessions } from "@/lib/auth";
 
 /**
  * The one scheduled entrypoint this stack has (Layer 11-3). There is no
@@ -88,6 +90,8 @@ export async function POST(req: NextRequest) {
   results.push(await runJob("reservations:sweep-abandoned", () => sweepAbandonedReservations()));
   results.push(await runJob("runtime:drain", () => drainDueTasks()));
   results.push(await runJob("memory:sweep-expired", () => sweepExpiredMemories()));
+  results.push(await runJob("rate-limit:sweep-stale", () => sweepStaleRateLimitWindows()));
+  results.push(await runJob("sessions:sweep-expired", () => sweepExpiredSessions()));
 
   // Layer 10's outbound webhook queue, if it has landed — registered
   // here rather than each feature building its own trigger. Optional

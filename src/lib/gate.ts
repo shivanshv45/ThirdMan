@@ -1,4 +1,4 @@
-import { and, eq, gte, lte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { logAuditEntry } from "@/lib/audit";
 import { createOrder, capturePayment, refundPayment, createPaymentLink, RazorpayCallError, type RazorpayCredentials } from "@/lib/razorpay";
@@ -10,6 +10,7 @@ import { resolveCartForCheckout, snapshotCartPurchase, loadCartPurchaseItems, ty
 import { enqueueWebhookEvent } from "@/lib/webhooks/enqueue";
 import { evaluateAndTransition } from "@/lib/guardian";
 import { withMoneyPathSpan, withSpan } from "@/lib/tracing";
+import { getMerchantAgentTerms } from "@/lib/agent-terms";
 
 /**
  * Loads and decrypts a merchant's own Razorpay credentials. The gate is
@@ -179,6 +180,23 @@ export interface MoneyActionRequest {
    * ever being confused with a real money action.
    */
   dryRun?: boolean;
+  /**
+   * Layer 21-7: set by the caller (the purchase route/MCP tool) once a
+   * Payment Mandate has been verified for this request, so checkBounds
+   * can enforce merchant_agent_terms.mandateRequiredAbovePaise — an
+   * order at or above that value needs a verified mandate regardless of
+   * the agent's own mandateRequired flag. checkBounds never verifies a
+   * mandate itself; this is a boolean fact handed in, the same shape
+   * mandateRequired's own route-level check already used.
+   */
+  mandateVerified?: boolean;
+  /**
+   * Layer 21-4: the id of the Checkout Mandate that was verified and
+   * consumed for this specific request, if any — stored directly on the
+   * resulting money_actions row so proof of agency is queryable without
+   * a time-proximity guess. Present only alongside mandateVerified: true.
+   */
+  checkoutMandateId?: string;
 }
 
 export interface GateResult {
@@ -392,6 +410,74 @@ async function resolveCartForRequest(
   return { cart };
 }
 
+const COMPLETED_MONEY_ACTION_STATUSES = ["executed", "held", "captured"] as const;
+
+/**
+ * Layer 21-7: merchant_agent_terms enforcement — the merchant's policy
+ * for AI buyers as a class, composed here as ordinary bounds, before the
+ * request-specific (offer/negotiation/variant) resolution below.
+ *
+ * unknownAgentsAllowed and newAgentOrderCeilingPaise apply ONLY to
+ * self-registered agents (registrationSource: "self_registered"), never
+ * to a merchant-issued one. A merchant who hand-creates an agent from
+ * their own dashboard has already vetted it by definition — it was
+ * never "unknown," and treating it as such would make every existing
+ * agent's very first purchase fail unless the merchant separately
+ * published terms, a behaviour change nothing in this layer intends.
+ * "Unknown" names exactly the population L21-8's self-registration path
+ * creates. A merchant with no terms row gets the conservative reading —
+ * a self-registered agent with zero completed purchases is NOT allowed
+ * to transact — absence is real, not permissive, same discipline as
+ * merchant_policies. mandateRequiredAbovePaise is unscoped: it applies
+ * to any agent, since it's a value-based escalation, not a trust-tier one.
+ */
+async function checkAgentTerms(
+  request: MoneyActionRequest,
+  agent: typeof schema.agents.$inferSelect,
+): Promise<BoundCheckFailure | null> {
+  const terms = await getMerchantAgentTerms(request.merchantId);
+
+  if (agent.registrationSource === "self_registered") {
+    const [{ count: completedCount }] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.moneyActions)
+      .where(
+        and(
+          eq(schema.moneyActions.agentId, agent.id),
+          inArray(schema.moneyActions.status, COMPLETED_MONEY_ACTION_STATUSES),
+        ),
+      );
+    const isNewAgent = completedCount === 0;
+
+    if (isNewAgent && !(terms?.unknownAgentsAllowed ?? false)) {
+      return {
+        reason: `Denied — self-registered agent "${agent.name}" has no completed purchase history with this merchant, and this merchant's agent terms do not allow unknown agents to transact. The merchant must approve this agent first.`,
+        boundApplied: `agent_terms_unknown_agent:${agent.id}`,
+      };
+    }
+
+    if (isNewAgent && terms?.newAgentOrderCeilingPaise !== null && terms?.newAgentOrderCeilingPaise !== undefined) {
+      if (request.amountPaise > terms.newAgentOrderCeilingPaise) {
+        return {
+          reason: `Denied — ₹${(request.amountPaise / 100).toFixed(2)} exceeds this merchant's ₹${(terms.newAgentOrderCeilingPaise / 100).toFixed(2)} order ceiling for a self-registered agent with no completed purchase history.`,
+          boundApplied: `agent_terms_new_agent_ceiling:${agent.id}`,
+        };
+      }
+    }
+  }
+
+  if (terms?.mandateRequiredAbovePaise !== null && terms?.mandateRequiredAbovePaise !== undefined) {
+    if (request.amountPaise >= terms.mandateRequiredAbovePaise && !request.mandateVerified) {
+      return {
+        reason: `Denied — ₹${(request.amountPaise / 100).toFixed(2)} is at or above this merchant's ₹${(terms.mandateRequiredAbovePaise / 100).toFixed(2)} threshold requiring a verified AP2 Payment Mandate, and none was presented or verified for this request.`,
+        boundApplied: `agent_terms_mandate_required:${agent.id}`,
+      };
+    }
+  }
+
+  return null;
+}
+
 /**
  * The deterministic checks, in order, short-circuiting on the first
  * failure. Returns the resolved product (if any) when every check passes.
@@ -507,6 +593,9 @@ async function checkBounds(
       boundApplied: `spend_cap_balance:${cap.id}`,
     };
   }
+
+  const termsFailure = await checkAgentTerms(request, agent);
+  if (termsFailure) return termsFailure;
 
   if (request.offerId) {
     const { offer, failure } = await resolveOfferForRequest(request);
@@ -1115,6 +1204,7 @@ async function attemptMoneyActionTraced(
         amountPaise: request.amountPaise,
         status: "pending_escalation",
         idempotencyKey: request.idempotencyKey,
+        checkoutMandateId: request.checkoutMandateId,
       });
       setMoneyActionId(moneyAction.id);
 
@@ -1159,6 +1249,7 @@ async function attemptMoneyActionTraced(
       status: "allowed",
       idempotencyKey: request.idempotencyKey,
       reservationExpiresAt: sql<Date>`now() + interval '${sql.raw(String(RESERVATION_TIMEOUT_MINUTES))} minutes'`,
+      checkoutMandateId: request.checkoutMandateId,
     });
     setMoneyActionId(moneyAction.id);
 

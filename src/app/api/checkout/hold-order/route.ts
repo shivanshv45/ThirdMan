@@ -10,6 +10,9 @@ import { getOrCreateStorefrontAgent } from "@/lib/storefront";
 const holdOrderRequestSchema = z.object({
   productId: z.string().uuid(),
   quantity: z.number().int().positive().max(999).default(1),
+  // Layer 26-5: same discipline as /api/checkout/order — optional, so a
+  // caller that omits it keeps the pre-existing non-idempotent behavior.
+  idempotencyKey: z.string().uuid().optional(),
 });
 
 /**
@@ -39,7 +42,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "invalid request body", details: parsed.error.flatten() }, { status: 400 });
   }
 
-  const { productId, quantity } = parsed.data;
+  const { productId, quantity, idempotencyKey } = parsed.data;
 
   const [merchantRow] = await db
     .select({ keyIdEncrypted: schema.merchants.razorpayKeyIdEncrypted })
@@ -75,6 +78,7 @@ export async function POST(req: NextRequest) {
     variantId: variant.id,
     quantity,
     holdOnly: true,
+    idempotencyKey,
   });
 
   if (result.decision !== "allow" || !result.razorpayOrderId) {

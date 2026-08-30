@@ -218,6 +218,41 @@
       "when": 1788081603102,
       "tag": "0030_lean_roxanne_simpson",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1788086074560,
+      "tag": "0031_parallel_molly_hayes",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1788088660626,
+      "tag": "0032_powerful_zeigeist",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1788088974345,
+      "tag": "0033_far_thor",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1788092204057,
+      "tag": "0034_magical_gorgon",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1788092999089,
+      "tag": "0035_acoustic_deadpool",
+      "breakpoints": true
     }
   ]
 }

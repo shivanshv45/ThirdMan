@@ -2,18 +2,18 @@ import { redirect } from "next/navigation";
 import { getSessionMerchant } from "@/lib/auth";
 import { getRazorpayConnectionStatus } from "@/lib/dashboard";
 import { getAlertSettings } from "@/lib/notifications/merchant-alerts";
-import { connectRazorpay, disconnectRazorpay, updateAlertSettings } from "./actions";
+import { connectRazorpay, disconnectRazorpay, updateAlertSettings, changePassword } from "./actions";
 import { PageHeader, Surface, Field, Input, Button } from "@/components/ui";
 
 export default async function SettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string; connected?: string }>;
+  searchParams: Promise<{ error?: string; connected?: string; pwError?: string; pwChanged?: string }>;
 }) {
   const merchant = await getSessionMerchant();
   if (!merchant) redirect("/login");
 
-  const { error, connected } = await searchParams;
+  const { error, connected, pwError, pwChanged } = await searchParams;
   const status = await getRazorpayConnectionStatus(merchant.id);
   const alertSettings = await getAlertSettings(merchant.id);
 
@@ -99,9 +99,50 @@ export default async function SettingsPage({
               <input type="checkbox" name="webhookExhaustedEnabled" defaultChecked={alertSettings.webhookExhaustedEnabled} className="accent-accent" />
               Webhook deliveries to your server that failed
             </label>
+            <label className="flex items-center gap-2 text-sm text-on-ink-dim">
+              <input type="checkbox" name="loginBurstEnabled" defaultChecked={alertSettings.loginBurstEnabled} className="accent-accent" />
+              Bursts of failed login attempts on your account
+            </label>
           </div>
           <Button type="submit" variant="secondary" size="sm" pendingLabel="Saving…">
             Save alert preferences
+          </Button>
+        </form>
+      </Surface>
+
+      <Surface variant="raised" className="p-5 space-y-4">
+        <div>
+          <h2 className="text-[var(--t-h4)] font-medium text-on-ink">Password</h2>
+          <p className="text-sm text-on-ink-dim mt-1">
+            Changing your password signs out every other session — only this one stays logged in.
+          </p>
+        </div>
+
+        {pwError && (
+          <p className="text-sm text-deny-bright bg-deny-wash border border-deny-line rounded-[var(--radius)] px-3 py-2">
+            {pwError}
+          </p>
+        )}
+        {pwChanged && (
+          <p className="text-sm text-allow-bright bg-allow-wash border border-allow-line rounded-[var(--radius)] px-3 py-2">
+            Password changed. Other sessions have been signed out.
+          </p>
+        )}
+
+        <form action={changePassword} className="space-y-3 max-w-sm">
+          {merchant.passwordHash && (
+            <Field label="Current password">
+              <Input name="currentPassword" type="password" required />
+            </Field>
+          )}
+          <Field label="New password">
+            <Input name="newPassword" type="password" required minLength={8} />
+          </Field>
+          <Field label="Confirm new password">
+            <Input name="confirmPassword" type="password" required minLength={8} />
+          </Field>
+          <Button type="submit" variant="primary" pendingLabel="Changing…">
+            {merchant.passwordHash ? "Change password" : "Set a password"}
           </Button>
         </form>
       </Surface>

@@ -94,6 +94,7 @@ export async function redeemRewardCoins(
   purchaseAmountPaise: number,
   requestedCoins: number,
   identity: RewardIdentity,
+  idempotencyKey?: string,
 ): Promise<RedeemResult> {
   const settings = await getRewardSettings(merchantId);
   if (!settings) {
@@ -126,6 +127,7 @@ export async function redeemRewardCoins(
     amountPaise: valuePaise,
     context: `Reward coins redeemed: ${requestedCoins} coins (₹${(valuePaise / 100).toFixed(2)}) against a ₹${(purchaseAmountPaise / 100).toFixed(2)} purchase`,
     rewardLedger: { coinsDelta: -requestedCoins, reason: "redemption", identity },
+    idempotencyKey,
   });
 
   if (result.decision !== "allow") {

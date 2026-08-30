@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { getRecentAuditEntries } from "@/lib/audit";
 import { decrypt } from "@/lib/crypto";
@@ -6,6 +6,7 @@ import { getSpansForMoneyAction } from "@/lib/tracing";
 import { getUseCaseBudgetStatus } from "@/lib/model-router";
 import { listTasksForMerchant, getTaskSteps } from "@/lib/runtime/tasks";
 import { computeReadPurchaseRatio, type ReadPurchaseRatio } from "@/lib/guardian";
+import type { MandateBackedPurchase } from "@/lib/mandates";
 
 /**
  * Read queries for the merchant dashboard. Every function is scoped by
@@ -29,6 +30,8 @@ export interface AgentWithCap {
     windowEnd: Date;
     status: (typeof schema.spendCapStatusEnum.enumValues)[number];
   } | null;
+  /** Layer 21-4: proof of agency — mandate-backed purchases, newest first, empty when this agent has never presented one. */
+  mandateBackedPurchases: MandateBackedPurchase[];
 }
 
 export async function getAgentsWithCaps(merchantId: string): Promise<AgentWithCap[]> {
@@ -69,6 +72,31 @@ export async function getAgentsWithCaps(merchantId: string): Promise<AgentWithCa
     const list = capabilitiesByAgentId.get(row.agentId) ?? [];
     list.push(row.capability);
     capabilitiesByAgentId.set(row.agentId, list);
+  }
+
+  // Layer 21-4: proof of agency, batched the same way — one query for
+  // every agent's mandate-backed money actions rather than one per row.
+  const allMandateBackedActions = await db
+    .select({
+      id: schema.moneyActions.id,
+      agentId: schema.moneyActions.agentId,
+      amountPaise: schema.moneyActions.amountPaise,
+      status: schema.moneyActions.status,
+      createdAt: schema.moneyActions.createdAt,
+      checkoutMandateId: schema.moneyActions.checkoutMandateId,
+    })
+    .from(schema.moneyActions)
+    .where(and(inArray(schema.moneyActions.agentId, agents.map((a) => a.id)), isNotNull(schema.moneyActions.checkoutMandateId)))
+    .orderBy(desc(schema.moneyActions.createdAt));
+
+  const mandateBackedByAgentId = new Map<string, MandateBackedPurchase[]>();
+  for (const row of allMandateBackedActions) {
+    if (!row.agentId) continue;
+    const list = mandateBackedByAgentId.get(row.agentId) ?? [];
+    if (list.length < 20) {
+      list.push({ moneyActionId: row.id, amountPaise: row.amountPaise, status: row.status, createdAt: row.createdAt, mandateId: row.checkoutMandateId! });
+    }
+    mandateBackedByAgentId.set(row.agentId, list);
   }
 
   return agents.map((agent) => {
@@ -857,5 +885,105 @@ export async function getPendingMemoryConfirmCount(merchantId: string): Promise<
     .from(schema.agentMemories)
     .where(and(eq(schema.agentMemories.merchantId, merchantId), eq(schema.agentMemories.kind, "stated"), sql`${schema.agentMemories.confirmedAt} is null`));
   return rows.length;
+}
+
+// --- Layer 19: the Theatre view ---
+
+export interface TheatreRunStep {
+  stepIndex: number;
+  type: string;
+  timestamp: string;
+  reasoning?: string;
+  toolName?: string;
+  toolArgs?: unknown;
+  toolResult?: unknown;
+  moneyActionId?: string;
+  outcome?: string;
+  message?: string;
+}
+
+export interface TheatreRun {
+  id: string;
+  agentId: string;
+  agentName: string;
+  runId: string;
+  steps: TheatreRunStep[];
+  /** The last run_ended step's outcome, if the log has one — a run with no run_ended line yet is still in progress. */
+  finalOutcome: string | null;
+  createdAt: Date;
+}
+
+/**
+ * Parses one buyerAgentRuns.rawLog blob into display rows, at read time
+ * only — never written back, never trusted as ground truth (a
+ * money-action correlation still has to check the real row exists via
+ * getBuyerRunMoneyActionIds below). A malformed line is skipped, not
+ * thrown on — the buyer agent is untrusted and its log is inspected,
+ * not executed.
+ */
+function parseRunLog(rawLog: string): TheatreRunStep[] {
+  const steps: TheatreRunStep[] = [];
+  for (const line of rawLog.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === "object" && typeof parsed.type === "string") {
+        steps.push(parsed as TheatreRunStep);
+      }
+    } catch {
+      // Skip a malformed line rather than fail the whole view — the
+      // blob is untrusted input, not a contract this reader trusts.
+    }
+  }
+  return steps;
+}
+
+/** Every ingested buyer-agent run for this merchant, newest first, parsed for display. No fabricated rows: an empty result is EmptyState, never padded. */
+export async function getBuyerAgentRuns(merchantId: string): Promise<TheatreRun[]> {
+  const rows = await db.select().from(schema.buyerAgentRuns).where(eq(schema.buyerAgentRuns.merchantId, merchantId)).orderBy(desc(schema.buyerAgentRuns.createdAt));
+  if (rows.length === 0) return [];
+
+  const agentIds = [...new Set(rows.map((r) => r.agentId))];
+  const agentRows = await db.select({ id: schema.agents.id, name: schema.agents.name }).from(schema.agents).where(inArray(schema.agents.id, agentIds));
+  const agentNameById = new Map(agentRows.map((a) => [a.id, a.name]));
+
+  return rows.map((row) => {
+    const steps = parseRunLog(row.rawLog);
+    const ended = [...steps].reverse().find((s) => s.type === "run_ended");
+    return {
+      id: row.id,
+      agentId: row.agentId,
+      agentName: agentNameById.get(row.agentId) ?? "Unknown agent",
+      runId: row.runId,
+      steps,
+      finalOutcome: ended?.outcome ?? null,
+      createdAt: row.createdAt,
+    };
+  });
+}
+
+/** How many uploaded runs have no run_ended line yet — the sidebar badge, same "real state, no fake progress" discipline as getActiveTaskCount. */
+export async function getActiveTheatreRunCount(merchantId: string): Promise<number> {
+  const runs = await getBuyerAgentRuns(merchantId);
+  return runs.filter((r) => r.finalOutcome === null).length;
+}
+
+/**
+ * Every real money action id a run's own log claims to have taken,
+ * checked against actual moneyActions rows for this merchant — the
+ * theatre view's real join key (governing rule: correlation by id, not
+ * timestamp). A claimed id with no matching real row is dropped rather
+ * than shown as if it were real — the buyer agent's log is untrusted
+ * input, and a fabricated or cross-merchant id must never let the view
+ * assert anything about money that didn't happen.
+ */
+export async function verifyMoneyActionIds(merchantId: string, claimedIds: string[]): Promise<Set<string>> {
+  if (claimedIds.length === 0) return new Set();
+  const rows = await db
+    .select({ id: schema.moneyActions.id })
+    .from(schema.moneyActions)
+    .where(and(eq(schema.moneyActions.merchantId, merchantId), inArray(schema.moneyActions.id, claimedIds)));
+  return new Set(rows.map((r) => r.id));
 }
 

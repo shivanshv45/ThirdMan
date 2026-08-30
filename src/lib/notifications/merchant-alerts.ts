@@ -33,6 +33,7 @@ export async function getAlertSettings(merchantId: string) {
       holdExpiringEnabled: true,
       notificationExhaustedEnabled: true,
       webhookExhaustedEnabled: true,
+      loginBurstEnabled: true,
       lastDigestSentAt: null as Date | null,
       updatedAt: new Date(),
     }
@@ -44,6 +45,7 @@ interface DigestCounts {
   holdsExpiringSoon: number;
   exhaustedNotifications: number;
   exhaustedWebhooks: number;
+  loginBursts: number;
 }
 
 async function countExhaustedNotifications(merchantId: string, since: Date): Promise<number> {
@@ -72,12 +74,22 @@ async function countExhaustedWebhooks(merchantId: string, since: Date): Promise<
   return Number(row?.count ?? 0);
 }
 
+/** Layer 26-3: counts login_burst_flagged audit_log rows — login/actions.ts writes one per burst crossing the free-attempts threshold, never one per failed attempt, so this count is already digest-shaped. */
+async function countLoginBursts(merchantId: string, since: Date): Promise<number> {
+  const [row] = await db
+    .select({ count: sql<string>`count(*)` })
+    .from(schema.auditLog)
+    .where(and(eq(schema.auditLog.merchantId, merchantId), eq(schema.auditLog.event, "login_burst_flagged"), gte(schema.auditLog.createdAt, since)));
+  return Number(row?.count ?? 0);
+}
+
 function composeDigestBody(counts: DigestCounts, merchantName: string): { subject: string; text: string } {
   const lines: string[] = [];
   if (counts.pendingEscalations > 0) lines.push(`- ${counts.pendingEscalations} purchase(s) waiting on your approval — ${APP_URL}/dashboard`);
   if (counts.holdsExpiringSoon > 0) lines.push(`- ${counts.holdsExpiringSoon} escrow hold(s) expiring within 24h — ${APP_URL}/dashboard/escrow`);
   if (counts.exhaustedNotifications > 0) lines.push(`- ${counts.exhaustedNotifications} customer notification(s) failed to deliver — ${APP_URL}/dashboard/recovery`);
   if (counts.exhaustedWebhooks > 0) lines.push(`- ${counts.exhaustedWebhooks} webhook delivery(ies) to your server failed — ${APP_URL}/dashboard/embed`);
+  if (counts.loginBursts > 0) lines.push(`- ${counts.loginBursts} burst(s) of failed login attempts on your account — ${APP_URL}/dashboard/settings`);
 
   return {
     subject: `${merchantName}: ${lines.length} thing${lines.length === 1 ? "" : "s"} need your attention`,
@@ -107,9 +119,10 @@ export async function sendMerchantDigestIfDue(merchantId: string): Promise<{ sen
     holdsExpiringSoon: settings.holdExpiringEnabled ? await countHoldsExpiringSoon(merchantId, DIGEST_MIN_INTERVAL_MS) : 0,
     exhaustedNotifications: settings.notificationExhaustedEnabled ? await countExhaustedNotifications(merchantId, since) : 0,
     exhaustedWebhooks: settings.webhookExhaustedEnabled ? await countExhaustedWebhooks(merchantId, since) : 0,
+    loginBursts: settings.loginBurstEnabled ? await countLoginBursts(merchantId, since) : 0,
   };
 
-  const total = counts.pendingEscalations + counts.holdsExpiringSoon + counts.exhaustedNotifications + counts.exhaustedWebhooks;
+  const total = counts.pendingEscalations + counts.holdsExpiringSoon + counts.exhaustedNotifications + counts.exhaustedWebhooks + counts.loginBursts;
   if (total === 0) return { sent: false, reason: "Nothing to report." };
 
   const { subject, text } = composeDigestBody(counts, merchant.name);

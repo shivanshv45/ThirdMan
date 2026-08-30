@@ -497,21 +497,29 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
       }
 
       // Layer 13-3: verified before any purchase path below — same
-      // "before checkBounds" ordering as /api/agent/purchase.
-      const verifyMandateIfRequired = async (assertedAmountPaise: number): Promise<string | null> => {
-        if (!agent.mandateRequired) return null;
-        if (!checkoutMandateJwt) {
-          return "Denied — this agent requires a signed Payment Mandate (checkoutMandateJwt) for every purchase, and none was presented. Call issue_checkout_mandate first.";
+      // "before checkBounds" ordering as /api/agent/purchase. Layer
+      // 21-7: also verifies a presented mandate when the agent hasn't
+      // opted in via mandateRequired, since merchant_agent_terms'
+      // mandateRequiredAbovePaise may require one by value alone —
+      // checkBounds needs mandateVerified regardless of why one was sent.
+      const verifyMandateIfRequired = async (assertedAmountPaise: number): Promise<{ failure: string | null; mandateVerified: boolean; checkoutMandateId?: string }> => {
+        if (!agent.mandateRequired && !checkoutMandateJwt) return { failure: null, mandateVerified: false };
+        if (agent.mandateRequired && !checkoutMandateJwt) {
+          return { failure: "Denied — this agent requires a signed Payment Mandate (checkoutMandateJwt) for every purchase, and none was presented. Call issue_checkout_mandate first.", mandateVerified: false };
         }
         const verification = await withSpan("mandate_verification", { "thirdman.agent_id": agent.id }, () =>
           verifyPaymentMandate({
             merchantId: agent.merchantId,
             agentId: agent.id,
-            checkoutJwt: checkoutMandateJwt,
+            checkoutJwt: checkoutMandateJwt!,
             assertedAmountPaise,
           }),
         );
-        return verification.ok ? null : verification.reason;
+        return {
+          failure: verification.ok ? null : verification.reason,
+          mandateVerified: verification.ok,
+          checkoutMandateId: verification.ok ? verification.mandateId : undefined,
+        };
       };
 
       if (negotiationId) {
@@ -524,7 +532,7 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
         }
 
         const amountPaise = negotiation.agreedUnitPricePaise * negotiation.quantity;
-        const mandateFailure = await verifyMandateIfRequired(amountPaise);
+        const { failure: mandateFailure, mandateVerified, checkoutMandateId } = await verifyMandateIfRequired(amountPaise);
         if (mandateFailure) return toolText(JSON.stringify({ decision: "deny", reason: mandateFailure }));
 
         const result = await attemptMoneyAction({
@@ -535,6 +543,8 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
           context: `MCP purchase: negotiated price for variant ${negotiation.variantId}`,
           negotiationId,
           idempotencyKey,
+          mandateVerified,
+          checkoutMandateId,
         });
 
         return toolText(JSON.stringify({ ...result, quantity: negotiation.quantity, amountFormatted: formatPaise(amountPaise) }, null, 2));
@@ -548,7 +558,7 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
         const [bundle] = await db.select().from(schema.bundles).where(eq(schema.bundles.id, offer.bundleId));
         if (!bundle) return toolText(JSON.stringify({ decision: "deny", reason: `No offer ${offerId} found for this merchant.` }));
 
-        const mandateFailure = await verifyMandateIfRequired(bundle.bundlePricePaise);
+        const { failure: mandateFailure, mandateVerified, checkoutMandateId } = await verifyMandateIfRequired(bundle.bundlePricePaise);
         if (mandateFailure) return toolText(JSON.stringify({ decision: "deny", reason: mandateFailure }));
 
         if (offer.status === "offered") {
@@ -562,6 +572,8 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
           amountPaise: bundle.bundlePricePaise,
           context: `MCP purchase: bundle "${bundle.name}"`,
           offerId,
+          mandateVerified,
+          checkoutMandateId,
         });
 
         return toolText(JSON.stringify({ ...result, bundleName: bundle.name, amountFormatted: formatPaise(bundle.bundlePricePaise) }, null, 2));
@@ -578,7 +590,7 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
       }
 
       const amountPaise = found.variant.pricePaise * quantity;
-      const mandateFailure = await verifyMandateIfRequired(amountPaise);
+      const { failure: mandateFailure, mandateVerified, checkoutMandateId } = await verifyMandateIfRequired(amountPaise);
       if (mandateFailure) return toolText(JSON.stringify({ decision: "deny", reason: mandateFailure }));
 
       const result = await attemptMoneyAction({
@@ -590,6 +602,8 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
         variantId: found.variant.id,
         quantity,
         idempotencyKey,
+        mandateVerified,
+        checkoutMandateId,
       });
 
       return toolText(

@@ -9,6 +9,11 @@ export default defineConfig({
       // .env.local explicitly for tests that touch the real database.
       ...loadEnvLocal(),
     },
+    // agent-buyer/ is a separate, standalone package (Layer 19) — it is
+    // deliberately outside this app's build and test run. Its own
+    // deterministic ceilings are unit-tested from inside its own
+    // package; this repo's suite only tests the surfaces it calls.
+    exclude: ["**/node_modules/**", "agent-buyer/**"],
   },
   resolve: {
     alias: {

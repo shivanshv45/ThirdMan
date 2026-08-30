@@ -88,13 +88,23 @@ export function BuyButton({
     setStatus("loading");
     setMessage(null);
 
+    // One idempotency key per checkout attempt (Layer 26-5) — generated
+    // here, not on the server, so a retried fetch (a flaky mobile
+    // connection's own retry, or this handler somehow firing twice
+    // before `busy` disables the button) carries the SAME key and
+    // therefore replays the first attempt's outcome through the gate's
+    // existing idempotency mechanism, rather than reserving budget and
+    // creating a second Razorpay order. A genuinely new click after this
+    // one resolves calls handleBuy again and gets a fresh key.
+    const idempotencyKey = crypto.randomUUID();
+
     try {
       await loadCheckoutScript();
 
       const orderRes = await fetch("/api/checkout/order", {
         method: "POST",
         headers: fetchHeaders(embedKey),
-        body: JSON.stringify({ merchantId, productId, variantId, quantity, offerId, negotiationId, cart, sessionToken }),
+        body: JSON.stringify({ merchantId, productId, variantId, quantity, offerId, negotiationId, cart, sessionToken, idempotencyKey }),
       });
       const order = await orderRes.json();
 

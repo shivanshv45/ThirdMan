@@ -1,0 +1,1 @@
+ALTER TABLE "merchant_alert_settings" ADD COLUMN "login_burst_enabled" boolean DEFAULT true NOT NULL;

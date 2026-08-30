@@ -25,7 +25,7 @@ async function handle(req: NextRequest): Promise<Response> {
     return NextResponse.json({ error: "invalid or missing agent API key" }, { status: 401 });
   }
 
-  const rateLimit = checkRateLimit(`mcp:${agent.id}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
+  const rateLimit = await checkRateLimit(`mcp:${agent.id}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
   if (!rateLimit.allowed) {
     return NextResponse.json(
       { error: "Too many requests. Please slow down." },

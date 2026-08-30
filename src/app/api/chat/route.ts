@@ -35,7 +35,7 @@ export async function OPTIONS(req: NextRequest) {
  * real CORS preflight (OPTIONS) carries no body — see embed-cors.ts.
  */
 export async function POST(req: NextRequest) {
-  const rateLimit = checkRateLimit(`chat:${getClientIp(req.headers)}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
+  const rateLimit = await checkRateLimit(`chat:${getClientIp(req.headers)}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
   if (!rateLimit.allowed) {
     return NextResponse.json(
       { error: "Too many messages. Please slow down." },

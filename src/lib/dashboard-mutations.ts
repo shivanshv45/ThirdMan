@@ -5,6 +5,8 @@ import { encrypt } from "@/lib/crypto";
 import { validateCredentials } from "@/lib/razorpay";
 import { generateApiKey, hashApiKey } from "@/lib/agent-auth";
 import { rupeesToPaise } from "@/lib/money";
+import { hashPassword, verifyPassword } from "@/lib/password";
+import { invalidateOtherSessions } from "@/lib/auth";
 
 /**
  * The framework-agnostic core of every dashboard mutation. Separated
@@ -801,6 +803,7 @@ export async function updateAlertSettings(
     holdExpiringEnabled: boolean;
     notificationExhaustedEnabled: boolean;
     webhookExhaustedEnabled: boolean;
+    loginBurstEnabled: boolean;
   },
 ) {
   const [settings] = await db
@@ -810,6 +813,39 @@ export async function updateAlertSettings(
     .returning();
 
   return settings;
+}
+
+/**
+ * Layer 26-2: changes a merchant's password and invalidates every other
+ * session, keeping only the one making this request. Requires the
+ * current password — same-account self-service, not an admin override.
+ * A merchant with no passwordHash set (OAuth-only) can use this to set
+ * one for the first time; in that case there is nothing to verify
+ * against, so requireCurrentPassword is skipped for that one case only.
+ */
+export async function changePassword(merchantId: string, currentSessionId: string | null, currentPassword: string, newPassword: string): Promise<void> {
+  const [merchant] = await db.select().from(schema.merchants).where(eq(schema.merchants.id, merchantId));
+  if (!merchant) throw new Error("Merchant not found");
+
+  if (merchant.passwordHash) {
+    const valid = await verifyPassword(currentPassword, merchant.passwordHash);
+    if (!valid) throw new Error("Current password is incorrect.");
+  }
+
+  if (newPassword.length < 8) throw new Error("New password must be at least 8 characters.");
+
+  const newHash = await hashPassword(newPassword);
+  await db.update(schema.merchants).set({ passwordHash: newHash }).where(eq(schema.merchants.id, merchantId));
+
+  await invalidateOtherSessions(merchantId, currentSessionId ?? undefined);
+
+  await logAuditEntry({
+    merchantId,
+    actor: "merchant",
+    event: "password_changed",
+    decision: "n/a",
+    reason: "Merchant changed their password; all other sessions were invalidated.",
+  });
 }
 
 /**

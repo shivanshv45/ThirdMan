@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // agent-buyer/ is a standalone package (Layer 19) with its own
+    // package.json, tsconfig.json, and lint/test setup — outside this
+    // app's Next.js build by design (plans/layer-19-adversarial-buyer.md).
+    "agent-buyer/**",
   ]),
   {
     // Only src/lib/env.ts may read process.env directly — everywhere

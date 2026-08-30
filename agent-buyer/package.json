@@ -1,0 +1,24 @@
+{
+  "name": "agent-buyer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A standalone, untrusted external AI buyer agent that transacts against the merchant platform over MCP/HTTP only. No import of the parent app's src/lib, no database access. See plans/layer-19-adversarial-buyer.md.",
+  "type": "module",
+  "scripts": {
+    "run": "tsx --env-file=.env.local src/run.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@google/adk": "^2.0.0",
+    "@google/genai": "^2.19.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "@types/node": "^20",
+    "vitest": "^3.0.0"
+  }
+}

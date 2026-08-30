@@ -22,6 +22,7 @@ import {
   FlaskConical,
   Landmark,
   BrainCircuit,
+  Clapperboard,
   type LucideIcon,
 } from "lucide-react";
 
@@ -44,6 +45,7 @@ const ICONS: Record<string, LucideIcon> = {
   "/dashboard/guardian": ShieldAlert,
   "/dashboard/preflight": FlaskConical,
   "/dashboard/memory": BrainCircuit,
+  "/dashboard/theatre": Clapperboard,
   "/dashboard/agents": KeyRound,
   "/dashboard/policies": Scale,
   "/dashboard/embed": Code,

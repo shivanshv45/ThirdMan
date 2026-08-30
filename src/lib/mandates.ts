@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { generateKeyPair, SignJWT, jwtVerify, exportPKCS8, exportSPKI, importPKCS8, importSPKI } from "jose";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc, isNotNull } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { encrypt, decrypt } from "@/lib/crypto";
 import { logAuditEntry } from "@/lib/audit";
@@ -190,7 +190,7 @@ interface VerificationFailure {
  */
 export async function verifyPaymentMandate(
   presentation: PaymentMandatePresentation,
-): Promise<{ ok: true; totalPaise: number } | { ok: false; reason: string }> {
+): Promise<{ ok: true; totalPaise: number; mandateId: string } | { ok: false; reason: string }> {
   const checkoutHash = createHash("sha256").update(presentation.checkoutJwt).digest("hex");
 
   const record = async (failure: VerificationFailure | null, checkoutMandateId?: string) => {
@@ -310,7 +310,7 @@ export async function verifyPaymentMandate(
     }
 
     await record(null, mandate.id);
-    return { ok: true, totalPaise: signedTotalPaise };
+    return { ok: true, totalPaise: signedTotalPaise, mandateId: mandate.id };
   } catch (err) {
     const failure = {
       reason: `Denied — mandate signature verification failed: ${err instanceof Error ? err.message : String(err)}.`,
@@ -319,4 +319,107 @@ export async function verifyPaymentMandate(
     await record(failure, mandate.id);
     return { ok: false, reason: failure.reason };
   }
+}
+
+export interface MandateProof {
+  present: true;
+  mandateId: string;
+  agentId: string;
+  totalPaise: number;
+  status: "issued" | "consumed" | "expired";
+  issuedAt: Date;
+  /** What the checkout mandate attests: the exact cart lines the merchant signed off on. */
+  lines: CartLineForMandate[];
+}
+
+export type MandateProofResult = MandateProof | { present: false };
+
+/**
+ * Layer 21-4: proof of agency, surfaced. Reads back the Checkout Mandate
+ * a money action was taken under, if any — for the explain view, the
+ * agent-facing /api/agent/actions/[id] "why" block, and any
+ * merchant-readable record. Deliberately returns { present: false }
+ * rather than throwing or returning null for the common case (a
+ * purchase made without a mandate, since mandates are opt-in) — every
+ * caller must render that as an explicit "no mandate," never an
+ * ambiguous or silently-verified state. See DECISIONS.md and
+ * plans/layer-21-protocol-surface.md's "must not become decorative."
+ */
+export async function getMandateProofForMoneyAction(checkoutMandateId: string | null): Promise<MandateProofResult> {
+  if (!checkoutMandateId) return { present: false };
+
+  const [mandate] = await db.select().from(schema.checkoutMandates).where(eq(schema.checkoutMandates.id, checkoutMandateId));
+  if (!mandate) return { present: false };
+
+  return {
+    present: true,
+    mandateId: mandate.id,
+    agentId: mandate.agentId,
+    totalPaise: mandate.totalPaise,
+    status: mandate.status,
+    issuedAt: mandate.createdAt,
+    lines: mandate.jwt ? (await decodeCheckoutMandateLines(mandate.jwt)) : [],
+  };
+}
+
+/**
+ * Reads the cart lines back out of the signed JWT's own payload — never
+ * re-derived from anything else, since the JWT IS the record of what
+ * was attested. Uses jose's decodeJwt (payload only, no signature
+ * re-verification) because this is a read of an already-trusted,
+ * already-persisted row, not a new verification decision — verification
+ * already happened once, at redemption time, in verifyPaymentMandate.
+ */
+async function decodeCheckoutMandateLines(jwt: string): Promise<CartLineForMandate[]> {
+  const { decodeJwt } = await import("jose");
+  try {
+    const payload = decodeJwt(jwt);
+    return (payload.lines as CartLineForMandate[] | undefined) ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export interface MandateBackedPurchase {
+  moneyActionId: string;
+  amountPaise: number;
+  status: string;
+  createdAt: Date;
+  mandateId: string;
+}
+
+/**
+ * Layer 21-4: the merchant-readable record — "who authorized this and
+ * how do I prove it," per agent. Every money_actions row for this agent
+ * carrying a checkoutMandateId, newest first. A merchant who never turns
+ * mandates on for an agent sees an honest empty list here, not a missing
+ * section — the caller (the agents dashboard) renders that explicitly.
+ */
+export async function getMandateBackedPurchasesForAgent(merchantId: string, agentId: string): Promise<MandateBackedPurchase[]> {
+  const rows = await db
+    .select({
+      id: schema.moneyActions.id,
+      amountPaise: schema.moneyActions.amountPaise,
+      status: schema.moneyActions.status,
+      createdAt: schema.moneyActions.createdAt,
+      checkoutMandateId: schema.moneyActions.checkoutMandateId,
+    })
+    .from(schema.moneyActions)
+    .where(
+      and(
+        eq(schema.moneyActions.merchantId, merchantId),
+        eq(schema.moneyActions.agentId, agentId),
+        isNotNull(schema.moneyActions.checkoutMandateId),
+      ),
+    )
+    .orderBy(desc(schema.moneyActions.createdAt))
+    .limit(20);
+
+  return rows.map((r) => ({
+    moneyActionId: r.id,
+    amountPaise: r.amountPaise,
+    status: r.status,
+    createdAt: r.createdAt,
+    mandateId: r.checkoutMandateId!,
+  }));
 }

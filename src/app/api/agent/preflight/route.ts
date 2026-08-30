@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "This agent does not hold the purchase:create capability." }, { status: 403 });
   }
 
-  const rateLimit = checkRateLimit(`agent-preflight:${agent.id}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
+  const rateLimit = await checkRateLimit(`agent-preflight:${agent.id}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
   if (!rateLimit.allowed) {
     return NextResponse.json(
       { error: "Too many requests. Please slow down." },

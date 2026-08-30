@@ -283,6 +283,13 @@ export const productVariants = pgTable(
   (table) => [uniqueIndex("product_variants_merchant_sku_idx").on(table.merchantId, table.sku)],
 );
 
+// L21-8: provisional, self-registered agents are ordinary agents rows —
+// this is metadata about HOW one came to exist, not a separate trust
+// tier or code path. registeredIp is kept for the rate-limit/abuse
+// story, not displayed as PII anywhere merchant-facing beyond the agents
+// list already showing it.
+export const agentRegistrationSourceEnum = pgEnum("agent_registration_source", ["merchant_issued", "self_registered"]);
+
 // An external AI buyer authorised to transact against this merchant.
 export const agents = pgTable("agents", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -309,6 +316,17 @@ export const agents = pgTable("agents", {
   // read relative to money_actions' timestamped rows, which already
   // give a real window to compare against.
   catalogueReadCount: integer("catalogue_read_count").notNull().default(0),
+  // Layer 21-8: how this agent's row came to exist. Every agent before
+  // this layer, and every one a merchant creates by hand afterward, is
+  // "merchant_issued" — the default preserves that without a backfill.
+  // "self_registered" agents are otherwise ordinary rows: same enum,
+  // same capabilities table, same spend_caps shape, same gate path.
+  registrationSource: agentRegistrationSourceEnum("registration_source").notNull().default("merchant_issued"),
+  // Only set for self_registered agents — the registering caller's IP,
+  // kept for abuse investigation (alongside rate-limit.ts's own
+  // per-IP/per-merchant limiting), never shown as a general agent
+  // attribute anywhere prices or capabilities are displayed.
+  registeredIp: text("registered_ip"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -417,6 +435,15 @@ export const moneyActions = pgTable(
     // path, following the same "a hold left indefinitely is money in
     // limbo" reasoning escrow_holds.expiresAt already established.
     reservationExpiresAt: timestamp("reservation_expires_at", { withTimezone: true }),
+    // Layer 21-4: set when this money action was taken under a
+    // successfully verified AP2 Payment Mandate — the caller
+    // (agent/purchase route, the MCP purchase tool) verifies the mandate
+    // BEFORE calling attemptMoneyAction and passes the consumed mandate's
+    // own id through, never re-derived here. Null is the common case
+    // today (mandates are opt-in) and must always be shown as "no
+    // mandate," never as an ambiguous or silently-verified state — see
+    // explainability.ts and DECISIONS.md.
+    checkoutMandateId: uuid("checkout_mandate_id").references((): typeof checkoutMandates.id => checkoutMandates.id),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1409,6 +1436,9 @@ export const merchantAlertSettings = pgTable("merchant_alert_settings", {
   holdExpiringEnabled: boolean("hold_expiring_enabled").notNull().default(true),
   notificationExhaustedEnabled: boolean("notification_exhausted_enabled").notNull().default(true),
   webhookExhaustedEnabled: boolean("webhook_exhausted_enabled").notNull().default(true),
+  // Layer 26-3: a burst of failed logins on one of this merchant's
+  // accounts crossing the free-attempts threshold — see login-throttle.ts.
+  loginBurstEnabled: boolean("login_burst_enabled").notNull().default(true),
   // When the last digest was actually sent — the dedupe bound for "at
   // most one digest per merchant per day" (notifications/merchant-
   // alerts.ts), read instead of relying on notification_deliveries'
@@ -1954,3 +1984,115 @@ export const agentMemories = pgTable(
     ),
   ],
 );
+
+// Layer 19: the Theatre view's left-hand panel. The standalone
+// agent-buyer/ package holds no database access at all (its own
+// governing rule — see plans/layer-19-adversarial-buyer.md) and streams
+// its local JSONL run log to a merchant-authenticated endpoint instead.
+// rawLog is stored as an opaque, untrusted blob — never parsed into
+// typed rows, never trusted as a source of truth about a money action
+// (same discipline agentMemories.value documents above: constrained
+// content the reader interprets through a fixed lens, not code that
+// executes or joins against it). The Theatre view's right-hand panel
+// comes from audit_log/money_actions, which the buyer agent cannot
+// write — correlation is done by money action id found inside rawLog's
+// own JSON lines, read at render time, never by a foreign key here.
+export const buyerAgentRuns = pgTable("buyer_agent_runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  merchantId: uuid("merchant_id")
+    .notNull()
+    .references(() => merchants.id),
+  agentId: uuid("agent_id")
+    .notNull()
+    .references(() => agents.id),
+  // The buyer agent's own run id (a UUID it generates locally) — not
+  // this row's own id, so re-ingesting the same run (a resumed upload)
+  // can be recognised rather than duplicated.
+  runId: text("run_id").notNull(),
+  // The full JSONL log, verbatim. Bounded at the write boundary (see
+  // the ingest route), never at the column type.
+  rawLog: text("raw_log").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// Layer 26-1: the distributed rate limiter's shared state. Replaces
+// rate-limit.ts's in-memory Map — the identical "a table plus an atomic
+// conditional UPDATE" primitive this codebase already used for
+// spend_caps/product_variants/agent_tasks, rather than adding Redis.
+// One row per (key, windowStart) — a request in a new window inserts a
+// fresh row rather than mutating an old one, so the atomic increment
+// below never has to decide whether the current window is stale.
+export const rateLimitWindows = pgTable(
+  "rate_limit_windows",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // Already includes the route, e.g. "chat:1.2.3.4" — checkRateLimit's
+    // existing key shape, unchanged by this swap.
+    limitKey: text("limit_key").notNull(),
+    windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+    count: integer("count").notNull().default(0),
+  },
+  (table) => [uniqueIndex("rate_limit_windows_key_window_idx").on(table.limitKey, table.windowStart)],
+);
+
+// Layer 26-3: per-account login backoff state. Decaying, never a
+// permanent lock — see password.ts/login/actions.ts and DECISIONS.md's
+// "throttle over lockout" entry. Keyed by the attempted email, same
+// identity the existing IP-based login rate limit already keys on.
+export const loginThrottleState = pgTable("login_throttle_state", {
+  email: text("email").primaryKey(),
+  failedAttempts: integer("failed_attempts").notNull().default(0),
+  lastFailedAt: timestamp("last_failed_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// --- Layer 21: the protocol surface and proof of agency ---
+// See plans/layer-21-protocol-surface.md. Merchant-authored policy for AI
+// buyers as a CLASS (as opposed to agents.* / spend_caps, which are
+// per-agent) — every field here is arithmetic or a boolean, enforced in
+// gate.ts's checkBounds or agent-auth.ts like any other bound. Absence of
+// a row means self-registration is closed and unknown agents need
+// approval first — the conservative default, same "absence is real, not
+// permissive" discipline merchant_policies already established.
+export const merchantAgentTerms = pgTable("merchant_agent_terms", {
+  merchantId: uuid("merchant_id")
+    .primaryKey()
+    .references(() => merchants.id),
+  // Whether an agent with no prior history for this merchant may
+  // transact at all without the merchant approving it first. Checked in
+  // checkBounds — a false here denies a first-ever purchase from a brand
+  // new agent regardless of what cap it's been given.
+  unknownAgentsAllowed: boolean("unknown_agents_allowed").notNull().default(false),
+  // A ceiling applied ON TOP OF an agent's own spend_caps.perTransactionMax
+  // for an agent with zero prior completed purchases — the stricter of
+  // the two applies. Null means no extra ceiling beyond the agent's own cap.
+  newAgentOrderCeilingPaise: integer("new_agent_order_ceiling_paise"),
+  // An order at or above this amount requires a verified AP2 Payment
+  // Mandate regardless of the agent's own mandateRequired flag. Null
+  // means no mandate-by-value escalation is configured.
+  mandateRequiredAbovePaise: integer("mandate_required_above_paise"),
+  // Whether negotiation:create may ever be granted to a self-registered
+  // agent's default capability set (L21-8) — does not revoke the
+  // capability from an agent a merchant granted it to by hand.
+  negotiationOpenToAgents: boolean("negotiation_open_to_agents").notNull().default(false),
+  // The capability set a self-registered agent starts with. Never
+  // "purchase:create" alone implies unlimited spend — always paired with
+  // selfRegisterStartingCapPaise below.
+  selfRegisterDefaultCapabilities: agentCapabilityEnum("self_register_default_capabilities").array().notNull().default(sql`'{}'::agent_capability[]`),
+  // Whether POST /api/agent/register is open at all. Default closed —
+  // fail closed applied to onboarding, per the plan's explicit
+  // instruction. A merchant with no row here (the common case until they
+  // visit the terms page) gets false from this column's own default once
+  // a row exists, and no self-registration path at all while no row
+  // exists — see getMerchantAgentTerms's null-row handling.
+  selfRegistrationOpen: boolean("self_registration_open").notNull().default(false),
+  // The provisional spend cap a self-registered agent starts with — the
+  // merchant's own number, never a hardcoded default this layer picks.
+  selfRegisterStartingCapPaise: integer("self_register_starting_cap_paise"),
+  selfRegisterPerTransactionMaxPaise: integer("self_register_per_transaction_max_paise"),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+

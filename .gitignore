@@ -37,6 +37,11 @@ yarn-error.log*
 # generated secrets — never commit
 .seed-keys.local.json
 
+# agent-buyer/ is a standalone package (Layer 19) with its own
+# node_modules and its own run logs — local run artifacts, not source.
+/agent-buyer/node_modules
+/agent-buyer/run-logs
+
 # vercel
 .vercel
 

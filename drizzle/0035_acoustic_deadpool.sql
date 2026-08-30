@@ -1,0 +1,2 @@
+ALTER TABLE "money_actions" ADD COLUMN "checkout_mandate_id" uuid;--> statement-breakpoint
+ALTER TABLE "money_actions" ADD CONSTRAINT "money_actions_checkout_mandate_id_checkout_mandates_id_fk" FOREIGN KEY ("checkout_mandate_id") REFERENCES "public"."checkout_mandates"("id") ON DELETE no action ON UPDATE no action;

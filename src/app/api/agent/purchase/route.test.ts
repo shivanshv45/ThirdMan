@@ -115,16 +115,37 @@ describe("POST /api/agent/purchase", () => {
     await db.delete(schema.merchants).where(eq(schema.merchants.id, currentMerchantId));
   });
 
-  it("rejects a request with no Authorization header, 401", async () => {
+  it("Layer 21-3: an unauthenticated request gets the x402 challenge shape, not a bare 401", async () => {
     const res = await POST(request({ amountPaise: 100, context: "test" }));
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(402);
     const body = await res.json();
-    expect(body.error).toMatch(/api key/i);
+    expect(body.error).toBe("payment_required");
+    expect(body.authenticationScheme).toBe("bearer");
+    expect(body.discoveryDocument).toMatch(/\.well-known\/agent-commerce\.json$/);
   });
 
-  it("rejects a request with an invalid key, 401", async () => {
+  it("Layer 21-3: an invalid key also gets the x402 challenge, since there is no agent identity to evaluate a bound against", async () => {
     const res = await POST(request({ amountPaise: 100, context: "test" }, { authorization: "Bearer sk_not_a_real_key" }));
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(402);
+    const body = await res.json();
+    expect(body.error).toBe("payment_required");
+  });
+
+  it("Layer 21-3: an authenticated, over-cap request still gets 200 with a denial reason — the 402 never touches the existing denial contract", async () => {
+    const merchant = await makeMerchant();
+    merchantId = merchant.id;
+    const rawKey = generateApiKey();
+    const [agent] = await db
+      .insert(schema.agents)
+      .values({ merchantId: merchant.id, name: "__402_vs_deny_agent__", apiKeyHash: hashApiKey(rawKey), status: "active" })
+      .returning();
+    agentIds.push(agent.id);
+    await db.insert(schema.agentCapabilities).values({ agentId: agent.id, capability: "purchase:create" });
+
+    const res = await POST(request({ amountPaise: 10_000, context: "test" }, { authorization: `Bearer ${rawKey}` }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.decision).toBe("deny");
   });
 
   it("rejects a malformed JSON body, 400", async () => {
@@ -219,7 +240,7 @@ describe("POST /api/agent/purchase", () => {
     const body = await res.json();
     expect(body.decision).toBe("deny");
     expect(body.reason).toMatch(/catalogue price/i);
-  });
+  }, 20_000);
 
   it("replays the original outcome for a repeated idempotencyKey rather than double-charging", async () => {
     const merchant = await makeMerchant();

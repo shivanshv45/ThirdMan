@@ -38,6 +38,14 @@ const orderRequestSchema = z
     // than exposing a separate conversationId to the client.
     cart: z.literal(true).optional(),
     sessionToken: z.string().uuid().optional(),
+    // Layer 26-5: one per checkout attempt, generated client-side by
+    // BuyButton — threaded into attemptMoneyAction so a retried request
+    // (a flaky connection's own retry, a double-submit) replays the
+    // first attempt's outcome through the gate's existing idempotency
+    // mechanism instead of creating a second order. Optional so a
+    // direct API caller that doesn't send one is unaffected — it simply
+    // gets the pre-existing, non-idempotent behavior it always had.
+    idempotencyKey: z.string().uuid().optional(),
   })
   .refine((v) => v.productId !== undefined || v.offerId !== undefined || v.negotiationId !== undefined || v.cart !== undefined, {
     message: "one of productId, offerId, negotiationId, or cart is required",
@@ -70,7 +78,7 @@ export async function OPTIONS(req: NextRequest) {
  * folded into the money action's context string only, never a new cap.
  */
 export async function POST(req: NextRequest) {
-  const rateLimit = checkRateLimit(`checkout-order:${getClientIp(req.headers)}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
+  const rateLimit = await checkRateLimit(`checkout-order:${getClientIp(req.headers)}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
   if (!rateLimit.allowed) {
     return NextResponse.json(
       { error: "Too many checkout attempts. Please slow down." },
@@ -90,7 +98,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "invalid request body", details: parsed.error.flatten() }, { status: 400 });
   }
 
-  const { merchantId, productId, variantId, quantity, offerId, negotiationId, cart: wantsCart, sessionToken } = parsed.data;
+  const { merchantId, productId, variantId, quantity, offerId, negotiationId, cart: wantsCart, sessionToken, idempotencyKey } = parsed.data;
 
   const embedResolution = await resolveEmbedRequest(req, merchantId);
   if (embedResolution.ok === false) {
@@ -145,6 +153,7 @@ export async function POST(req: NextRequest) {
       context: `Storefront checkout: bundle "${bundle.name}"${contextSuffix}`,
       offerId,
       sessionToken,
+      idempotencyKey,
     });
 
     if (result.decision !== "allow" || !result.razorpayOrderId) {
@@ -190,6 +199,7 @@ export async function POST(req: NextRequest) {
       context: `Storefront checkout: negotiated price for variant ${negotiation.variantId}${contextSuffix}`,
       negotiationId,
       sessionToken,
+      idempotencyKey,
     });
 
     if (result.decision !== "allow" || !result.razorpayOrderId) {
@@ -235,6 +245,7 @@ export async function POST(req: NextRequest) {
       amountPaise: cart!.amountPaise,
       context: `Storefront checkout: cart (${cart!.lines.length} item${cart!.lines.length === 1 ? "" : "s"})${contextSuffix}`,
       cartConversationId: conversation.id,
+      idempotencyKey,
     });
 
     if (result.decision !== "allow" || !result.razorpayOrderId) {
@@ -244,7 +255,10 @@ export async function POST(req: NextRequest) {
     // The cart is cleared only once the order is genuinely allowed — a
     // denied attempt leaves the cart intact so the buyer can retry or
     // adjust it, same as every other path here never mutating state on
-    // a denial.
+    // a denial. clearCart is a plain DELETE on the conversation's own
+    // cart_items — safe to call again on a replayed allow (an idempotency
+    // hit against a cart already cleared by the first attempt), since
+    // deleting an already-empty set of rows is a no-op, not an error.
     await clearCart(conversation.id);
 
     return NextResponse.json(
@@ -297,6 +311,7 @@ export async function POST(req: NextRequest) {
     context: `Storefront checkout: ${product.name}${contextSuffix}`,
     variantId: variant.id,
     quantity,
+    idempotencyKey,
   });
 
   if (result.decision !== "allow" || !result.razorpayOrderId) {

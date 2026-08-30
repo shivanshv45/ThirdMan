@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { getSessionMerchant } from "@/lib/auth";
-import { getPendingEscalations, getGuardianIncidents, getActiveTaskCount, getPendingMemoryConfirmCount, getActiveReservations } from "@/lib/dashboard";
+import { getPendingEscalations, getGuardianIncidents, getActiveTaskCount, getPendingMemoryConfirmCount, getActiveReservations, getActiveTheatreRunCount } from "@/lib/dashboard";
 import { logout } from "./actions";
 import { SidebarNav, type NavGroup } from "./sidebar-nav";
 import { Reveal } from "@/components/ui";
@@ -14,6 +14,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const activeTaskCount = await getActiveTaskCount(merchant.id);
   const activeReservations = await getActiveReservations(merchant.id);
   const pendingMemoryCount = await getPendingMemoryConfirmCount(merchant.id);
+  const activeTheatreRunCount = await getActiveTheatreRunCount(merchant.id);
 
   const groups: NavGroup[] = [
     {
@@ -74,6 +75,12 @@ export default async function DashboardLayout({ children }: { children: React.Re
           label: "Memory Bank",
           badge: pendingMemoryCount,
           badgeTooltip: pendingMemoryCount ? `${pendingMemoryCount} stated memor${pendingMemoryCount === 1 ? "y" : "ies"} awaiting confirmation` : undefined,
+        },
+        {
+          href: "/dashboard/theatre",
+          label: "Theatre",
+          badge: activeTheatreRunCount,
+          badgeTooltip: activeTheatreRunCount ? `${activeTheatreRunCount} buyer-agent run${activeTheatreRunCount === 1 ? "" : "s"} still in progress` : undefined,
         },
       ],
     },

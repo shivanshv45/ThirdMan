@@ -67,7 +67,7 @@ async function logOriginDenial(req: NextRequest, merchantId: string, requestOrig
   // flood the audit log — an unbounded write triggered by an
   // unauthenticated cross-origin request is a log-flooding vector.
   const limitKey = `embed-origin-denied:${requestOrigin ?? getClientIp(req.headers)}`;
-  const { allowed } = checkRateLimit(limitKey, ORIGIN_DENY_RATE_LIMIT_MAX, ORIGIN_DENY_RATE_LIMIT_WINDOW_MS);
+  const { allowed } = await checkRateLimit(limitKey, ORIGIN_DENY_RATE_LIMIT_MAX, ORIGIN_DENY_RATE_LIMIT_WINDOW_MS);
   if (!allowed) return;
 
   await logAuditEntry({

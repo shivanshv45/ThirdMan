@@ -25,7 +25,7 @@ export async function OPTIONS(req: NextRequest) {
  * made — this only updates the offer's own resolution.
  */
 export async function POST(req: NextRequest) {
-  const rateLimit = checkRateLimit(`decline-offer:${getClientIp(req.headers)}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
+  const rateLimit = await checkRateLimit(`decline-offer:${getClientIp(req.headers)}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
   if (!rateLimit.allowed) {
     return NextResponse.json({ error: "Too many requests. Please slow down." }, { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSeconds) } });
   }

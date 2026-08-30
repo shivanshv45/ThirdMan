@@ -59,6 +59,13 @@ const envSchema = z.object({
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   GITHUB_CLIENT_ID: z.string().optional(),
   GITHUB_CLIENT_SECRET: z.string().optional(),
+  // Layer 26-3: an operational escape hatch for demo/judge access to
+  // skip the per-account login backoff, deliberately never a hardcoded
+  // email in source (see plans/layer-26-hardening.md and DECISIONS.md —
+  // a hardcoded exempt address is a backdoor in a public repo). Comma-
+  // separated, lowercased/trimmed at read time. Optional and empty by
+  // default — most deployments need nothing here.
+  AUTH_THROTTLE_EXEMPT_EMAILS: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

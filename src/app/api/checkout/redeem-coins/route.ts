@@ -10,6 +10,8 @@ const redeemRequestSchema = z.object({
   sessionToken: z.string().uuid(),
   purchaseAmountPaise: z.number().int().positive(),
   coins: z.number().int().positive(),
+  // Layer 26-5: same discipline as /api/checkout/order.
+  idempotencyKey: z.string().uuid().optional(),
 });
 
 const RATE_LIMIT_MAX = 10;
@@ -32,7 +34,7 @@ export async function OPTIONS(req: NextRequest) {
  * independently testable without it.
  */
 export async function POST(req: NextRequest) {
-  const rateLimit = checkRateLimit(`redeem-coins:${getClientIp(req.headers)}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
+  const rateLimit = await checkRateLimit(`redeem-coins:${getClientIp(req.headers)}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
   if (!rateLimit.allowed) {
     return NextResponse.json({ error: "Too many requests. Please slow down." }, { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSeconds) } });
   }
@@ -49,7 +51,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "invalid request body", details: parsed.error.flatten() }, { status: 400 });
   }
 
-  const { merchantId, sessionToken, purchaseAmountPaise, coins } = parsed.data;
+  const { merchantId, sessionToken, purchaseAmountPaise, coins, idempotencyKey } = parsed.data;
 
   const embedResolution = await resolveEmbedRequest(req, merchantId);
   if (embedResolution.ok === false) {
@@ -59,7 +61,7 @@ export async function POST(req: NextRequest) {
 
   const storefrontAgent = await getOrCreateStorefrontAgent(merchantId);
 
-  const result = await redeemRewardCoins(merchantId, storefrontAgent.id, purchaseAmountPaise, coins, { sessionToken });
+  const result = await redeemRewardCoins(merchantId, storefrontAgent.id, purchaseAmountPaise, coins, { sessionToken }, idempotencyKey);
 
   return NextResponse.json(result, { status: 200, headers: corsHeaders });
 }
