@@ -133,10 +133,13 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   return (
     <div className="flex flex-col h-screen w-full overflow-hidden text-on-ink bg-ink relative">
-      <div className="absolute inset-0 z-0 opacity-30">
-        <BackgroundVideo srcWebm="/video/slate.webm" srcMp4="/video/slate.mp4" />
+      {/* Background Video Layer */}
+      <div className="absolute inset-0 z-0 opacity-40">
+        <BackgroundVideo srcWebm="/video/slate.webm" srcMp4="/video/slate.mp4" playbackRate={0.55} />
       </div>
-      <div className="relative z-10 flex flex-col h-full w-full">
+      
+      {/* Main App Layout */}
+      <div className="relative z-10 flex flex-col h-full w-full bg-ink/40 backdrop-blur-sm">
         <Reveal />
       {freezeState && <KillSwitchBanner reason={freezeState.reason} frozenAt={freezeState.frozenAt} />}
       {shadowModeState && <ShadowModeBanner enabledAt={shadowModeState.enabledAt} />}
@@ -150,7 +153,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
       />
 
       <main className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden">
-        <div className="px-4 md:px-8 py-8 md:py-10 max-w-[var(--shell)] w-full mx-auto pb-32">
+        <div className="px-4 md:px-8 py-8 md:py-10 max-w-[var(--shell)] w-full mx-auto pb-32 relative z-10">
           {children}
         </div>
       </main>

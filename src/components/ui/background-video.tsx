@@ -2,14 +2,14 @@
 
 import { useEffect, useRef } from "react";
 
-export function BackgroundVideo({ srcWebm, srcMp4 }: { srcWebm: string, srcMp4: string }) {
+export function BackgroundVideo({ srcWebm, srcMp4, playbackRate = 0.75 }: { srcWebm: string, srcMp4: string, playbackRate?: number }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   
   useEffect(() => {
     if (videoRef.current) {
-      videoRef.current.playbackRate = 0.75;
+      videoRef.current.playbackRate = playbackRate;
     }
-  }, []);
+  }, [playbackRate]);
 
   return (
     <video 

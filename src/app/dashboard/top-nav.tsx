@@ -129,21 +129,29 @@ export function TopNav({
                     const firstHref = group.items[0]?.href;
                     if (firstHref) window.location.href = firstHref;
                   }}
-                  className={`relative flex items-center justify-center gap-2 px-6 py-3 text-[16px] font-black uppercase tracking-[0.1em] rounded-full transition-all duration-300 ease-[var(--ease-out)] group/tab ${
+                  className={`relative flex items-center justify-center px-6 py-3 text-[16px] font-black uppercase tracking-[0.1em] rounded-lg transition-all duration-500 ease-[var(--ease-out)] group/tab ${
                     groupActive
-                      ? "bg-on-ink text-ink shadow-[0_4px_12px_rgba(0,0,0,0.1)] scale-[1.02]"
+                      ? "text-on-ink scale-[1.05]"
                       : "text-on-ink-dim hover:text-on-ink hover:bg-ink-line-soft/80"
                   }`}
                 >
-                  {group.heading}
-                  {groupBadgeTotal > 0 && (
-                    <span className={`inline-flex items-center justify-center min-w-[1.25rem] h-[1.25rem] rounded-full text-[10px] font-mono font-bold px-1 leading-none transition-colors ${groupActive ? 'bg-ink text-on-ink' : 'bg-escalate text-[#ffffff]'}`}>
-                      {groupBadgeTotal}
-                    </span>
-                  )}
-                  {/* Glowing dot indicator for active tab */}
+                  {/* Glassmorphic active background */}
                   {groupActive && (
-                    <span className="absolute -bottom-3 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-on-ink shadow-[0_0_8px_rgba(0,0,0,0.5)]" />
+                    <div className="absolute inset-0 rounded-lg bg-gradient-to-b from-on-ink/10 to-transparent border border-on-ink/20 pointer-events-none shadow-[inset_0_1px_4px_rgba(255,255,255,0.1)]" />
+                  )}
+                  
+                  <span className="relative z-10 flex items-center gap-2">
+                    {group.heading}
+                    {groupBadgeTotal > 0 && (
+                      <span className={`inline-flex items-center justify-center min-w-[1.25rem] h-[1.25rem] rounded-full text-[10px] font-mono font-bold px-1 leading-none transition-colors ${groupActive ? 'bg-ink border border-on-ink/20 text-on-ink' : 'bg-escalate text-[#ffffff]'}`}>
+                        {groupBadgeTotal}
+                      </span>
+                    )}
+                  </span>
+
+                  {/* Glowing beam indicator */}
+                  {groupActive && (
+                    <span className="absolute -bottom-[1px] left-1/2 -translate-x-1/2 w-1/2 h-[2px] rounded-full bg-gradient-to-r from-transparent via-on-ink to-transparent opacity-90 shadow-[0_0_12px_rgba(255,255,255,1)]" />
                   )}
                 </button>
               );
@@ -188,21 +196,29 @@ export function TopNav({
                     const firstHref = group.items[0]?.href;
                     if (firstHref) window.location.href = firstHref;
                   }}
-                  className={`relative flex items-center justify-center gap-2 px-6 py-3 text-[16px] font-black uppercase tracking-[0.1em] rounded-full transition-all duration-300 ease-[var(--ease-out)] group/tab ${
+                  className={`relative flex items-center justify-center px-6 py-3 text-[16px] font-black uppercase tracking-[0.1em] rounded-lg transition-all duration-500 ease-[var(--ease-out)] group/tab ${
                     groupActive
-                      ? "bg-on-ink text-ink shadow-[0_4px_12px_rgba(0,0,0,0.1)] scale-[1.02]"
+                      ? "text-on-ink scale-[1.05]"
                       : "text-on-ink-dim hover:text-on-ink hover:bg-ink-line-soft/80"
                   }`}
                 >
-                  {group.heading}
-                  {groupBadgeTotal > 0 && (
-                    <span className={`inline-flex items-center justify-center min-w-[1.25rem] h-[1.25rem] rounded-full text-[10px] font-mono font-bold px-1 leading-none transition-colors ${groupActive ? 'bg-ink text-on-ink' : 'bg-escalate text-[#ffffff]'}`}>
-                      {groupBadgeTotal}
-                    </span>
-                  )}
-                  {/* Glowing dot indicator for active tab */}
+                  {/* Glassmorphic active background */}
                   {groupActive && (
-                    <span className="absolute -bottom-3 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-on-ink shadow-[0_0_8px_rgba(0,0,0,0.5)]" />
+                    <div className="absolute inset-0 rounded-lg bg-gradient-to-b from-on-ink/10 to-transparent border border-on-ink/20 pointer-events-none shadow-[inset_0_1px_4px_rgba(255,255,255,0.1)]" />
+                  )}
+                  
+                  <span className="relative z-10 flex items-center gap-2">
+                    {group.heading}
+                    {groupBadgeTotal > 0 && (
+                      <span className={`inline-flex items-center justify-center min-w-[1.25rem] h-[1.25rem] rounded-full text-[10px] font-mono font-bold px-1 leading-none transition-colors ${groupActive ? 'bg-ink border border-on-ink/20 text-on-ink' : 'bg-escalate text-[#ffffff]'}`}>
+                        {groupBadgeTotal}
+                      </span>
+                    )}
+                  </span>
+
+                  {/* Glowing beam indicator */}
+                  {groupActive && (
+                    <span className="absolute -bottom-[1px] left-1/2 -translate-x-1/2 w-1/2 h-[2px] rounded-full bg-gradient-to-r from-transparent via-on-ink to-transparent opacity-90 shadow-[0_0_12px_rgba(255,255,255,1)]" />
                   )}
                 </button>
               );
@@ -213,7 +229,7 @@ export function TopNav({
 
         {/* Row 2: Browser-tab sub-nav for active group (Evenly distributed Edge-to-Edge) */}
         {activeGroup && (
-          <div className="flex items-end gap-1 w-full px-2 pt-2 bg-ink-overlay/30 border-t border-ink-line-soft shadow-[inset_0_4px_6px_-4px_rgba(0,0,0,0.05)]">
+          <div className="flex items-end gap-1 w-full px-2 pt-1.5 bg-ink-overlay/30 border-t border-ink-line-soft shadow-[inset_0_4px_6px_-4px_rgba(0,0,0,0.05)]">
             {activeGroup.items.map((item) => {
               const active = isActive(item.href);
               const Icon = ICONS[item.href];
@@ -221,20 +237,12 @@ export function TopNav({
                 <Link
                   key={item.href}
                   href={item.href}
-                  className={`group relative flex-1 flex items-center justify-center gap-2 px-4 py-3.5 text-[14px] font-semibold whitespace-nowrap transition-all duration-[var(--dur-fast)] ease-[var(--ease-out)] rounded-t-xl border-x border-t ${
+                  className={`group relative flex-1 flex items-center justify-center gap-2 px-4 py-2 text-[13px] font-semibold whitespace-nowrap transition-all duration-[var(--dur-fast)] ease-[var(--ease-out)] rounded-t-lg border-2 ${
                     active
-                      ? "text-on-ink bg-ink border-ink-line-soft shadow-[0_-4px_12px_rgba(0,0,0,0.03)] z-10"
-                      : "text-on-ink-dim hover:text-on-ink bg-transparent border-transparent hover:bg-ink-line-soft/40 hover:border-ink-line-soft/50 z-0"
+                      ? "text-on-ink bg-ink border-accent z-10"
+                      : "text-on-ink-dim hover:text-on-ink bg-transparent border-transparent hover:bg-ink-line-soft/40 z-0"
                   }`}
                 >
-                  {/* Subtle active indicator top bar */}
-                  {active && (
-                    <span className="absolute top-0 left-0 right-0 h-[3px] rounded-t-xl bg-accent" />
-                  )}
-                  {/* Bottom mask to overlap the container border smoothly */}
-                  {active && (
-                    <span className="absolute -bottom-[1px] left-0 right-0 h-[2px] bg-ink" />
-                  )}
 
                   {Icon && (
                     <Icon
