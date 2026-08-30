@@ -49,9 +49,14 @@ export default async function DashboardPage() {
       />
 
       {isFirstRun && (
-        <Surface variant="raised" className="relative overflow-hidden p-6 mb-12">
-          <span aria-hidden="true" className="absolute left-0 inset-y-0 w-[3px] bg-accent" />
-          <h2 className="text-[var(--t-h4)] font-medium text-on-ink">Get set up</h2>
+        <Surface variant="glass" className="relative overflow-hidden p-8 mb-12 flex flex-col gap-1">
+          <span aria-hidden="true" className="absolute left-0 inset-y-0 w-1 bg-accent/80 shadow-[0_0_10px_rgba(13,148,251,0.5)]" />
+          <h2 className="text-xl font-medium tracking-tight text-white flex items-center gap-2">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-accent-bright">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+            Get set up
+          </h2>
           <p className="text-sm text-on-ink-dim mt-1 mb-4">
             Three steps before an agent can move any money. Nothing transacts until all three are done.
           </p>
@@ -89,16 +94,16 @@ export default async function DashboardPage() {
       )}
 
       {escalations.length > 0 && (
-        <section className="mb-12">
-          <div className="flex items-center gap-3 mb-4">
-            <h2 className="text-lg font-semibold text-on-ink tracking-tight">
+        <section className="mb-14">
+          <div className="flex items-center gap-3 mb-5">
+            <h2 className="text-xl font-medium text-white tracking-tight">
               Tasks
             </h2>
-            <span className="text-xs font-medium text-escalate-bright px-2 py-0.5 bg-escalate-wash rounded-full">
+            <span className="text-xs font-semibold text-escalate-bright px-2.5 py-1 bg-escalate-wash border border-escalate/20 rounded-full shadow-[0_0_8px_rgba(232,161,61,0.15)]">
               {escalations.length} to review
             </span>
           </div>
-          <Surface className="divide-y divide-ink-line-soft overflow-hidden">
+          <Surface variant="glass" className="divide-y divide-white/10 overflow-hidden">
             {escalations.map((esc) => (
               <div
                 key={esc.id}
@@ -139,9 +144,12 @@ export default async function DashboardPage() {
 
       {/* The two headline facts, given the room that says so. Everything
           below this band is supporting evidence and renders smaller. */}
-      <section className="mb-8">
-        <div className="grid md:grid-cols-2 gap-4">
-          <Surface variant="raised" className="p-8 flex flex-col justify-between min-h-[180px]">
+      <section className="mb-10">
+        <div className="grid md:grid-cols-2 gap-6">
+          <Surface variant="glass" className="p-8 flex flex-col justify-between min-h-[190px] relative group overflow-hidden">
+            {/* Subtle glow behind the metric */}
+            <div className="absolute top-0 right-0 w-64 h-64 bg-accent-wash rounded-full blur-[80px] -mr-16 -mt-16 opacity-30 group-hover:opacity-50 transition-opacity duration-700 pointer-events-none" />
+            <div className="relative z-10">
             <MoneyStat
               label="Money moved"
               paise={moneyMoved.capturedPaise}
@@ -150,8 +158,12 @@ export default async function DashboardPage() {
             <div className="text-sm text-on-ink-dim mt-4">
               {moneyMoved.capturedCount} captured payment{moneyMoved.capturedCount === 1 ? "" : "s"}
             </div>
+            </div>
           </Surface>
-          <Surface variant="raised" className="p-8 flex flex-col justify-between min-h-[180px]">
+          <Surface variant="glass" className="p-8 flex flex-col justify-between min-h-[190px] relative group overflow-hidden">
+            {/* Subtle glow behind the metric */}
+            <div className="absolute top-0 right-0 w-64 h-64 bg-allow-wash rounded-full blur-[80px] -mr-16 -mt-16 opacity-20 group-hover:opacity-40 transition-opacity duration-700 pointer-events-none" />
+            <div className="relative z-10">
             <MoneyStat
               label="Money recovered"
               paise={recoveryStats.recoveredPaise}
@@ -161,22 +173,28 @@ export default async function DashboardPage() {
             <div className="text-sm text-on-ink-dim mt-4">
               {recoveryStats.recoveredCount} of {recoveryStats.failureCount} failed payment{recoveryStats.failureCount === 1 ? "" : "s"} brought back
             </div>
+            </div>
           </Surface>
         </div>
       </section>
 
       {/* Asymmetric on purpose: the composition bar needs real width to be
           readable, the two counts do not. Size follows content, not decoration. */}
-      <section className="grid lg:grid-cols-[1fr_1fr_1.7fr] gap-4 mb-14">
-        <Surface variant="flush" className="p-5">
+      <section className="grid lg:grid-cols-[1fr_1fr_1.7fr] gap-6 mb-16">
+        <Surface variant="glass" className="p-6 relative overflow-hidden group">
+          <div className="absolute top-0 right-0 w-32 h-32 bg-deny-wash rounded-full blur-[50px] -mr-8 -mt-8 opacity-20 group-hover:opacity-40 transition-opacity duration-700 pointer-events-none" />
+          <div className="relative z-10">
           <Stat
             label="Refusals"
             value={decisionStats.totalRefusals}
             tone="deny"
             caption="Evidence the bound is real, not a gap"
           />
+          </div>
         </Surface>
-        <Surface variant="flush" className="p-5">
+        <Surface variant="glass" className="p-6 relative overflow-hidden group">
+          <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full blur-[50px] -mr-8 -mt-8 opacity-30 group-hover:opacity-50 transition-opacity duration-700 pointer-events-none" />
+          <div className="relative z-10">
           <Stat
             label="Deterministic vs. model"
             value={
@@ -188,17 +206,21 @@ export default async function DashboardPage() {
             }
             caption="Arithmetic-only vs. a model's judgment"
           />
-        </Surface>
-        <Surface variant="flush" className="p-5 flex flex-col">
-          <div className="text-[var(--t-label)] uppercase tracking-[0.08em] text-on-ink-faint font-medium">
-            Every logged decision
           </div>
-          <div className="mt-auto pt-4">
+        </Surface>
+        <Surface variant="glass" className="p-6 flex flex-col relative overflow-hidden group">
+          <div className="absolute top-0 right-0 w-full h-32 bg-gradient-to-b from-white/[0.02] to-transparent pointer-events-none" />
+          <div className="relative z-10 flex flex-col h-full">
+            <div className="text-[var(--t-label)] uppercase tracking-[0.08em] text-white/40 font-semibold">
+              Every logged decision
+            </div>
+            <div className="mt-auto pt-4">
             {decisionCounts.allow + decisionCounts.deny + decisionCounts.escalate === 0 ? (
               <p className="text-sm text-on-ink-dim">Nothing decided yet.</p>
             ) : (
               <DecisionComposition allow={decisionCounts.allow} deny={decisionCounts.deny} escalate={decisionCounts.escalate} />
             )}
+            </div>
           </div>
         </Surface>
       </section>

@@ -8,6 +8,7 @@ import { TopNav, type NavGroup } from "./top-nav";
 import { KillSwitchBanner } from "./kill-switch-banner";
 import { ShadowModeBanner } from "./shadow-mode-banner";
 import { Reveal } from "@/components/ui";
+import { BackgroundVideo } from "@/components/ui/background-video";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const merchant = await getSessionMerchant();
@@ -131,8 +132,12 @@ export default async function DashboardLayout({ children }: { children: React.Re
   ];
 
   return (
-    <div className="dashboard-theme flex flex-col h-screen w-full overflow-hidden text-on-ink bg-ink-overlay">
-      <Reveal />
+    <div className="flex flex-col h-screen w-full overflow-hidden text-on-ink bg-ink relative">
+      <div className="absolute inset-0 z-0 opacity-30">
+        <BackgroundVideo srcWebm="/video/slate.webm" srcMp4="/video/slate.mp4" />
+      </div>
+      <div className="relative z-10 flex flex-col h-full w-full">
+        <Reveal />
       {freezeState && <KillSwitchBanner reason={freezeState.reason} frozenAt={freezeState.frozenAt} />}
       {shadowModeState && <ShadowModeBanner enabledAt={shadowModeState.enabledAt} />}
 
@@ -149,6 +154,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
           {children}
         </div>
       </main>
+      </div>
     </div>
   );
 }

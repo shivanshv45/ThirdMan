@@ -129,7 +129,7 @@ export function TopNav({
                     const firstHref = group.items[0]?.href;
                     if (firstHref) window.location.href = firstHref;
                   }}
-                  className={`relative flex items-center justify-center gap-2 px-6 py-2.5 text-[14px] font-bold uppercase tracking-[0.08em] rounded-full transition-all duration-300 ease-[var(--ease-out)] group/tab ${
+                  className={`relative flex items-center justify-center gap-2 px-6 py-3 text-[16px] font-black uppercase tracking-[0.1em] rounded-full transition-all duration-300 ease-[var(--ease-out)] group/tab ${
                     groupActive
                       ? "bg-on-ink text-ink shadow-[0_4px_12px_rgba(0,0,0,0.1)] scale-[1.02]"
                       : "text-on-ink-dim hover:text-on-ink hover:bg-ink-line-soft/80"
@@ -188,7 +188,7 @@ export function TopNav({
                     const firstHref = group.items[0]?.href;
                     if (firstHref) window.location.href = firstHref;
                   }}
-                  className={`relative flex items-center justify-center gap-2 px-6 py-2.5 text-[14px] font-bold uppercase tracking-[0.08em] rounded-full transition-all duration-300 ease-[var(--ease-out)] group/tab ${
+                  className={`relative flex items-center justify-center gap-2 px-6 py-3 text-[16px] font-black uppercase tracking-[0.1em] rounded-full transition-all duration-300 ease-[var(--ease-out)] group/tab ${
                     groupActive
                       ? "bg-on-ink text-ink shadow-[0_4px_12px_rgba(0,0,0,0.1)] scale-[1.02]"
                       : "text-on-ink-dim hover:text-on-ink hover:bg-ink-line-soft/80"
