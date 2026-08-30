@@ -2,6 +2,7 @@ import { and, eq, lte } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { resolveEscalation } from "@/lib/gate";
 import { logAuditEntry } from "@/lib/audit";
+import { isFrozen } from "@/lib/guardian";
 
 /**
  * Auto-resolves any escalation still pending past its expiresAt
@@ -20,6 +21,12 @@ import { logAuditEntry } from "@/lib/audit";
  *
  * Fails closed: timing out DENIES, never auto-approves. Silence from a
  * merchant is not consent.
+ *
+ * Layer 25-2: a merchant with the Kill Switch thrown is skipped
+ * entirely — pending escalations are HELD, not auto-resolved, while
+ * frozen. A freeze must never become an approval path by way of this
+ * timer resolving things nobody looked at; the escalation simply waits
+ * out the freeze and is picked up again on the next sweep after unfreeze.
  */
 export async function expirePendingEscalations(limit = 100): Promise<{ expired: number }> {
   const due = await db
@@ -32,6 +39,8 @@ export async function expirePendingEscalations(limit = 100): Promise<{ expired: 
   for (const row of due) {
     const [moneyAction] = await db.select({ merchantId: schema.moneyActions.merchantId }).from(schema.moneyActions).where(eq(schema.moneyActions.id, row.moneyActionId));
     if (!moneyAction) continue;
+
+    if (await isFrozen(moneyAction.merchantId)) continue;
 
     try {
       await resolveEscalation(moneyAction.merchantId, row.id, "rejected");

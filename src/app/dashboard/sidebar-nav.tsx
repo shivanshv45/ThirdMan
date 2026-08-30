@@ -15,6 +15,7 @@ import {
   ScrollText,
   Gauge,
   KeyRound,
+  FileSignature,
   Scale,
   Code,
   Settings,
@@ -23,6 +24,7 @@ import {
   Landmark,
   BrainCircuit,
   Clapperboard,
+  Power,
   type LucideIcon,
 } from "lucide-react";
 
@@ -46,7 +48,9 @@ const ICONS: Record<string, LucideIcon> = {
   "/dashboard/preflight": FlaskConical,
   "/dashboard/memory": BrainCircuit,
   "/dashboard/theatre": Clapperboard,
+  "/dashboard/control": Power,
   "/dashboard/agents": KeyRound,
+  "/dashboard/agent-terms": FileSignature,
   "/dashboard/policies": Scale,
   "/dashboard/embed": Code,
   "/dashboard/settings": Settings,

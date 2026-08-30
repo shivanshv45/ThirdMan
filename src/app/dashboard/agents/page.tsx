@@ -63,6 +63,11 @@ export default async function AgentsPage() {
                     >
                       {agent.status}
                     </span>
+                    {agent.registrationSource === "self_registered" && (
+                      <span className="text-[var(--t-label)] uppercase tracking-[0.06em] px-2 py-0.5 rounded-full font-medium shrink-0 bg-accent-wash text-accent">
+                        Self-registered
+                      </span>
+                    )}
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <RotateKeyButton agentId={agent.id} />
@@ -181,6 +186,32 @@ export default async function AgentsPage() {
                     off by default so existing demo flows keep working. */}
                 <div className="mt-3 pt-3 border-t border-ink-line-soft">
                   <MandateRequiredToggle agentId={agent.id} defaultChecked={agent.mandateRequired} />
+                </div>
+
+                {/* Layer 21-4: proof of agency — "who authorized this and
+                    how do I prove it," per purchase. An honest empty state
+                    when this agent has never presented a mandate, never an
+                    ambiguous or missing section that could read as
+                    "verified." */}
+                <div className="mt-3 pt-3 border-t border-ink-line-soft">
+                  <DetailsToggle summary={`Proof of agency (${agent.mandateBackedPurchases.length} mandate-backed purchase${agent.mandateBackedPurchases.length === 1 ? "" : "s"})`} variant="plain">
+                    {agent.mandateBackedPurchases.length === 0 ? (
+                      <p className="text-sm text-on-ink-faint">
+                        No purchase from this agent has ever presented a verified AP2 Payment Mandate. This is the common case while mandates are opt-in — it does not mean anything went wrong.
+                      </p>
+                    ) : (
+                      <ul className="space-y-1.5 text-xs font-mono text-on-ink-dim">
+                        {agent.mandateBackedPurchases.map((p) => (
+                          <li key={p.moneyActionId} className="flex justify-between gap-3">
+                            <span className="text-on-ink-faint">{formatDate(p.createdAt)}</span>
+                            <span>{rupees(p.amountPaise)}</span>
+                            <span className="text-on-ink-faint">{p.status}</span>
+                            <span className="text-on-ink-faint truncate" title={p.mandateId}>mandate {p.mandateId.slice(0, 8)}…</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </DetailsToggle>
                 </div>
               </Surface>
             );

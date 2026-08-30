@@ -453,4 +453,38 @@ describe("costPaise never leaks into any agent-facing or public surface", () => 
     await db.delete(schema.agentMemories).where(eq(schema.agentMemories.merchantId, merchant.id));
     await db.delete(schema.moneyActions).where(eq(schema.moneyActions.id, moneyAction.id));
   });
+
+  // Layer 21-6: the Refusal Receipt is a signed VIEW over the audit log,
+  // never a second place costPaise could leak — decode it (no signature
+  // verification needed for this check, just the payload) and assert the
+  // marker never appears in its claims.
+  it("Layer 21-6: a refusal receipt's claims never carry costPaise", async () => {
+    const { merchant, agent, rawKey } = await setupMerchantWithAgent();
+
+    const { POST: purchasePOST } = await import("@/app/api/agent/purchase/route");
+    const req = new NextRequest("http://localhost/api/agent/purchase", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${rawKey}` },
+      body: JSON.stringify({ amountPaise: 99_999_999, context: "over cap on purpose" }),
+    });
+    const res = await purchasePOST(req);
+    const body = await res.json();
+    expect(body.decision).toBe("deny");
+    expect(body.receipt).toBeTruthy();
+
+    const { decodeJwt } = await import("jose");
+    const claims = decodeJwt(body.receipt);
+    expect(JSON.stringify(claims)).not.toMatch(String(COST_PAISE_MARKER));
+    void merchant;
+    void agent;
+  });
+
+  it("Layer 21-1: the .well-known agent-commerce directory never carries costPaise", async () => {
+    await setupMerchantWithAgent();
+    const { GET: wellKnownGET } = await import("@/app/.well-known/agent-commerce.json/route");
+    const req = new NextRequest("http://localhost/.well-known/agent-commerce.json");
+    const res = await wellKnownGET(req);
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toMatch(String(COST_PAISE_MARKER));
+  });
 });

@@ -211,7 +211,7 @@ export interface GateResult {
   paymentLinkId?: string;
 }
 
-interface BoundCheckFailure {
+export interface BoundCheckFailure {
   reason: string;
   boundApplied: string;
 }
@@ -479,6 +479,41 @@ async function checkAgentTerms(
 }
 
 /**
+ * The per-transaction-max and remaining-balance arithmetic against a
+ * spend cap — pure, synchronous, and the SOLE place this codebase
+ * evaluates those two bounds. Extracted out of checkBounds (Layer 25-1)
+ * so the Bound Simulator can replay a real recorded attempt against a
+ * hypothetical cap using the EXACT code the gate itself runs, never a
+ * second reimplementation that could quietly drift from it — see
+ * plans/layer-25-control-surfaces.md's explicit warning that two
+ * implementations of the same bound is a bug waiting to happen.
+ * Takes only the two cap fields the arithmetic needs (not the whole row)
+ * so the simulator can pass a hypothetical capPaise/spentPaise pair
+ * without needing a real spend_caps row to exist for it.
+ */
+export function checkCapArithmetic(
+  amountPaise: number,
+  cap: { id: string; capPaise: number; spentPaise: number; perTransactionMaxPaise: number },
+): BoundCheckFailure | null {
+  if (amountPaise > cap.perTransactionMaxPaise) {
+    return {
+      reason: `Denied — ₹${(amountPaise / 100).toFixed(2)} exceeds this agent's per-transaction limit of ₹${(cap.perTransactionMaxPaise / 100).toFixed(2)}, even though the window total may allow it.`,
+      boundApplied: `per_transaction_max:${cap.id}`,
+    };
+  }
+
+  const remainingPaise = cap.capPaise - cap.spentPaise;
+  if (amountPaise > remainingPaise) {
+    return {
+      reason: `Denied — ₹${(amountPaise / 100).toFixed(2)} exceeds the ₹${(remainingPaise / 100).toFixed(2)} remaining in this agent's ₹${(cap.capPaise / 100).toFixed(2)} cap (₹${(cap.spentPaise / 100).toFixed(2)} already spent this window).`,
+      boundApplied: `spend_cap_balance:${cap.id}`,
+    };
+  }
+
+  return null;
+}
+
+/**
  * The deterministic checks, in order, short-circuiting on the first
  * failure. Returns the resolved product (if any) when every check passes.
  */
@@ -579,20 +614,8 @@ async function checkBounds(
     };
   }
 
-  if (request.amountPaise > cap.perTransactionMaxPaise) {
-    return {
-      reason: `Denied — ₹${(request.amountPaise / 100).toFixed(2)} exceeds this agent's per-transaction limit of ₹${(cap.perTransactionMaxPaise / 100).toFixed(2)}, even though the window total may allow it.`,
-      boundApplied: `per_transaction_max:${cap.id}`,
-    };
-  }
-
-  const remainingPaise = cap.capPaise - cap.spentPaise;
-  if (request.amountPaise > remainingPaise) {
-    return {
-      reason: `Denied — ₹${(request.amountPaise / 100).toFixed(2)} exceeds the ₹${(remainingPaise / 100).toFixed(2)} remaining in this agent's ₹${(cap.capPaise / 100).toFixed(2)} cap (₹${(cap.spentPaise / 100).toFixed(2)} already spent this window).`,
-      boundApplied: `spend_cap_balance:${cap.id}`,
-    };
-  }
+  const capFailure = checkCapArithmetic(request.amountPaise, cap);
+  if (capFailure) return capFailure;
 
   const termsFailure = await checkAgentTerms(request, agent);
   if (termsFailure) return termsFailure;

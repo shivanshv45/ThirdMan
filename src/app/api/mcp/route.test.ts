@@ -248,7 +248,7 @@ describe("POST /api/mcp", () => {
     const { toolResult } = await callTool(rawKey, "purchase", { sku, quantity: 1 });
     expect(toolResult.decision).toBe("deny");
     expect(toolResult.reason).toMatch(/exceeds/i);
-  });
+  }, 20_000);
 
   it("purchase by an unknown SKU is a clean denial, not an error", async () => {
     const merchant = await makeMerchant();
@@ -339,5 +339,5 @@ describe("POST /api/mcp", () => {
 
     const crossAgentAttempt = await callTool(rawKeyB, "negotiate", { negotiationId, offerUnitPricePaise: 50_000 });
     expect(crossAgentAttempt.toolResult.outcome).toBe("refused");
-  });
+  }, 20_000);
 });

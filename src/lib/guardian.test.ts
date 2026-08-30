@@ -278,6 +278,13 @@ describe("computeReadPurchaseRatio — Layer 23-3, real DB", () => {
     merchantId = undefined;
     agentId = undefined;
     if (currentAgentId) {
+      // A real purchase through the gate runs evaluateAndTransition
+      // inline (checkBounds's own Guardian check), which can write a
+      // real agent_guardian_state row even when the evaluation finds no
+      // breach to act on — missed here before, unlike the sibling
+      // describe block above, which deletes this table. Found by this
+      // session's own full-suite run; see FAILURES.md.
+      await db.delete(schema.agentGuardianState).where(eq(schema.agentGuardianState.agentId, currentAgentId));
       await db.delete(schema.escalations).where(eq(schema.escalations.spendCapId, db.select({ id: schema.spendCaps.id }).from(schema.spendCaps).where(eq(schema.spendCaps.agentId, currentAgentId))));
       await db.delete(schema.spendCaps).where(eq(schema.spendCaps.agentId, currentAgentId));
     }

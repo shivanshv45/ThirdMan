@@ -6,6 +6,7 @@ import { authenticateAgent, extractBearerKey, requireCapability } from "@/lib/ag
 import { attemptMoneyAction } from "@/lib/gate";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { verifyPaymentMandate } from "@/lib/mandates";
+import { issueRefusalReceipt } from "@/lib/refusal-receipt";
 import { withMoneyPathSpan, withSpan } from "@/lib/tracing";
 import { inspectInbound } from "@/lib/model-armor";
 
@@ -209,6 +210,12 @@ export async function POST(req: NextRequest) {
       checkoutMandateId,
     });
 
-    return NextResponse.json(result, { status: 200 });
+    // Layer 21-6: a signed, verifiable receipt over the decision just
+    // made — allow, deny, or escalate all get one, on the same terms
+    // (see refusal-receipt.ts). undefined on any signing failure, which
+    // must never block the real decision above from returning.
+    const receipt = await issueRefusalReceipt(agent.merchantId, result);
+
+    return NextResponse.json({ ...result, receipt }, { status: 200 });
   });
 }

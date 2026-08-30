@@ -61,8 +61,10 @@ describe("GET /store/[merchantId]/manifest.json", () => {
     expect(body.catalogueSummary.productCount).toBe(1);
     expect(body.catalogueSummary.priceRangePaise).toEqual({ min: 45_000, max: 45_000 });
     expect(body.policy.published).toBe(false);
-    expect(body.agentAccess.protocol).toBe("mcp");
-    expect(body.agentAccess.endpoint).toMatch(/\/api\/mcp$/);
+    expect(body.agentAccess.mcp.endpoint).toMatch(/\/api\/mcp$/);
+    expect(body.agentAccess.mcp.transport).toBe("streamable-http");
+    expect(body.protocolSupport.ap2.implemented).toBe(true);
+    expect(body.protocolSupport.acp.implemented).toBe(false);
 
     expect(JSON.stringify(body)).not.toMatch(/costPaise|20000/); // costPaise value never leaks
   });

@@ -7,10 +7,12 @@ import { requireSessionMerchant, destroySession } from "@/lib/auth";
 import { getAuditTrail } from "@/lib/dashboard";
 import { db, schema } from "@/lib/db";
 import { eq, and } from "drizzle-orm";
-import { rearmAgent } from "@/lib/guardian";
+import { rearmAgent, freezeAllAgents, unfreezeAllAgents } from "@/lib/guardian";
 import { cancelTask, retryTask } from "@/lib/runtime/tasks";
 import { confirmStatedMemory } from "@/lib/memory/stated";
 import { deleteMemory, correctMemory } from "@/lib/memory/retrieve";
+import { getTrustScore, type TrustReport } from "@/lib/trust-score";
+import { simulateBoundChange, type BoundSimulationResult } from "@/lib/bound-simulator";
 import { redirect } from "next/navigation";
 
 type AgentCapability = (typeof schema.agentCapabilityEnum.enumValues)[number];
@@ -213,6 +215,73 @@ export async function deleteMemoryAction(formData: FormData) {
   const result = await deleteMemory(merchant.id, memoryId);
   if (!result.ok) throw new Error(result.reason);
   revalidatePath("/dashboard/memory");
+}
+
+/**
+ * Layer 25-3: on-demand trust score for one agent — fetched from a
+ * "Show trust score" disclosure, never eagerly for every agent on page
+ * load, matching runPreflightSimulation/explainDecisionAction's own
+ * on-demand shape. getTrustScore itself re-verifies the agent belongs
+ * to this merchant.
+ */
+export async function getTrustScoreAction(agentId: string): Promise<TrustReport | { error: string }> {
+  const merchant = await requireSessionMerchant();
+  try {
+    return await getTrustScore(merchant.id, agentId);
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Could not compute trust score." };
+  }
+}
+
+/**
+ * Layer 25-1: the Bound Simulator. Re-verifies the agent belongs to
+ * this merchant before replaying anything against it — same discipline
+ * runPreflightSimulation already uses for the identical reason.
+ */
+export async function runBoundSimulationAction(formData: FormData): Promise<BoundSimulationResult | { error: string }> {
+  const merchant = await requireSessionMerchant();
+  const agentId = String(formData.get("agentId"));
+  const hypotheticalCapRupees = Number(formData.get("hypotheticalCapRupees"));
+  const hypotheticalPerTransactionMaxRupees = Number(formData.get("hypotheticalPerTransactionMaxRupees"));
+  const windowDays = Number(formData.get("windowDays") ?? 30);
+
+  const [agent] = await db.select({ id: schema.agents.id }).from(schema.agents).where(and(eq(schema.agents.id, agentId), eq(schema.agents.merchantId, merchant.id)));
+  if (!agent) return { error: "Agent not found" };
+
+  if (!Number.isFinite(hypotheticalCapRupees) || hypotheticalCapRupees <= 0 || !Number.isFinite(hypotheticalPerTransactionMaxRupees) || hypotheticalPerTransactionMaxRupees <= 0) {
+    return { error: "Enter positive amounts for both fields" };
+  }
+
+  try {
+    return await simulateBoundChange(
+      agentId,
+      Math.round(hypotheticalCapRupees * 100),
+      Math.round(hypotheticalPerTransactionMaxRupees * 100),
+      Number.isFinite(windowDays) && windowDays > 0 ? Math.min(windowDays, 90) : 30,
+    );
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Could not run the simulation." };
+  }
+}
+
+/**
+ * Layer 25-2: the Kill Switch. Freeze/unfreeze both re-derive the
+ * merchant from the session, never from anything the client asserts,
+ * and both revalidate every dashboard surface — a frozen platform must
+ * be unmistakable everywhere, not a banner on one page.
+ */
+export async function throwKillSwitchAction(formData: FormData) {
+  const merchant = await requireSessionMerchant();
+  const reason = String(formData.get("reason") ?? "").trim();
+  if (!reason) throw new Error("A reason is required to freeze every agent.");
+  await freezeAllAgents(merchant.id, reason);
+  revalidatePath("/", "layout");
+}
+
+export async function releaseKillSwitchAction() {
+  const merchant = await requireSessionMerchant();
+  await unfreezeAllAgents(merchant.id);
+  revalidatePath("/", "layout");
 }
 
 export async function logout() {

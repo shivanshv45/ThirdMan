@@ -423,6 +423,160 @@ export async function computeReadPurchaseRatio(agentId: string): Promise<ReadPur
   };
 }
 
+// --- Layer 25-2: the Kill Switch ---
+// "Freeze every agent, right now." A bulk, audited application of the
+// SAME bound resolveGuardianBound already enforces in gate.ts's
+// checkBounds — a suspended agent denies outright, before budget is
+// ever reserved. Nothing new is taught to the gate; this only moves
+// every one of a merchant's agents into a state the gate already knows
+// how to refuse. See DECISIONS.md for why suspend, not revoke: revoking
+// is destructive and a panicking merchant should not be able to
+// permanently invalidate their whole integration with one click.
+
+/** Whether a merchant currently has the Kill Switch thrown. */
+export async function isFrozen(merchantId: string): Promise<boolean> {
+  const [row] = await db.select({ merchantId: schema.merchantFreezes.merchantId }).from(schema.merchantFreezes).where(eq(schema.merchantFreezes.merchantId, merchantId));
+  return row !== undefined;
+}
+
+export async function getFreezeState(merchantId: string): Promise<{ merchantId: string; reason: string; frozenAt: Date } | null> {
+  const [row] = await db.select().from(schema.merchantFreezes).where(eq(schema.merchantFreezes.merchantId, merchantId));
+  return row ?? null;
+}
+
+/**
+ * Freezes every active agent belonging to this merchant. Atomic and
+ * complete by construction: everything below runs inside one
+ * transaction, so either every agent's state (and the snapshot needed
+ * to restore it) is written, or none of it is — a partial freeze, where
+ * the merchant believes they are safe and are not, is the one outcome
+ * this cannot allow.
+ *
+ * Each agent's CURRENT Guardian state is captured into
+ * agent_freeze_snapshots before being forced to "suspended", so
+ * unfreeze restores exactly what was there — an agent already suspended
+ * by the Guardian before the freeze must stay suspended after it, not
+ * be handed back a clean "normal" it never earned.
+ */
+export async function freezeAllAgents(merchantId: string, reason: string): Promise<{ agentsFrozen: number }> {
+  const trimmedReason = reason.trim();
+  if (!trimmedReason) throw new Error("freezeAllAgents: reason must be non-empty");
+
+  return db.transaction(async (tx) => {
+    const existing = await tx.select({ merchantId: schema.merchantFreezes.merchantId }).from(schema.merchantFreezes).where(eq(schema.merchantFreezes.merchantId, merchantId));
+    if (existing.length > 0) {
+      throw new Error("This merchant is already frozen. Unfreeze first before throwing the switch again.");
+    }
+
+    const activeAgents = await tx.select({ id: schema.agents.id }).from(schema.agents).where(and(eq(schema.agents.merchantId, merchantId), eq(schema.agents.status, "active")));
+
+    for (const { id: agentId } of activeAgents) {
+      const [existingStateRow] = await tx.select({ state: schema.agentGuardianState.state }).from(schema.agentGuardianState).where(eq(schema.agentGuardianState.agentId, agentId));
+      const priorState: GuardianState = existingStateRow?.state ?? "normal";
+
+      await tx.insert(schema.agentFreezeSnapshots).values({ agentId, merchantId, priorState });
+
+      // Already suspended/revoked agents stay exactly where they are —
+      // no transition to record, nothing new for a merchant to review.
+      if (priorState === "suspended" || priorState === "revoked") continue;
+
+      await tx
+        .insert(schema.agentGuardianState)
+        .values({ agentId, state: "suspended", lastSignal: "merchant_kill_switch", lastObservedValue: null, lastBaselineValue: null })
+        .onConflictDoUpdate({
+          target: schema.agentGuardianState.agentId,
+          set: { state: "suspended", lastSignal: "merchant_kill_switch", lastObservedValue: null, lastBaselineValue: null, updatedAt: new Date() },
+        });
+
+      await tx.insert(schema.guardianTransitions).values({
+        agentId,
+        fromState: priorState,
+        toState: "suspended",
+        triggerSignal: "merchant_kill_switch",
+        observedValue: "n/a",
+        baselineValue: null,
+      });
+    }
+
+    await tx.insert(schema.merchantFreezes).values({ merchantId, reason: trimmedReason });
+
+    await logAuditEntry({
+      merchantId,
+      actor: "merchant",
+      event: "kill_switch_frozen",
+      decision: "deny",
+      reason: `Merchant threw the Kill Switch — ${trimmedReason} ${activeAgents.length} active agent(s) suspended.`,
+      boundApplied: "kill_switch",
+      metadata: { agentsFrozen: activeAgents.length },
+    });
+
+    return { agentsFrozen: activeAgents.length };
+  });
+}
+
+/**
+ * Restores every frozen agent to its pre-freeze Guardian state and
+ * clears the freeze. Deliberately not a blanket "back to normal" — an
+ * agent recorded as already suspended at freeze time (by the Guardian,
+ * not this switch) is restored to suspended, still requiring the
+ * merchant's own explicit re-arm (rearmAgent) to actually resume
+ * transacting. Same atomicity discipline as freezeAllAgents: one
+ * transaction, so unfreeze cannot leave some agents restored and others
+ * still forced-suspended.
+ */
+export async function unfreezeAllAgents(merchantId: string): Promise<{ agentsRestored: number }> {
+  return db.transaction(async (tx) => {
+    const freeze = await tx.select().from(schema.merchantFreezes).where(eq(schema.merchantFreezes.merchantId, merchantId));
+    if (freeze.length === 0) {
+      throw new Error("This merchant is not currently frozen.");
+    }
+
+    const snapshots = await tx.select().from(schema.agentFreezeSnapshots).where(eq(schema.agentFreezeSnapshots.merchantId, merchantId));
+
+    for (const snapshot of snapshots) {
+      const [currentStateRow] = await tx.select({ state: schema.agentGuardianState.state }).from(schema.agentGuardianState).where(eq(schema.agentGuardianState.agentId, snapshot.agentId));
+      const currentState = currentStateRow?.state ?? "normal";
+
+      // Only restore if this switch is what suspended it — an agent the
+      // Guardian independently suspended (or the merchant separately
+      // re-armed) mid-freeze is left exactly as it is, never overwritten
+      // backward into "suspended" nor forward past what the Guardian
+      // itself would have done.
+      if (currentState === "suspended") {
+        await tx
+          .update(schema.agentGuardianState)
+          .set({ state: snapshot.priorState, lastSignal: "merchant_kill_switch_release", updatedAt: new Date() })
+          .where(eq(schema.agentGuardianState.agentId, snapshot.agentId));
+
+        await tx.insert(schema.guardianTransitions).values({
+          agentId: snapshot.agentId,
+          fromState: "suspended",
+          toState: snapshot.priorState,
+          triggerSignal: "merchant_kill_switch_release",
+          observedValue: "n/a",
+          baselineValue: null,
+        });
+      }
+
+      await tx.delete(schema.agentFreezeSnapshots).where(eq(schema.agentFreezeSnapshots.agentId, snapshot.agentId));
+    }
+
+    await tx.delete(schema.merchantFreezes).where(eq(schema.merchantFreezes.merchantId, merchantId));
+
+    await logAuditEntry({
+      merchantId,
+      actor: "merchant",
+      event: "kill_switch_unfrozen",
+      decision: "n/a",
+      reason: `Merchant released the Kill Switch — ${snapshots.length} agent(s) restored to their pre-freeze state.`,
+      boundApplied: "kill_switch",
+      metadata: { agentsRestored: snapshots.length },
+    });
+
+    return { agentsRestored: snapshots.length };
+  });
+}
+
 /**
  * Periodic sweep across every active agent — registered in
  * /api/cron/run alongside every other Layer 11 job, so an agent that

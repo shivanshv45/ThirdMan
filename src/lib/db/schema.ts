@@ -2096,3 +2096,61 @@ export const merchantAgentTerms = pgTable("merchant_agent_terms", {
     .defaultNow(),
 });
 
+// --- Layer 25: control surfaces ---
+// See plans/layer-25-control-surfaces.md. "Everything here informs.
+// Nothing here decides" — except the Kill Switch, which IS the merchant
+// deciding, expressed through the Guardian bound gate.ts already
+// enforces (resolveGuardianBound denies a suspended/revoked agent
+// outright). Freezing is a bulk, audited application of that existing
+// bound, never a new one.
+
+// One row per merchant, present only while a freeze is active — absence
+// means not frozen, the same "absence is real" discipline
+// merchant_agent_terms/merchant_policies already use. Deleted (not
+// soft-closed) on unfreeze, so "is this merchant frozen right now" is a
+// single existence check every dashboard surface can share.
+export const merchantFreezes = pgTable("merchant_freezes", {
+  merchantId: uuid("merchant_id")
+    .primaryKey()
+    .references(() => merchants.id),
+  reason: text("reason").notNull(),
+  frozenAt: timestamp("frozen_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// Captures each active agent's Guardian state at the moment a freeze is
+// thrown, so unfreeze can restore exactly what was there before rather
+// than a blanket "back to normal" — an agent already suspended by the
+// Guardian before the freeze must stay suspended after it. One row per
+// (merchantId, agentId) per freeze; deleted once read back on unfreeze.
+export const agentFreezeSnapshots = pgTable("agent_freeze_snapshots", {
+  agentId: uuid("agent_id")
+    .primaryKey()
+    .references(() => agents.id),
+  merchantId: uuid("merchant_id")
+    .notNull()
+    .references(() => merchants.id),
+  priorState: guardianStateEnum("prior_state").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// An opt-in, revocable, unguessable token letting one specific decision
+// be viewed outside the dashboard (L25-4) — a decision is not public
+// data by default. Scoped to exactly one audit_log row; deleting the
+// token (or never creating one) keeps the decision merchant-only.
+export const decisionShareTokens = pgTable("decision_share_tokens", {
+  token: text("token").primaryKey(),
+  merchantId: uuid("merchant_id")
+    .notNull()
+    .references(() => merchants.id),
+  auditLogId: uuid("audit_log_id")
+    .notNull()
+    .references(() => auditLog.id),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+

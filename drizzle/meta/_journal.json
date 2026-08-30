@@ -253,6 +253,13 @@
       "when": 1788092999089,
       "tag": "0035_acoustic_deadpool",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1788097015617,
+      "tag": "0036_hot_nico_minoru",
+      "breakpoints": true
     }
   ]
 }

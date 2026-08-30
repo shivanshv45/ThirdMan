@@ -19,6 +19,7 @@ export interface AgentWithCap {
   name: string;
   status: (typeof schema.agentStatusEnum.enumValues)[number];
   mandateRequired: boolean;
+  registrationSource: (typeof schema.agentRegistrationSourceEnum.enumValues)[number];
   capabilities: (typeof schema.agentCapabilityEnum.enumValues)[number][];
   cap: {
     id: string;
@@ -106,7 +107,9 @@ export async function getAgentsWithCaps(merchantId: string): Promise<AgentWithCa
       name: agent.name,
       status: agent.status,
       mandateRequired: agent.mandateRequired,
+      registrationSource: agent.registrationSource,
       capabilities: capabilitiesByAgentId.get(agent.id) ?? [],
+      mandateBackedPurchases: mandateBackedByAgentId.get(agent.id) ?? [],
       cap: cap
         ? {
             id: cap.id,

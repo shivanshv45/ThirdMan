@@ -249,4 +249,51 @@ describe("merchant isolation — enumeration by id, not just empty-list", () => 
     const [stillThere] = await db.select().from(schema.agentMemories).where(eq(schema.agentMemories.id, memory.id));
     expect(stillThere.value).toBe("42 reward coins");
   });
+
+  // Layer 21-8: self-registration issues an agent scoped to the
+  // merchantId in the request body — proven here by registering against
+  // merchant A and confirming the row (and its cap) only ever belongs to
+  // A, never leaking into B's agent list by id.
+  it("self-registration scopes the new agent to the requested merchant only", async () => {
+    const { merchantA, merchantB } = await setup();
+
+    const { setMerchantAgentTerms } = await import("@/lib/agent-terms");
+    await setMerchantAgentTerms({
+      merchantId: merchantA.id,
+      unknownAgentsAllowed: true,
+      newAgentOrderCeilingPaise: null,
+      mandateRequiredAbovePaise: null,
+      negotiationOpenToAgents: false,
+      selfRegisterDefaultCapabilities: ["products:read"],
+      selfRegistrationOpen: true,
+      selfRegisterStartingCapPaise: 10_000,
+      selfRegisterPerTransactionMaxPaise: 5_000,
+    });
+
+    const { registerAgent } = await import("@/lib/agent-registration");
+    const result = await registerAgent(merchantA.id, "__isolation_self_reg_agent__", "9.9.9.9");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const agentsForB = await getAgentsWithCaps(merchantB.id);
+    expect(agentsForB.some((a) => a.id === result.agent.id)).toBe(false);
+
+    const [row] = await db.select().from(schema.agents).where(eq(schema.agents.id, result.agent.id));
+    expect(row.merchantId).toBe(merchantA.id);
+
+    await db.delete(schema.agentCapabilities).where(eq(schema.agentCapabilities.agentId, result.agent.id));
+    await db.delete(schema.spendCaps).where(eq(schema.spendCaps.agentId, result.agent.id));
+    await db.delete(schema.agents).where(eq(schema.agents.id, result.agent.id));
+    await db.delete(schema.merchantAgentTerms).where(eq(schema.merchantAgentTerms.merchantId, merchantA.id));
+  }, 20_000);
+
+  // The registration endpoint refuses a non-existent merchant id
+  // (route-level, but the id-enumeration discipline is the same one this
+  // file proves everywhere else) — a fabricated id must fail closed, not
+  // silently succeed against nothing.
+  it("registration against a fabricated merchant id fails closed", async () => {
+    const { registerAgent } = await import("@/lib/agent-registration");
+    const result = await registerAgent("00000000-0000-0000-0000-000000000000", "__ghost_agent__", "1.1.1.1");
+    expect(result.ok).toBe(false);
+  });
 });

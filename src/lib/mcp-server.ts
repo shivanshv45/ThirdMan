@@ -13,6 +13,7 @@ import { getRewardBalance, redeemRewardCoins } from "@/lib/reward-actions";
 import { openNegotiation, submitBuyerCounter, getOpenNegotiationForIdentity, MAX_BUYER_COUNTERS } from "@/lib/negotiation";
 import { requireCapability, recordCatalogueRead } from "@/lib/agent-auth";
 import { issueCheckoutMandate, verifyPaymentMandate } from "@/lib/mandates";
+import { issueRefusalReceipt } from "@/lib/refusal-receipt";
 import { withMoneyPathSpan, withSpan } from "@/lib/tracing";
 
 /**
@@ -547,7 +548,8 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
           checkoutMandateId,
         });
 
-        return toolText(JSON.stringify({ ...result, quantity: negotiation.quantity, amountFormatted: formatPaise(amountPaise) }, null, 2));
+        const receipt = await issueRefusalReceipt(agent.merchantId, result);
+        return toolText(JSON.stringify({ ...result, receipt, quantity: negotiation.quantity, amountFormatted: formatPaise(amountPaise) }, null, 2));
       }
 
       if (offerId) {
@@ -576,7 +578,8 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
           checkoutMandateId,
         });
 
-        return toolText(JSON.stringify({ ...result, bundleName: bundle.name, amountFormatted: formatPaise(bundle.bundlePricePaise) }, null, 2));
+        const receipt = await issueRefusalReceipt(agent.merchantId, result);
+        return toolText(JSON.stringify({ ...result, receipt, bundleName: bundle.name, amountFormatted: formatPaise(bundle.bundlePricePaise) }, null, 2));
       }
 
       if (!sku) {
@@ -606,10 +609,12 @@ export function createMcpServerForAgent(agent: Agent): McpServer {
         checkoutMandateId,
       });
 
+      const receipt = await issueRefusalReceipt(agent.merchantId, result);
       return toolText(
         JSON.stringify(
           {
             ...result,
+            receipt,
             sku: found.variant.sku,
             quantity,
             amountFormatted: formatPaise(amountPaise),
