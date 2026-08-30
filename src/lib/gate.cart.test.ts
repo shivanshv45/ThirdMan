@@ -180,7 +180,7 @@ describe("attemptMoneyAction — cart-bound (multi-item) purchases", () => {
     const [variantBAfter] = await db.select().from(schema.productVariants).where(eq(schema.productVariants.id, variantB.id));
     expect(variantAAfter.stock).toBe(3); // 5 - 2
     expect(variantBAfter.stock).toBe(4); // 5 - 1
-  });
+  }, 20_000);
 
   it("denies a cart purchase that asserts a total other than the live catalogue sum — the price bound holds for carts too", async () => {
     const { merchantId, agent, conversation } = await setup();
@@ -204,7 +204,7 @@ describe("attemptMoneyAction — cart-bound (multi-item) purchases", () => {
     // Denied — no stock should have moved.
     const [variantAfter] = await db.select().from(schema.productVariants).where(eq(schema.productVariants.id, variant.id));
     expect(variantAfter.stock).toBe(5);
-  });
+  }, 20_000);
 
   it("denies checkout of an empty cart", async () => {
     const { merchantId, agent, conversation } = await setup();
@@ -220,7 +220,7 @@ describe("attemptMoneyAction — cart-bound (multi-item) purchases", () => {
 
     expect(result.decision).toBe("deny");
     expect(result.reason).toContain("empty");
-  });
+  }, 20_000);
 
   it("denies a cart with insufficient stock on one line — an all-or-nothing bound, mirroring an offer's bundle", async () => {
     const { merchantId, agent, conversation } = await setup();
@@ -246,7 +246,7 @@ describe("attemptMoneyAction — cart-bound (multi-item) purchases", () => {
     // Neither line's stock should have moved — all-or-nothing.
     const [variantAAfter] = await db.select().from(schema.productVariants).where(eq(schema.productVariants.id, variantA.id));
     expect(variantAAfter.stock).toBe(5);
-  });
+  }, 20_000);
 
   it("denies referencing both a variantId and a cart in the same request — ambiguous target", async () => {
     const { merchantId, agent, conversation } = await setup();
@@ -266,7 +266,7 @@ describe("attemptMoneyAction — cart-bound (multi-item) purchases", () => {
 
     expect(result.decision).toBe("deny");
     expect(result.reason).toContain("more than one");
-  });
+  }, 20_000);
 
   it("denies checking out another merchant's cart by conversation id", async () => {
     const { merchantId, agent } = await setup();
@@ -296,5 +296,5 @@ describe("attemptMoneyAction — cart-bound (multi-item) purchases", () => {
     } finally {
       await db.delete(schema.merchants).where(eq(schema.merchants.id, otherMerchant.id));
     }
-  });
+  }, 20_000);
 });

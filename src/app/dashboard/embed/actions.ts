@@ -6,6 +6,7 @@ import { updateEmbedOrigins, updateEmbedAppearance, setEmbedStatus, rotateEmbedK
 import { registerMerchantWebhook, updateMerchantWebhook, setMerchantWebhookStatus } from "@/lib/merchant-webhooks";
 import { enqueueTestDelivery } from "@/lib/webhooks/enqueue";
 import { retryDelivery } from "@/lib/webhooks/runner";
+import { verifyIntegration, type IntegrationVerifyReport } from "@/lib/integration-verify";
 
 /**
  * Thin Server Action wrappers around embed-mutations.ts/merchant-
@@ -112,4 +113,16 @@ export async function retryDeliveryAction(formData: FormData) {
   const deliveryId = String(formData.get("deliveryId") ?? "");
   await retryDelivery(merchant.id, deliveryId);
   revalidatePath("/dashboard/embed");
+}
+
+/**
+ * Layer 24-9: "Did it actually work?" run on demand from the dashboard.
+ * Returns the report directly to the calling client component rather
+ * than redirecting, since this is a read-only check with no state to
+ * revalidate — the same "Server Action that returns data" shape
+ * refreshAuditTrail already uses in the main dashboard actions.ts.
+ */
+export async function runIntegrationVerifyAction(appOrigin: string): Promise<IntegrationVerifyReport> {
+  const merchant = await requireSessionMerchant();
+  return verifyIntegration(merchant.id, appOrigin);
 }

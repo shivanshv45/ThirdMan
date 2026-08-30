@@ -6,6 +6,7 @@ import { eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { hashPassword, createSession } from "@/lib/auth";
 import { logAuditEntry } from "@/lib/audit";
+import { seedOnboardingDefaults } from "@/lib/onboarding-defaults";
 
 const signupSchema = z.object({
   name: z.string().trim().min(1, "Business name is required"),
@@ -45,6 +46,16 @@ export async function signup(formData: FormData) {
     decision: "n/a",
     reason: `New merchant account created for "${name}".`,
   });
+
+  // Layer 24-10: a merchant landing on an empty dashboard is where
+  // onboarding dies. A failure here must never block account creation —
+  // the merchant still gets a working, empty account and can configure
+  // everything by hand, exactly as before this layer existed.
+  try {
+    await seedOnboardingDefaults(merchant.id);
+  } catch (err) {
+    console.error(`[signup] seedOnboardingDefaults failed for merchant ${merchant.id}:`, err);
+  }
 
   await createSession(merchant.id);
   redirect("/dashboard");

@@ -1,0 +1,54 @@
+{
+  "name": "thirdman-audit",
+  "displayName": "Thirdman Agent-Readiness Audit",
+  "description": "Runs the thirdman audit engine on your open workspace — findings in the Problems panel anchored to real file/line positions, generated files reviewed as a diff, readiness score in the status bar.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "thirdman",
+  "type": "module",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Linters",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/vscode-extension/src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "thirdman.runAudit",
+        "title": "Thirdman: Run Agent-Readiness Audit"
+      },
+      {
+        "command": "thirdman.reviewGeneratedFiles",
+        "title": "Thirdman: Review Generated Files (Diff)"
+      }
+    ],
+    "configuration": {
+      "title": "Thirdman",
+      "properties": {
+        "thirdman.appOrigin": {
+          "type": "string",
+          "default": "https://thirdman.dev",
+          "description": "The Thirdman app origin used when generating the discovery document and config (matches `npx thirdman init`'s --app-origin)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.2.1",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.11"
+  }
+}

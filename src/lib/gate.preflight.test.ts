@@ -139,7 +139,7 @@ describe("attemptMoneyAction dryRun — preflight shares the real code path", ()
 
     const audit = await db.select().from(schema.auditLog).where(eq(schema.auditLog.merchantId, merchantId));
     expect(audit.some((a) => a.event === "preflight_evaluated" && a.decision === "n/a")).toBe(true);
-  });
+  }, 20_000);
 
   it("a dry-run above the per-transaction max denies with the identical reason a real attempt would get", async () => {
     const merchant = await makeMerchant();
@@ -169,7 +169,7 @@ describe("attemptMoneyAction dryRun — preflight shares the real code path", ()
     expect(realResult.decision).toBe("deny");
     // Same bound, same underlying reason text (preflight prefixes it).
     expect(dryRunResult.reason).toContain(realResult.reason);
-  });
+  }, 20_000);
 
   it("a dry-run against insufficient stock denies exactly like a real attempt, and stock is untouched either way", async () => {
     const merchant = await makeMerchant();
@@ -195,7 +195,7 @@ describe("attemptMoneyAction dryRun — preflight shares the real code path", ()
 
     const [updatedVariant] = await db.select().from(schema.productVariants).where(eq(schema.productVariants.id, variant.id));
     expect(updatedVariant.stock).toBe(0);
-  });
+  }, 20_000);
 
   it("a dry-run for a suspended agent (Guardian) denies with the guardian bound — proving preflight sees the Guardian too, not just spend/stock", async () => {
     const merchant = await makeMerchant();

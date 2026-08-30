@@ -42,6 +42,15 @@ yarn-error.log*
 /agent-buyer/node_modules
 /agent-buyer/run-logs
 
+# cli/ (the "thirdman" merchant CLI, Layer 20) is the same shape — its
+# own standalone package with its own node_modules.
+/cli/node_modules
+
+# vscode-extension (Layer 24) is also a standalone package
+/vscode-extension/node_modules
+/vscode-extension/out
+
+
 # vercel
 .vercel
 
@@ -70,3 +79,9 @@ next-env.d.ts
 # nothing in src/ references this file. Left on disk locally rather than
 # deleted in case of a future rollback, but never pushed.
 /public/bg_video.mp4
+
+# local scratchpad
+/scratch/
+
+# shopify theme app extension dependencies
+/shopify-theme-extension/node_modules

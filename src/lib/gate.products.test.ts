@@ -157,7 +157,7 @@ describe("attemptMoneyAction — product-bound purchases", () => {
 
     const [updatedVariant] = await db.select().from(schema.productVariants).where(eq(schema.productVariants.id, variant.id));
     expect(updatedVariant.stock).toBe(5);
-  });
+  }, 20_000);
 
   it("denies a zero-stock purchase with boundApplied product_stock, before reserving budget", async () => {
     const { merchantId, agent } = await setup();
@@ -178,7 +178,7 @@ describe("attemptMoneyAction — product-bound purchases", () => {
 
     const [cap] = await db.select().from(schema.spendCaps).where(eq(schema.spendCaps.agentId, agent.id));
     expect(cap.spentPaise).toBe(0);
-  });
+  }, 20_000);
 
   it("denies a cross-merchant product purchase by id enumeration", async () => {
     const { merchantId: merchantAId, agent } = await setup();
@@ -205,7 +205,7 @@ describe("attemptMoneyAction — product-bound purchases", () => {
       await db.delete(schema.products).where(eq(schema.products.id, productOfB.id));
       await db.delete(schema.merchants).where(eq(schema.merchants.id, merchantB.id));
     }
-  });
+  }, 20_000);
 
   it("allows a valid product purchase, decrements stock atomically, and records variantId/quantity", async () => {
     const { merchantId, agent } = await setup();

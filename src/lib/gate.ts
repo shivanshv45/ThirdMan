@@ -11,6 +11,7 @@ import { enqueueWebhookEvent } from "@/lib/webhooks/enqueue";
 import { evaluateAndTransition } from "@/lib/guardian";
 import { withMoneyPathSpan, withSpan } from "@/lib/tracing";
 import { getMerchantAgentTerms } from "@/lib/agent-terms";
+import { isShadowModeEnabled } from "@/lib/shadow-mode";
 
 /**
  * Loads and decrypts a merchant's own Razorpay credentials. The gate is
@@ -180,6 +181,16 @@ export interface MoneyActionRequest {
    * ever being confused with a real money action.
    */
   dryRun?: boolean;
+  /**
+   * Layer 24-8: set internally by attemptMoneyActionTraced when the
+   * merchant has Shadow Mode on and the caller did NOT already request
+   * dryRun — never set by a caller directly. Distinguishes "this is a
+   * genuine Layer 13-5 preflight the caller asked for" from "this would
+   * have been a real attempt, but Shadow Mode silently downgraded it,"
+   * so the audit log and dashboard can label the two differently rather
+   * than blurring a merchant-wide safety mode into an unrelated feature.
+   */
+  shadowModeForced?: boolean;
   /**
    * Layer 21-7: set by the caller (the purchase route/MCP tool) once a
    * Payment Mandate has been verified for this request, so checkBounds
@@ -1032,6 +1043,17 @@ async function attemptMoneyActionTraced(
   setMoneyActionId: (id: string) => void,
 ): Promise<GateResult> {
   try {
+    // Layer 24-8: Shadow Mode. Checked first, before idempotency replay
+    // or any bound evaluation, and applied by MUTATING the request — so
+    // every branch below (including ones added later) inherits the
+    // dry-run behavior automatically rather than each needing its own
+    // check. This is the one enforcement point for "no money action can
+    // execute while shadow mode is on" — never a UI convention, and
+    // never left to an individual caller to remember to pass dryRun.
+    if (!request.dryRun && (await isShadowModeEnabled(request.merchantId))) {
+      request = { ...request, dryRun: true, shadowModeForced: true };
+    }
+
     if (request.idempotencyKey) {
       const [existing] = await db
         .select()
@@ -1050,15 +1072,17 @@ async function attemptMoneyActionTraced(
 
     const boundsResult = await withSpan("policy_evaluation", { "thirdman.agent_id": request.agentId, "thirdman.amount_paise": request.amountPaise }, () => checkBounds(request));
     if (isBoundFailure(boundsResult)) {
-      const reason = request.dryRun ? `Preflight — this request would be DENIED: ${boundsResult.reason}` : boundsResult.reason;
+      const reason = request.dryRun
+        ? `${request.shadowModeForced ? "Shadow Mode" : "Preflight"} — this request would be DENIED: ${boundsResult.reason}`
+        : boundsResult.reason;
       await logAuditEntry({
         merchantId: request.merchantId,
         actor: "agent",
-        event: request.dryRun ? "preflight_evaluated" : `money_action_attempt:${request.type}`,
+        event: request.dryRun ? (request.shadowModeForced ? "shadow_mode_evaluated" : "preflight_evaluated") : `money_action_attempt:${request.type}`,
         decision: request.dryRun ? "n/a" : "deny",
         reason,
         boundApplied: boundsResult.boundApplied,
-        metadata: { agentId: request.agentId, amountPaise: request.amountPaise, context: request.context, variantId: request.variantId, ...(request.dryRun && { wouldAllow: false }) },
+        metadata: { agentId: request.agentId, amountPaise: request.amountPaise, context: request.context, variantId: request.variantId, ...(request.dryRun && { wouldAllow: false, shadowMode: !!request.shadowModeForced }) },
       });
       return { decision: "deny", reason };
     }
@@ -1069,16 +1093,20 @@ async function attemptMoneyActionTraced(
       // attempt already ran inside checkBounds above (including the
       // Guardian's inline evaluation) — this only stops short of
       // reserving anything. decision: "n/a" on the audit row keeps a
-      // preflight visually distinct from a real allow/deny/escalate,
-      // per the plan's own instruction not to confuse the two.
-      const reason = `Preflight — this request would be ALLOWED: every deterministic check passed (spend cap, stock, price match, Guardian state). The risk layer's live judgment on escalation is not simulated, since that call is only made once budget is actually reserved.`;
+      // preflight/shadow evaluation visually distinct from a real
+      // allow/deny/escalate, per the plan's own instruction not to
+      // confuse the two. shadowModeForced further distinguishes "the
+      // merchant asked to simulate this one request" (Layer 13-5) from
+      // "Shadow Mode silently downgraded what would have been a real
+      // purchase" (Layer 24-8) — different audiences, different meaning.
+      const reason = `${request.shadowModeForced ? "Shadow Mode" : "Preflight"} — this request would be ALLOWED: every deterministic check passed (spend cap, stock, price match, Guardian state). The risk layer's live judgment on escalation is not simulated, since that call is only made once budget is actually reserved.`;
       await logAuditEntry({
         merchantId: request.merchantId,
         actor: "agent",
-        event: "preflight_evaluated",
+        event: request.shadowModeForced ? "shadow_mode_evaluated" : "preflight_evaluated",
         decision: "n/a",
         reason,
-        metadata: { agentId: request.agentId, amountPaise: request.amountPaise, context: request.context, variantId: request.variantId, wouldAllow: true },
+        metadata: { agentId: request.agentId, amountPaise: request.amountPaise, context: request.context, variantId: request.variantId, wouldAllow: true, shadowMode: !!request.shadowModeForced },
       });
       return { decision: "allow", reason };
     }

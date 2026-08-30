@@ -2,9 +2,11 @@ import { redirect } from "next/navigation";
 import { getSessionMerchant } from "@/lib/auth";
 import { getPendingEscalations, getGuardianIncidents, getActiveTaskCount, getPendingMemoryConfirmCount, getActiveReservations, getActiveTheatreRunCount, getActiveReturnRequestCount } from "@/lib/dashboard";
 import { getFreezeState } from "@/lib/guardian";
+import { getShadowModeState } from "@/lib/shadow-mode";
 import { logout } from "./actions";
 import { SidebarNav, type NavGroup } from "./sidebar-nav";
 import { KillSwitchBanner } from "./kill-switch-banner";
+import { ShadowModeBanner } from "./shadow-mode-banner";
 import { Reveal } from "@/components/ui";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -19,6 +21,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const activeTheatreRunCount = await getActiveTheatreRunCount(merchant.id);
   const activeReturnRequestCount = await getActiveReturnRequestCount(merchant.id);
   const freezeState = await getFreezeState(merchant.id);
+  const shadowModeState = await getShadowModeState(merchant.id);
 
   const groups: NavGroup[] = [
     {
@@ -105,10 +108,13 @@ export default async function DashboardLayout({ children }: { children: React.Re
     {
       heading: "Setup",
       items: [
+        { href: "/dashboard/setup-conversation", label: "Setup conversation" },
         { href: "/dashboard/agents", label: "Agents & caps" },
         { href: "/dashboard/agent-terms", label: "Agent terms" },
         { href: "/dashboard/policies", label: "Policies" },
         { href: "/dashboard/embed", label: "Embed on your site" },
+        { href: "/dashboard/cli", label: "Codebase auditor (CLI)" },
+        { href: "/dashboard/integrations", label: "Other platforms" },
         { href: "/dashboard/settings", label: "Settings" },
       ],
     },
@@ -122,6 +128,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
           sidebar/content split entirely, full width, on every route
           under /dashboard. */}
       {freezeState && <KillSwitchBanner reason={freezeState.reason} frozenAt={freezeState.frozenAt} />}
+      {shadowModeState && <ShadowModeBanner enabledAt={shadowModeState.enabledAt} />}
       <div className="flex flex-col md:flex-row flex-1 min-h-0">
         <SidebarNav
           groups={groups}

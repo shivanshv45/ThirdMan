@@ -2,7 +2,8 @@ import { redirect } from "next/navigation";
 import { getSessionMerchant } from "@/lib/auth";
 import { getAgentsWithCaps } from "@/lib/dashboard";
 import { getFreezeState } from "@/lib/guardian";
-import { throwKillSwitchAction } from "../actions";
+import { getShadowModeState } from "@/lib/shadow-mode";
+import { throwKillSwitchAction, enableShadowModeAction, disableShadowModeAction } from "../actions";
 import { PageHeader, Surface, Button, Field, Input } from "@/components/ui";
 import { BoundSimulatorPanel } from "./bound-simulator-panel";
 import { TrustScorePanel } from "./trust-score-panel";
@@ -20,7 +21,7 @@ export default async function ControlPage() {
   const merchant = await getSessionMerchant();
   if (!merchant) redirect("/login");
 
-  const [agents, freezeState] = await Promise.all([getAgentsWithCaps(merchant.id), getFreezeState(merchant.id)]);
+  const [agents, freezeState, shadowModeState] = await Promise.all([getAgentsWithCaps(merchant.id), getFreezeState(merchant.id), getShadowModeState(merchant.id)]);
   const activeAgents = agents.filter((a) => a.status === "active");
 
   return (
@@ -51,6 +52,32 @@ export default async function ControlPage() {
                   Freeze every agent now ({activeAgents.length} active)
                 </Button>
               </div>
+            </form>
+          </Surface>
+        )}
+      </section>
+
+      <section>
+        <h2 className="text-[var(--t-h3)] font-[family-name:var(--font-display)] text-on-ink mb-1">Shadow Mode</h2>
+        <p className="text-sm text-on-ink-dim mb-3 max-w-[var(--measure)]">
+          Install this product and change nothing. Every agent still runs, every bound still evaluates — but while Shadow Mode is on, no money action can execute, enforced in the gate itself, not by hiding a button. See exactly what would have happened before letting anything move a real rupee.
+        </p>
+        {shadowModeState ? (
+          <Surface variant="raised" className="p-5 border-escalate/40">
+            <p className="text-sm text-escalate-bright font-medium">Shadow Mode is currently on.</p>
+            <p className="text-xs text-on-ink-faint mt-1 mb-3">Every result across this dashboard right now is a simulation, clearly labelled wherever it appears.</p>
+            <form action={disableShadowModeAction}>
+              <Button type="submit" variant="secondary" pendingLabel="Turning off…">
+                Turn off Shadow Mode
+              </Button>
+            </form>
+          </Surface>
+        ) : (
+          <Surface variant="raised" className="p-5">
+            <form action={enableShadowModeAction}>
+              <Button type="submit" variant="secondary" pendingLabel="Turning on…">
+                Turn on Shadow Mode
+              </Button>
             </form>
           </Surface>
         )}

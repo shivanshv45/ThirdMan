@@ -2267,3 +2267,52 @@ export const returnRequestMessages = pgTable("return_request_messages", {
     .defaultNow(),
 });
 
+// --- Layer 20: the merchant CLI's account-linking token ---
+// L20-6: the one credential a merchant ever types is their own password,
+// into their own browser, on their own dashboard — never into the CLI's
+// terminal. The merchant generates this token on /dashboard/cli and
+// pastes it into `thirdman init`; the CLI redeems it once against
+// POST /api/cli/link to receive a fresh agent key and offer the
+// allowlist add. Short-lived and single-use, same shape as
+// decisionShareTokens but consumed (deleted) on redemption rather than
+// left standing, since a link token grants a mutation, not a read.
+export const cliLinkTokens = pgTable("cli_link_tokens", {
+  token: text("token").primaryKey(),
+  merchantId: uuid("merchant_id")
+    .notNull()
+    .references(() => merchants.id),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// --- Layer 24: onboarding surfaces ---
+
+// L24-1: the Instant Audit's cache-by-URL, so the same store audited
+// twice in a minute is fetched once — see store-fetch.ts's fetching
+// discipline. Keyed on the normalized input URL, not the merchant (this
+// surface is public and unauthenticated; there is no merchant yet).
+export const instantAuditCache = pgTable("instant_audit_cache", {
+  url: text("url").primaryKey(),
+  reportJson: jsonb("report_json").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// L24-8: Shadow Mode. A presence table, same discipline as
+// merchantFreezes — a row means shadow mode is on, absence means off,
+// and "on" is checked directly inside gate.ts's attemptMoneyAction so
+// every money path is forced through dryRun regardless of what any
+// individual caller passed, never left to a UI convention. See
+// gate.ts's own comment at the check site and DECISIONS.md.
+export const merchantShadowMode = pgTable("merchant_shadow_mode", {
+  merchantId: uuid("merchant_id")
+    .primaryKey()
+    .references(() => merchants.id),
+  enabledAt: timestamp("enabled_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+

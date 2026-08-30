@@ -16,6 +16,10 @@ const eslintConfig = defineConfig([
     // package.json, tsconfig.json, and lint/test setup — outside this
     // app's Next.js build by design (plans/layer-19-adversarial-buyer.md).
     "agent-buyer/**",
+    // cli/ (the "thirdman" merchant CLI, Layer 20) is the same shape —
+    // its own package.json/tsconfig.json/lint setup, published
+    // separately, no import of src/lib. See plans/layer-20-merchant-cli.md.
+    "cli/**",
   ]),
   {
     // Only src/lib/env.ts may read process.env directly — everywhere

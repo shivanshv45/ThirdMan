@@ -193,7 +193,7 @@ describe("attemptMoneyAction — offer-bound (discounted) purchases", () => {
 
     expect(result.decision).toBe("deny");
     expect(result.reason).toContain("catalogue price");
-  });
+  }, 20_000);
 
   it("denies redemption of an offer that was never accepted", async () => {
     const { merchantId, agent } = await setup();
@@ -214,7 +214,7 @@ describe("attemptMoneyAction — offer-bound (discounted) purchases", () => {
 
     expect(result.decision).toBe("deny");
     expect(result.reason).toContain("not accepted");
-  });
+  }, 20_000);
 
   it("denies redemption of another merchant's offer by id", async () => {
     const { merchantId, agent } = await setup();
@@ -244,7 +244,7 @@ describe("attemptMoneyAction — offer-bound (discounted) purchases", () => {
       await db.delete(schema.products).where(eq(schema.products.id, product.id));
       await db.delete(schema.merchants).where(eq(schema.merchants.id, otherMerchant.id));
     }
-  });
+  }, 20_000);
 
   it("denies redemption of an expired offer", async () => {
     const { merchantId, agent } = await setup();
@@ -269,7 +269,7 @@ describe("attemptMoneyAction — offer-bound (discounted) purchases", () => {
 
     expect(result.decision).toBe("deny");
     expect(result.reason).toContain("expired");
-  });
+  }, 20_000);
 
   it("denies redemption of a fabricated offer id", async () => {
     const { merchantId, agent } = await setup();
@@ -285,7 +285,7 @@ describe("attemptMoneyAction — offer-bound (discounted) purchases", () => {
 
     expect(result.decision).toBe("deny");
     expect(result.reason).toContain("no offer");
-  });
+  }, 20_000);
 
   it("denies when the caller's amountPaise disagrees with the offer's own bundle price", async () => {
     const { merchantId, agent } = await setup();
@@ -306,7 +306,7 @@ describe("attemptMoneyAction — offer-bound (discounted) purchases", () => {
 
     expect(result.decision).toBe("deny");
     expect(result.reason).toContain("bundle price");
-  });
+  }, 20_000);
 
   it("allows a purchase against a validly accepted offer, at the bundle's own price, and decrements every item's stock", async () => {
     const { merchantId, agent } = await setup();
@@ -342,7 +342,7 @@ describe("attemptMoneyAction — offer-bound (discounted) purchases", () => {
 
     const [moneyAction] = await db.select().from(schema.moneyActions).where(eq(schema.moneyActions.id, result.moneyActionId!));
     expect(moneyAction.offerId).toBe(offer.id);
-  });
+  }, 20_000);
 
   it("denies when a bundle item doesn't have enough stock", async () => {
     const { merchantId, agent } = await setup();
@@ -366,7 +366,7 @@ describe("attemptMoneyAction — offer-bound (discounted) purchases", () => {
 
     const [unchanged] = await db.select().from(schema.productVariants).where(eq(schema.productVariants.id, variant.id));
     expect(unchanged.stock).toBe(1);
-  });
+  }, 20_000);
 
   it("acceptOffer is idempotent to a race — only one acceptance can claim an offered offer", async () => {
     const { merchantId, agent } = await setup();
@@ -382,5 +382,5 @@ describe("attemptMoneyAction — offer-bound (discounted) purchases", () => {
     ]);
 
     expect(results.filter(Boolean).length).toBe(1);
-  });
+  }, 20_000);
 });

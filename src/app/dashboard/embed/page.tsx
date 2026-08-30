@@ -7,6 +7,7 @@ import { PageHeader, Surface, Field, Input, Select, Button, EmptyState, DetailsT
 import { updateOrigins, updateAppearance, toggleEmbedStatus, updateWebhook, toggleWebhookStatus, sendTestDelivery, retryDeliveryAction } from "./actions";
 import { RotateEmbedKeyButton, RegisterWebhookForm } from "./secret-reveal";
 import { LivePreview } from "./live-preview";
+import { IntegrationVerifyPanel } from "./integration-verify-panel";
 
 /**
  * The merchant's install surface for the embeddable widget (Layer 10,
@@ -90,6 +91,8 @@ export default async function EmbedPage() {
           </Button>
         </form>
       </Surface>
+
+      <IntegrationVerifyPanel appOrigin={appOrigin} />
 
       <Surface variant="raised" className="p-5 space-y-4">
         <h2 className="text-[var(--t-h4)] font-medium text-on-ink">How it looks</h2>

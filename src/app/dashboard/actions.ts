@@ -14,6 +14,7 @@ import { deleteMemory, correctMemory } from "@/lib/memory/retrieve";
 import { getTrustScore, type TrustReport } from "@/lib/trust-score";
 import { simulateBoundChange, type BoundSimulationResult } from "@/lib/bound-simulator";
 import { approveReturnRequest, rejectReturnRequest } from "@/lib/returns-desk-decision";
+import { enableShadowMode, disableShadowMode } from "@/lib/shadow-mode";
 import { redirect } from "next/navigation";
 
 type AgentCapability = (typeof schema.agentCapabilityEnum.enumValues)[number];
@@ -311,6 +312,18 @@ export async function throwKillSwitchAction(formData: FormData) {
 export async function releaseKillSwitchAction() {
   const merchant = await requireSessionMerchant();
   await unfreezeAllAgents(merchant.id);
+  revalidatePath("/", "layout");
+}
+
+export async function enableShadowModeAction() {
+  const merchant = await requireSessionMerchant();
+  await enableShadowMode(merchant.id);
+  revalidatePath("/", "layout");
+}
+
+export async function disableShadowModeAction() {
+  const merchant = await requireSessionMerchant();
+  await disableShadowMode(merchant.id);
   revalidatePath("/", "layout");
 }
 

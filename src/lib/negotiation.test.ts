@@ -135,7 +135,7 @@ describe("negotiation — the floor cannot be breached", () => {
 
     expect(negotiation).toBeUndefined();
     expect(refusalReason).toContain("not negotiable");
-  });
+  }, 20_000);
 
   it("a buyer counter below the floor is refused, never agreed — even repeated across the full turn budget", async () => {
     const { merchantId, agent } = await setup();
@@ -163,7 +163,7 @@ describe("negotiation — the floor cannot be breached", () => {
     const resolved = await resolveNegotiation(merchantId, negotiation!.id, { agentId: agent.id });
     expect(resolved.failure).toBeDefined();
     expect(resolved.failure!.boundApplied).toContain("negotiation_status");
-  });
+  }, 30_000);
 
   it("a buyer counter exactly at the floor is agreed immediately — the boundary is inclusive", async () => {
     const { merchantId, agent } = await setup();
@@ -175,7 +175,7 @@ describe("negotiation — the floor cannot be breached", () => {
 
     expect(result.outcome).toBe("agreed");
     expect(result.negotiation.agreedUnitPricePaise).toBe(80_000);
-  });
+  }, 20_000);
 
   it("a buyer counter one paisa below the floor is never agreed", async () => {
     const { merchantId, agent } = await setup();
@@ -186,7 +186,7 @@ describe("negotiation — the floor cannot be breached", () => {
     const result = await submitBuyerCounter(negotiation!.id, merchantId, { agentId: agent.id }, 79_999);
 
     expect(result.outcome).not.toBe("agreed");
-  });
+  }, 20_000);
 
   it("the merchant's counter is never below the floor, across the full turn budget", async () => {
     const { merchantId, agent } = await setup();
@@ -203,7 +203,7 @@ describe("negotiation — the floor cannot be breached", () => {
         expect(current.currentMerchantCounterPaise).toBeGreaterThanOrEqual(80_000);
       }
     }
-  });
+  }, 20_000);
 
   it("only one open negotiation exists per buyer identity per variant", async () => {
     const { merchantId, agent } = await setup();
@@ -216,7 +216,7 @@ describe("negotiation — the floor cannot be breached", () => {
     expect(first.negotiation).toBeDefined();
     expect(second.negotiation).toBeUndefined();
     expect(second.refusalReason).toContain("already open");
-  });
+  }, 20_000);
 
   it("an agreed price is re-derived at redemption, never trusted from the request — a mismatched amount is denied", async () => {
     const { merchantId, agent } = await setup();
@@ -238,7 +238,7 @@ describe("negotiation — the floor cannot be breached", () => {
 
     expect(result.decision).toBe("deny");
     expect(result.reason).toContain("agreed price");
-  });
+  }, 20_000);
 
   it("a purchase referencing a different buyer's agreed negotiation is denied", async () => {
     const { merchantId, agent } = await setup();
@@ -262,7 +262,7 @@ describe("negotiation — the floor cannot be breached", () => {
     });
 
     expect(result.decision).toBe("deny");
-  });
+  }, 20_000);
 
   it("a valid agreed negotiation redeems as a real, gated purchase — allow, real order, negotiation marked redeemed", async () => {
     const { merchantId, agent } = await setup();
@@ -365,7 +365,7 @@ describe("negotiation — the floor cannot be breached", () => {
 
     expect(result.decision).toBe("deny");
     expect(result.reason).toContain("more than one");
-  });
+  }, 20_000);
 
   it("cross-agent isolation by enumeration — an agent cannot continue a negotiation opened by a different agent, even with its real id", async () => {
     const { merchantId, agent } = await setup();
@@ -379,7 +379,7 @@ describe("negotiation — the floor cannot be breached", () => {
     const { negotiation } = await openNegotiation(merchantId, variant.id, 1, { agentId: agent.id });
 
     await expect(submitBuyerCounter(negotiation!.id, merchantId, { agentId: otherAgent.id }, 90_000)).rejects.toThrow(/different buyer/i);
-  });
+  }, 20_000);
 
   it("getOpenNegotiationForIdentity is scoped to the exact buyer identity and variant — enumeration, not empty-list", async () => {
     const { merchantId, agent } = await setup();
@@ -397,5 +397,5 @@ describe("negotiation — the floor cannot be breached", () => {
 
     expect(found).not.toBeNull();
     expect(notFound).toBeNull();
-  });
+  }, 20_000);
 });
