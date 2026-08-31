@@ -365,3 +365,96 @@ a {
   0%, 100% { transform: translateY(0) scaleY(1); }
   50% { transform: translateY(-4px) scaleY(1.05); }
 }
+/* =============================================================
+   Layer 28 — live activity feed and stream indicator
+
+   These are the only animations in the product driven by a real
+   server event rather than by page load or hover: each one fires
+   because an audit_log row was genuinely written. Nothing here
+   loops as ambient decoration.
+   ============================================================= */
+
+@keyframes activity-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.activity-card {
+  animation: activity-card-in var(--dur) var(--ease-spring) both;
+}
+
+/* The card's own dismissal countdown. Duration is kept in step with
+   TOAST_TTL_MS in activity-feed.tsx — a bar that empties at a different
+   rate than the timer would be a small lie about when the card goes. */
+@keyframes activity-card-timer {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+.activity-card-timer {
+  transform-origin: left;
+  opacity: 0.45;
+  animation: activity-card-timer 9000ms linear both;
+}
+
+/* Slow ambient breath: the stream is connected and waiting. */
+@keyframes live-pulse-ambient {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.12;
+    transform: scale(1.9);
+  }
+}
+
+.live-pulse-ambient {
+  animation: live-pulse-ambient 2.8s var(--ease-in-out) infinite;
+}
+
+/* Sharp single flare: a decision just landed. */
+@keyframes live-pulse-flare {
+  0% {
+    opacity: 0.85;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(3.2);
+  }
+}
+
+.live-pulse-flare {
+  animation: live-pulse-flare 900ms var(--ease-out) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Content still arrives and still reads correctly — only the motion
+     goes. The timer bar holds at full rather than animating away; the
+     setTimeout that actually dismisses the card is unaffected. */
+  .activity-card {
+    animation: none;
+  }
+
+  .activity-card-timer {
+    animation: none;
+    transform: scaleX(1);
+  }
+
+  .live-pulse-ambient,
+  .live-pulse-flare {
+    animation: none;
+  }
+}

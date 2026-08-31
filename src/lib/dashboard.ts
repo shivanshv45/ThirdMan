@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { getRecentAuditEntries } from "@/lib/audit";
 import { decrypt } from "@/lib/crypto";
@@ -1055,3 +1055,76 @@ export async function getActiveReturnRequestCount(merchantId: string): Promise<n
   return Number(row?.count ?? 0);
 }
 
+
+// --- Layer 28: chart source rows ---
+
+/**
+ * The raw rows the dashboard's charts are shaped from. These return
+ * rows, not points: the bucketing, the cumulative arithmetic, and the
+ * honesty gate all live in chart-series.ts as pure functions so they
+ * can be tested without a database. Each query is merchant-scoped and
+ * window-bounded like every other read in this file.
+ */
+
+const CHART_WINDOW_DAYS = 30;
+
+function windowStart(days: number): Date {
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+}
+
+/** Captured payments in the window — the real money that actually moved, newest last. */
+export async function getCapturedMoneyRows(
+  merchantId: string,
+  days = CHART_WINDOW_DAYS,
+): Promise<Array<{ createdAt: Date; amountPaise: number }>> {
+  return db
+    .select({ createdAt: schema.moneyActions.createdAt, amountPaise: schema.moneyActions.amountPaise })
+    .from(schema.moneyActions)
+    .where(
+      and(
+        eq(schema.moneyActions.merchantId, merchantId),
+        eq(schema.moneyActions.status, "captured"),
+        gte(schema.moneyActions.createdAt, windowStart(days)),
+      ),
+    )
+    .orderBy(schema.moneyActions.createdAt);
+}
+
+/** Every logged decision in the window, for the allow/deny/escalate series. */
+export async function getDecisionRows(
+  merchantId: string,
+  days = CHART_WINDOW_DAYS,
+): Promise<Array<{ createdAt: Date; decision: string }>> {
+  return db
+    .select({ createdAt: schema.auditLog.createdAt, decision: schema.auditLog.decision })
+    .from(schema.auditLog)
+    .where(and(eq(schema.auditLog.merchantId, merchantId), gte(schema.auditLog.createdAt, windowStart(days))))
+    .orderBy(schema.auditLog.createdAt);
+}
+
+/**
+ * Recovered amounts in the window, dated by the attempt that succeeded.
+ * Joined through payment_failures because recovery_attempts carries no
+ * merchantId of its own — scoping has to come from the parent failure
+ * row or this would read across tenants.
+ */
+export async function getRecoveredMoneyRows(
+  merchantId: string,
+  days = CHART_WINDOW_DAYS,
+): Promise<Array<{ createdAt: Date; amountPaise: number }>> {
+  return db
+    .select({
+      createdAt: schema.recoveryAttempts.createdAt,
+      amountPaise: schema.recoveryAttempts.recoveredPaise,
+    })
+    .from(schema.recoveryAttempts)
+    .innerJoin(schema.paymentFailures, eq(schema.recoveryAttempts.paymentFailureId, schema.paymentFailures.id))
+    .where(
+      and(
+        eq(schema.paymentFailures.merchantId, merchantId),
+        eq(schema.recoveryAttempts.outcome, "succeeded"),
+        gte(schema.recoveryAttempts.createdAt, windowStart(days)),
+      ),
+    )
+    .orderBy(schema.recoveryAttempts.createdAt);
+}

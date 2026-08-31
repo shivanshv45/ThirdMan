@@ -8,15 +8,22 @@ import {
   getMoneyMovedStats,
   getDecisionCounts,
   getMoneyAtRiskSummary,
+  getCapturedMoneyRows,
+  getDecisionRows,
+  getRecoveredMoneyRows,
 } from "@/lib/dashboard";
+import { toCumulativeMoneySeries, toDecisionSeries, toCapUtilisation } from "@/lib/chart-series";
 import { getRecoveryStats } from "@/lib/recovery/attribution";
 import { getDecisionStats } from "@/lib/explainability";
 import { getSessionMerchant } from "@/lib/auth";
 import { approveEscalation, rejectEscalation } from "./actions";
 import { AuditTrail } from "./audit-trail";
 import { formatPaise as rupees } from "@/lib/money";
-import { PageHeader, Surface, MoneyStat, Stat, Button, DecisionComposition } from "@/components/ui";
+import { PageHeader, Surface, MoneyStat, Stat, Button, DecisionComposition, MoneyFlowChart, DecisionActivityChart, CapUtilisationChart } from "@/components/ui";
 import { MoneyAtRisk } from "./money-at-risk";
+
+/** The window every chart on this page shares, so they read against one another. */
+const CHART_WINDOW_DAYS = 30;
 
 function formatDate(d: Date): string {
   return new Date(d).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
@@ -26,7 +33,7 @@ export default async function DashboardPage() {
   const merchant = await getSessionMerchant();
   if (!merchant) redirect("/login");
 
-  const [auditTrail, escalations, razorpayStatus, agents, moneyMoved, decisionCounts, recoveryStats, decisionStats, moneyAtRisk] =
+  const [auditTrail, escalations, razorpayStatus, agents, moneyMoved, decisionCounts, recoveryStats, decisionStats, moneyAtRisk, capturedRows, decisionRows, recoveredRows] =
     await Promise.all([
       getAuditTrail(merchant.id, 100),
       getPendingEscalations(merchant.id),
@@ -37,7 +44,17 @@ export default async function DashboardPage() {
       getRecoveryStats(merchant.id),
       getDecisionStats(merchant.id),
       getMoneyAtRiskSummary(merchant.id),
+      getCapturedMoneyRows(merchant.id, CHART_WINDOW_DAYS),
+      getDecisionRows(merchant.id, CHART_WINDOW_DAYS),
+      getRecoveredMoneyRows(merchant.id, CHART_WINDOW_DAYS),
     ]);
+
+  // Shaped on the server so the client bundle never sees the raw rows,
+  // and so the honesty gate is decided from real data before render.
+  const movedSeries = toCumulativeMoneySeries(capturedRows, CHART_WINDOW_DAYS);
+  const recoveredSeries = toCumulativeMoneySeries(recoveredRows, CHART_WINDOW_DAYS);
+  const decisionSeries = toDecisionSeries(decisionRows, CHART_WINDOW_DAYS);
+  const capRows = toCapUtilisation(agents);
 
   const hasAgentWithCap = agents.some((a) => a.cap !== null);
   const isFirstRun = !razorpayStatus.connected || agents.length === 0 || !hasAgentWithCap;
@@ -223,6 +240,30 @@ export default async function DashboardPage() {
             </div>
           </div>
         </Surface>
+      </section>
+
+      {/* Charts sit between the headline numbers and the raw stream: they
+          are the same facts at a different resolution. Each one renders a
+          curve only when chart-series.ts's gate says there is genuinely
+          enough activity to draw one honestly. */}
+      <section className="grid gap-6 mb-16">
+        <Surface variant="glass" className="p-6">
+          <MoneyFlowChart
+            moved={movedSeries}
+            recovered={recoveredSeries}
+            windowDays={CHART_WINDOW_DAYS}
+            transactionCount={capturedRows.length + recoveredRows.length}
+          />
+        </Surface>
+
+        <div className="grid lg:grid-cols-2 gap-6">
+          <Surface variant="glass" className="p-6">
+            <DecisionActivityChart points={decisionSeries} windowDays={CHART_WINDOW_DAYS} />
+          </Surface>
+          <Surface variant="glass" className="p-6">
+            <CapUtilisationChart rows={capRows} />
+          </Surface>
+        </div>
       </section>
 
       <AuditTrail initialEntries={auditTrail} />

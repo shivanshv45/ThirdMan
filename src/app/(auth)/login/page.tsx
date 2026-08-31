@@ -113,7 +113,7 @@ export default async function LoginPage({
               type="email"
               required
               autoComplete="email"
-              placeholder="alan.turing@example.com"
+              placeholder="third.man@example.com"
               className="w-full h-[48px] rounded-xl px-4 text-[15px] outline-none transition-all duration-200"
               style={{
                 background: "rgba(255,255,255,0.04)",

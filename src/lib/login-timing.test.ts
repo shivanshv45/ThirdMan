@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { hashPassword } from "@/lib/password";
-import { verifyLoginCredentials } from "@/app/login/actions";
+import { verifyLoginCredentials } from "@/app/(auth)/login/actions";
 
 /**
  * Layer 26-7: login timing must not distinguish a missing account from

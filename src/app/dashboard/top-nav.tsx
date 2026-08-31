@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { LivePulse } from "@/components/ui/live-pulse";
 import { useState } from "react";
 import {
   LayoutDashboard,
@@ -280,6 +281,12 @@ export function TopNav({
                 </Link>
               );
             })}
+
+            {/* The stream indicator lives with the sub-nav so it is on
+                screen on every dashboard page, not just the Overview. */}
+            <div className="flex items-center shrink-0 pl-2 pb-1.5 self-center">
+              <LivePulse />
+            </div>
           </div>
         )}
       </header>
@@ -290,6 +297,8 @@ export function TopNav({
           <Link href="/dashboard" className="text-lg font-bold tracking-tight text-on-ink">
             ThirdMan
           </Link>
+          <div className="flex items-center gap-2">
+          <LivePulse />
           <button
             type="button"
             onClick={() => setMobileOpen((v) => !v)}
@@ -299,6 +308,7 @@ export function TopNav({
           >
             {mobileOpen ? <X size={20} /> : <Menu size={20} />}
           </button>
+          </div>
         </div>
 
         {/* Active group tabs on mobile */}

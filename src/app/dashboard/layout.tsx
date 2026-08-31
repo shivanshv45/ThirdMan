@@ -7,7 +7,7 @@ import { logout } from "./actions";
 import { TopNav, type NavGroup } from "./top-nav";
 import { KillSwitchBanner } from "./kill-switch-banner";
 import { ShadowModeBanner } from "./shadow-mode-banner";
-import { Reveal } from "@/components/ui";
+import { Reveal, LiveActivityProvider, ActivityFeed } from "@/components/ui";
 import { BackgroundVideo } from "@/components/ui/background-video";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -132,6 +132,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
   ];
 
   return (
+    <LiveActivityProvider>
     <div className="flex flex-col h-screen w-full overflow-hidden text-on-ink bg-ink relative">
       {/* Background Video Layer */}
       <div className="absolute inset-0 z-0 opacity-40">
@@ -157,7 +158,12 @@ export default async function DashboardLayout({ children }: { children: React.Re
           {children}
         </div>
       </main>
+
+      {/* The agent's work, visible on every page rather than only on the
+          Overview's audit trail. Driven by the real decision stream. */}
+      <ActivityFeed />
       </div>
     </div>
+    </LiveActivityProvider>
   );
 }
