@@ -1,7 +1,4 @@
-{
-  "name": "thirdman-audit",
-  "displayName": "Thirdman Agent-Readiness Audit",
-  "description": "Runs the thirdman audit engine on your open workspace — findings in the Problems panel anchored to real file/line positions, generated files reviewed as a diff, readiness score in the status bar.",
+  "name": "thirdman-agent-audit",
   "version": "0.1.0",
   "private": true,
   "publisher": "ShivanshVerma",
