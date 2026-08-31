@@ -38,8 +38,24 @@ const ZAI_MODEL = "glm-4.6";
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const ZAI_BASE_URL = "https://api.z.ai/api/paas/v4";
 
-const groq = new Groq({ apiKey: env.GROQ_API_KEY });
-const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY);
+// Lazy singletons rather than constructed at module load: this file is
+// imported by enough routes that it can end up in the graph Next.js
+// statically walks during a build's page-data collection step, before
+// any request (and before a build environment necessarily has real
+// provider keys) — see src/lib/env.ts's own lazy-proxy fix for the same
+// class of issue. Constructing the client on first real call instead
+// keeps every existing call site unchanged.
+let _groq: Groq | undefined;
+function getGroq(): Groq {
+  if (!_groq) _groq = new Groq({ apiKey: env.GROQ_API_KEY });
+  return _groq;
+}
+
+let _genAI: GoogleGenerativeAI | undefined;
+function getGenAI(): GoogleGenerativeAI {
+  if (!_genAI) _genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY);
+  return _genAI;
+}
 
 export type LlmProvider = "groq" | "gemini" | "nvidia" | "openrouter" | "zai";
 
@@ -110,7 +126,7 @@ async function callGroq(input: CompletionInput): Promise<{ text: string; usage?:
   return withSpan("chat", { "gen_ai.system": "groq", "gen_ai.request.model": modelId }, async (span) => {
     const completion = await withTimeout(
       "groq.chat.completions.create",
-      groq.chat.completions.create({
+      getGroq().chat.completions.create({
         model: modelId,
         messages: [
           ...(input.systemPrompt
@@ -137,7 +153,7 @@ async function callGroq(input: CompletionInput): Promise<{ text: string; usage?:
 
 async function callGemini(input: CompletionInput): Promise<{ text: string; usage?: TokenUsage; modelId: string }> {
   return withSpan("chat", { "gen_ai.system": "gemini", "gen_ai.request.model": GEMINI_MODEL }, async (span) => {
-    const model = genAI.getGenerativeModel({
+    const model = getGenAI().getGenerativeModel({
       model: GEMINI_MODEL,
       ...(input.systemPrompt ? { systemInstruction: input.systemPrompt } : {}),
     });

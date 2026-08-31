@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono, Fraunces, Archivo_Black } from "next/font/google";
-import { env } from "@/lib/env";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -32,15 +31,23 @@ const archivoBlack = Archivo_Black({
 // VERCEL_URL is set automatically by Vercel's own build environment, so
 // this resolves correctly the moment this app is deployed there without
 // any manual configuration; it only falls back to localhost in dev.
-const siteUrl = env.VERCEL_URL ? `https://${env.VERCEL_URL}` : "http://localhost:3000";
+//
+// Reads process.env directly rather than importing { env } from
+// src/lib/env.ts: this runs at module load for every route (Next.js
+// statically collects metadata during the build's page-data step, e.g.
+// for /_not-found), and this value is cosmetic, not a secret — it
+// doesn't need the full required-vars validation env.ts otherwise
+// enforces, and shouldn't force a build to have every production
+// credential present just to compute a URL for social-share tags.
+const siteUrl = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000";
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
   title: {
-    default: "ThirdMan — Agentic Commerce for Razorpay Merchants",
+    default: "ThirdMan — Agentic Commerce for AI Buyers",
     template: "%s — ThirdMan",
   },
-  description: "Bounded, gated money actions for AI buyer agents — spend caps, an audit trail, and automatic revenue recovery, built on your own Razorpay account.",
+  description: "Bounded, gated money actions for AI buyer agents — spend caps, an audit trail, and automatic revenue recovery, built on your own payment account.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

@@ -93,7 +93,30 @@ function loadEnv(): Env {
   return result.data;
 }
 
-export const env = loadEnv();
+// Validated lazily, on first property access, not at module import time.
+// Every route in this app imports { env } through the root layout, and
+// Next.js's build step statically evaluates that import graph to collect
+// page data (e.g. for /_not-found) before a single request is served —
+// so an eager throw here fails the *build* on a platform whose build
+// step legitimately has no runtime secrets yet (a Cloud Run/Buildpacks
+// build stage, distinct from the deployed container's own env). The
+// fail-loud behavior this file is built around still holds: the first
+// real read of any env.* value in a request path throws exactly the
+// same error, just deferred to when it's actually needed.
+let cached: Env | undefined;
+function resolveEnv(): Env {
+  if (!cached) cached = loadEnv();
+  return cached;
+}
+
+export const env = new Proxy({} as Env, {
+  get(_target, prop: string | symbol) {
+    return resolveEnv()[prop as keyof Env];
+  },
+  has(_target, prop: string | symbol) {
+    return prop in resolveEnv();
+  },
+});
 
 /**
  * The one place this codebase resolves its own public URL — same
