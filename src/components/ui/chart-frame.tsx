@@ -35,7 +35,7 @@ export function ChartFrame({
   children: ReactNode;
 }) {
   return (
-    <div className="flex flex-col h-full">
+    <div>
       <div className="flex items-start justify-between gap-4 flex-wrap mb-1">
         <div>
           <h3 className="text-[var(--t-h4)] font-medium tracking-tight text-on-ink">{title}</h3>
@@ -45,7 +45,12 @@ export function ChartFrame({
       </div>
 
       {enough ? (
-        <div className="mt-5 flex-1 min-h-0" style={{ height }}>
+        // An explicit pixel height, not flex-fill: ResponsiveContainer
+        // measures its parent's real height to size the SVG, and a
+        // flex-1/h-full chain here has nothing above it that resolves to
+        // an actual height (Surface is a plain block), so it silently
+        // collapses to 0 and the chart renders nothing.
+        <div className="mt-5" style={{ height, width: "100%" }}>
           {children}
         </div>
       ) : (

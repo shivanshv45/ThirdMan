@@ -1,9 +1,9 @@
 import { redirect } from "next/navigation";
 import { getSessionMerchant } from "@/lib/auth";
-import { getRewardSettingsForDashboard, getRewardLedgerStats, getAiCreditTiersForDashboard } from "@/lib/dashboard";
+import { getRewardSettingsForDashboard, getRewardLedgerStats, getAiCreditTiersForDashboard, getRewardCoinRows } from "@/lib/dashboard";
 import { setRewardSettings, createAiCreditTier, toggleAiCreditTier } from "./actions";
 import { TIER_PRESETS } from "./tier-presets";
-import { PageHeader, Surface, Stat, Field, Input, Select, Button, EmptyState } from "@/components/ui";
+import { PageHeader, Surface, Stat, Field, Input, Select, Button, EmptyState, DonutChart, CoinFlowChart } from "@/components/ui";
 
 export default async function RewardsPage({
   searchParams,
@@ -15,10 +15,11 @@ export default async function RewardsPage({
 
   const { error } = await searchParams;
 
-  const [settings, stats, tiers] = await Promise.all([
+  const [settings, stats, tiers, coinRows] = await Promise.all([
     getRewardSettingsForDashboard(merchant.id),
     getRewardLedgerStats(merchant.id),
     getAiCreditTiersForDashboard(merchant.id),
+    getRewardCoinRows(merchant.id),
   ]);
   const availablePresets = TIER_PRESETS.filter((p) => !tiers.some((t) => t.modelId === p.modelId));
 
@@ -46,6 +47,30 @@ export default async function RewardsPage({
           {stats.ledgerEntryCount} ledger entries total. Every entry ties back to a real, gated money action.
         </p>
       </Surface>
+
+      {/* The coin program's two real questions: how the issued supply
+          splits between spent and still-outstanding, and how both sides
+          have moved over the window. Both read the same ledger. */}
+      <section className="grid lg:grid-cols-2 gap-6">
+        <Surface variant="glass" className="p-6">
+          <DonutChart
+            title="Where issued coins stand"
+            description="Every coin this program has issued is either already redeemed against a purchase or still outstanding as a buyer's balance."
+            centreLabel="issued"
+            centreValue={String(stats.totalIssuedCoins)}
+            slices={[
+              { key: "redeemed", label: "Redeemed", value: stats.totalRedeemedCoins, color: "var(--allow)" },
+              { key: "outstanding", label: "Outstanding", value: stats.netOutstandingCoins, color: "var(--accent)" },
+            ]}
+            emptyTitle="No coins issued yet"
+            emptyDescription="Coins are issued on a real captured purchase once the program below is enabled."
+          />
+        </Surface>
+
+        <Surface variant="glass" className="p-6">
+          <CoinFlowChart rows={coinRows} windowDays={30} />
+        </Surface>
+      </section>
 
       <Surface variant="raised" className="p-5">
         <h2 className="text-[var(--t-h4)] font-medium text-on-ink mb-1">

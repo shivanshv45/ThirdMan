@@ -1128,3 +1128,31 @@ export async function getRecoveredMoneyRows(
     )
     .orderBy(schema.recoveryAttempts.createdAt);
 }
+
+/**
+ * Reward-coin ledger rows in the window, for the coin-flow chart.
+ * Issuance and redemption arrive as separate signed deltas so the chart
+ * can show both directions without re-deriving either.
+ */
+export async function getRewardCoinRows(
+  merchantId: string,
+  days = CHART_WINDOW_DAYS,
+): Promise<Array<{ createdAt: Date; coinsDelta: number }>> {
+  return db
+    .select({ createdAt: schema.rewardCoinLedger.createdAt, coinsDelta: schema.rewardCoinLedger.coinsDelta })
+    .from(schema.rewardCoinLedger)
+    .where(and(eq(schema.rewardCoinLedger.merchantId, merchantId), gte(schema.rewardCoinLedger.createdAt, windowStart(days))))
+    .orderBy(schema.rewardCoinLedger.createdAt);
+}
+
+/** Treasury ledger rows in the window, for the cumulative treasury-funding chart. */
+export async function getTreasuryLedgerRows(
+  merchantId: string,
+  days = CHART_WINDOW_DAYS,
+): Promise<Array<{ createdAt: Date; amountPaise: number }>> {
+  return db
+    .select({ createdAt: schema.treasuryLedger.createdAt, amountPaise: schema.treasuryLedger.amountPaise })
+    .from(schema.treasuryLedger)
+    .where(and(eq(schema.treasuryLedger.merchantId, merchantId), gte(schema.treasuryLedger.createdAt, windowStart(days))))
+    .orderBy(schema.treasuryLedger.createdAt);
+}

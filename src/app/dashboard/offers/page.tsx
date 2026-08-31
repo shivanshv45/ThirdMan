@@ -4,7 +4,7 @@ import { getOfferDecisionStats, getRecentOfferDecisions } from "@/lib/dashboard"
 import { getMerchantBundles, getMerchantVariantsForBundling } from "@/lib/bundles";
 import { formatPaise } from "@/lib/money";
 import { createBundle, archiveBundle } from "./actions";
-import { PageHeader, Surface, Stat, DetailsToggle, Input, Button, EmptyState } from "@/components/ui";
+import { PageHeader, Surface, Stat, DetailsToggle, Input, Button, EmptyState, FunnelChart } from "@/components/ui";
 
 function formatDate(d: Date | string): string {
   return new Date(d).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
@@ -52,6 +52,20 @@ export default async function OffersPage({
         <p className="text-xs text-on-ink-faint mt-4 max-w-[var(--measure)]">
           &ldquo;No offer&rdquo; means the engine deliberately refused — nothing eligible, or nothing cleared the margin floor. That is a success, not a gap.
         </p>
+      </Surface>
+
+      <Surface variant="glass" className="p-6">
+        <FunnelChart
+          title="Offer funnel"
+          description="Every engine run, and how far it got. The gap between runs and offers is the margin floor and eligibility rules doing their job in code, before a model ever ranks anything."
+          stages={[
+            { key: "runs", label: "Engine runs", value: stats.totalRuns, color: "var(--on-ink-faint)" },
+            { key: "offered", label: "An offer was made", value: stats.offered, color: "var(--accent)" },
+            { key: "accepted", label: "Buyer accepted", value: stats.accepted, color: "var(--allow)" },
+          ]}
+          emptyTitle="The engine has not run yet"
+          emptyDescription="It runs alongside a real checkout — each run is logged here whether or not it produced an offer."
+        />
       </Surface>
 
       <Surface variant="raised" className="p-5">

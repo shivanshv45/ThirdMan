@@ -3,7 +3,7 @@ import { getSessionMerchant } from "@/lib/auth";
 import { getRecoveryStats, getFailureQueue } from "@/lib/recovery/attribution";
 import { loadDemoBatchAction, runRecoveryBatchAction } from "./actions";
 import { FailureQueue } from "./failure-queue";
-import { PageHeader, Surface, MoneyStat, Stat, Button, formatPaiseGrouped } from "@/components/ui";
+import { PageHeader, Surface, MoneyStat, Stat, Button, formatPaiseGrouped, FunnelChart, RankedBarChart, ReadinessGauge } from "@/components/ui";
 
 const RULE_LABELS: Record<string, string> = {
   already_resolved: "Already resolved",
@@ -85,6 +85,64 @@ export default async function RecoveryPage() {
           against them is real: it passes through the same spend-cap gate as any other agent purchase, creates a
           real Razorpay order, and is verified before anything counts as recovered.
         </p>
+      </Surface>
+
+      {/* The Track 03 story in one view: what came in, what was actually
+          chased, and which deterministic rule stopped the rest. Every
+          figure below is the same real stats object the numbers above use. */}
+      <section className="grid lg:grid-cols-[1.4fr_1fr] gap-6">
+        <Surface variant="glass" className="p-6">
+          <FunnelChart
+            title="Recovery funnel"
+            description="Every failed payment that entered the pipeline, and how far it got. The drop between stages is a deterministic rule firing, not an attempt silently failing."
+            stages={[
+              {
+                key: "failed",
+                label: "Failed payments received",
+                value: stats.failureCount,
+                color: "var(--deny)",
+                caption: formatPaiseGrouped(stats.totalFailedPaise),
+              },
+              {
+                key: "attempted",
+                label: "Recovery attempted",
+                value: stats.attemptsMade,
+                color: "var(--escalate)",
+              },
+              {
+                key: "recovered",
+                label: "Recovered",
+                value: stats.recoveredCount,
+                color: "var(--allow)",
+                caption: formatPaiseGrouped(stats.recoveredPaise),
+              },
+            ]}
+            emptyTitle="No failed payments yet"
+            emptyDescription="Load a demo batch above, or connect a live checkout, and the funnel fills in as real failures arrive."
+          />
+        </Surface>
+
+        <Surface variant="glass" className="p-6 flex flex-col items-center justify-center gap-3">
+          <ReadinessGauge score={stats.recoveryRatePercent} />
+          <p className="text-xs text-on-ink-dim text-center max-w-[28ch]">
+            {formatPaiseGrouped(stats.recoveredPaise)} recovered of {formatPaiseGrouped(stats.totalFailedPaise)} that failed.
+          </p>
+        </Surface>
+      </section>
+
+      <Surface variant="glass" className="p-6">
+        <RankedBarChart
+          title="Why recovery stopped"
+          description="Each bar is a deterministic stopping rule that fired instead of spending money chasing a payment. Restraint is the feature here, not a gap."
+          bars={stoppedByRuleEntries.map(([rule, count]) => ({
+            key: rule,
+            label: RULE_LABELS[rule] ?? rule,
+            value: count,
+            color: rule === "high_value_requires_human" ? "var(--escalate)" : "var(--deny)",
+          }))}
+          emptyTitle="No stopping rule has fired yet"
+          emptyDescription="When the pipeline declines to chase a payment, the rule that decided it appears here."
+        />
       </Surface>
 
       <section>

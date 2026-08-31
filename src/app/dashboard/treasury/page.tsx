@@ -4,7 +4,7 @@ import { getTreasuryOverview } from "@/lib/treasury";
 import { listRewardRules } from "@/lib/reward-rules";
 import { getUseCaseBudgetStatus, getRoutingSavings, type ModelUseCase } from "@/lib/model-router";
 import { getRecentTreasuryLedgerEntries } from "@/lib/dashboard";
-import { PageHeader, Surface, MoneyStat, Stat, Field, Input, Select, Button, EmptyState, Table, Thead, Tr, Th, Td } from "@/components/ui";
+import { PageHeader, Surface, MoneyStat, Stat, Field, Input, Select, Button, EmptyState, Table, Thead, Tr, Th, Td, DonutChart, RankedBarChart, formatPaiseGrouped } from "@/components/ui";
 import {
   saveTreasurySettings,
   createRewardRule,
@@ -104,6 +104,44 @@ export default async function TreasuryPage({
           Every figure above is the real sum of treasury_ledger rows for this merchant — funded only on a genuine captured payment, never a hold or an authorization.
         </p>
       </Surface>
+
+      {/* The same three balances as a partition, plus where the merchant's
+          own AI budget is actually going. Both read from the real ledger. */}
+      <section className="grid lg:grid-cols-2 gap-6">
+        <Surface variant="glass" className="p-6">
+          <DonutChart
+            title="How the pool splits"
+            description="The three buckets a captured payment's contribution divides into, at their real current balances."
+            centreLabel="pool total"
+            centreValue={formatPaiseGrouped(overview.buyerCreditsPaise + overview.merchantAiBudgetPaise + overview.reservePaise)}
+            slices={[
+              { key: "buyer", label: "Buyer credits", value: overview.buyerCreditsPaise, color: "var(--accent)", display: formatPaiseGrouped(overview.buyerCreditsPaise) },
+              { key: "merchant", label: "Merchant AI budget", value: overview.merchantAiBudgetPaise, color: "var(--allow)", display: formatPaiseGrouped(overview.merchantAiBudgetPaise) },
+              { key: "reserve", label: "Reserve", value: overview.reservePaise, color: "var(--escalate)", display: formatPaiseGrouped(overview.reservePaise) },
+            ]}
+            emptyTitle="The pool is empty"
+            emptyDescription="It funds on a real captured payment once an allocation rate is set below."
+          />
+        </Surface>
+
+        <Surface variant="glass" className="p-6">
+          <RankedBarChart
+            title="AI spend by use case"
+            description="What the merchant AI budget has actually been drawn against, per configured use case."
+            bars={budgetStatuses
+              .filter((b) => b.configured)
+              .map((b) => ({
+                key: b.useCase,
+                label: USE_CASES.find((u) => u.value === b.useCase)?.label ?? b.useCase,
+                value: b.spentPaise,
+                display: `${formatPaiseGrouped(b.spentPaise)} of ${formatPaiseGrouped(b.budgetPaise)}`,
+                color: b.remainingPaise === 0 ? "var(--deny)" : "var(--accent)",
+              }))}
+            emptyTitle="No use-case budget configured yet"
+            emptyDescription="Set a per-use-case budget below and real model-call costs start accruing against it."
+          />
+        </Surface>
+      </section>
 
       <Surface variant="raised" className="p-5">
         <h2 className="text-[var(--t-h4)] font-medium text-on-ink mb-1">{settings ? "Allocation policy" : "The Treasury is not enabled"}</h2>

@@ -57,16 +57,29 @@ export default async function DashboardLayout({ children }: { children: React.Re
       ],
     },
     {
+      // The coin program and the treasury that funds it are one product
+      // idea, not two unrelated pages filed under Selling: a buyer earns
+      // coins on a capture and redeems them for AI credits, and the
+      // treasury is where the money backing that comes from.
+      heading: "Rewards",
+      items: [
+        { href: "/dashboard/rewards", label: "Coin program" },
+        { href: "/dashboard/treasury", label: "AI Treasury" },
+      ],
+    },
+    {
       heading: "Selling",
       items: [
         { href: "/dashboard/products", label: "Products" },
         { href: "/dashboard/offers", label: "Offers" },
         { href: "/dashboard/negotiations", label: "Negotiations" },
-        { href: "/dashboard/rewards", label: "Rewards" },
-        { href: "/dashboard/treasury", label: "AI Treasury" },
       ],
     },
     {
+      // Policies and Agent terms sit here rather than under a config
+      // heading because they are bounds the gate reads at decision time,
+      // not preferences — the same place a merchant looks to check that
+      // a limit is real belongs next to the decisions it produced.
       heading: "Trust",
       items: [
         { href: "/dashboard/explain", label: "Decisions" },
@@ -80,6 +93,8 @@ export default async function DashboardLayout({ children }: { children: React.Re
             : undefined,
         },
         { href: "/dashboard/preflight", label: "Preflight" },
+        { href: "/dashboard/policies", label: "Policies" },
+        { href: "/dashboard/agent-terms", label: "Agent terms" },
       ],
     },
     {
@@ -103,6 +118,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
           badge: activeTheatreRunCount,
           badgeTooltip: activeTheatreRunCount ? `${activeTheatreRunCount} buyer-agent run${activeTheatreRunCount === 1 ? "" : "s"} still in progress` : undefined,
         },
+        { href: "/dashboard/agents", label: "Agents & caps" },
         {
           href: "/dashboard/control",
           label: "Kill Switch",
@@ -112,20 +128,15 @@ export default async function DashboardLayout({ children }: { children: React.Re
       ],
     },
     {
-      heading: "Config",
-      items: [
-        { href: "/dashboard/setup-conversation", label: "Setup convo" },
-        { href: "/dashboard/agents", label: "Agents & caps" },
-        { href: "/dashboard/agent-terms", label: "Agent terms" },
-        { href: "/dashboard/policies", label: "Policies" },
-      ],
-    },
-    {
-      heading: "Platform",
+      // Everything about wiring this product into a merchant's own
+      // stack — their site, their store platform, their codebase — plus
+      // the account settings those connections depend on.
+      heading: "Connect",
       items: [
         { href: "/dashboard/embed", label: "Embed on site" },
-        { href: "/dashboard/cli", label: "Codebase CLI" },
         { href: "/dashboard/integrations", label: "Integrations" },
+        { href: "/dashboard/cli", label: "Codebase CLI" },
+        { href: "/dashboard/setup-conversation", label: "Setup convo" },
         { href: "/dashboard/settings", label: "Settings" },
       ],
     },

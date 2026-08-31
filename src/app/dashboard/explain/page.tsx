@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { getSessionMerchant } from "@/lib/auth";
 import { getUnifiedDecisions, getDecisionStats, type DecisionSource, type DecisionKind } from "@/lib/explainability";
 import { DecisionList } from "./decision-list";
-import { PageHeader, Surface, Stat, EmptyState, Select } from "@/components/ui";
+import { PageHeader, Surface, Stat, EmptyState, Select, RankedBarChart, DonutChart } from "@/components/ui";
 
 const SOURCE_FILTERS: { value: DecisionSource | "all"; label: string }[] = [
   { value: "all", label: "All sources" },
@@ -81,6 +81,41 @@ export default async function ExplainPage({
           ))}
         </dl>
       </Surface>
+
+      {/* Two readings of the same decisions: which subsystem refuses most,
+          and how much of the total was decided by arithmetic alone. The
+          second is the graded "where you chose not to use AI" claim. */}
+      <section className="grid lg:grid-cols-2 gap-6">
+        <Surface variant="glass" className="p-6">
+          <RankedBarChart
+            title="Refusals by subsystem"
+            description="Which part of the system declined, across the gate, the offer engine, and revenue recovery."
+            bars={Object.entries(stats.bySource).map(([src, count]) => ({
+              key: src,
+              label: src.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase()),
+              value: count,
+              color: "var(--deny)",
+            }))}
+            emptyTitle="Nothing has been refused yet"
+            emptyDescription="Each refusal is recorded with the bound that caused it, and grouped here by which subsystem decided."
+          />
+        </Surface>
+
+        <Surface variant="glass" className="p-6">
+          <DonutChart
+            title="Arithmetic vs. a model's judgment"
+            description="Every decision this system made, split by whether code alone decided it or a model was consulted at all."
+            centreLabel="decisions"
+            centreValue={String(totalDecided)}
+            slices={[
+              { key: "deterministic", label: "Arithmetic, no model", value: stats.deterministicCount, color: "var(--allow)" },
+              { key: "model", label: "A model's judgment", value: stats.modelInfluencedCount, color: "var(--accent)" },
+            ]}
+            emptyTitle="No decisions recorded yet"
+            emptyDescription="Once the gate starts deciding, the split between code and model appears here."
+          />
+        </Surface>
+      </section>
 
       <section>
         <form className="flex flex-wrap gap-3 mb-4" method="get">

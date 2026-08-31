@@ -11,6 +11,7 @@ import {
   getCapturedMoneyRows,
   getDecisionRows,
   getRecoveredMoneyRows,
+  getRewardLedgerStats,
 } from "@/lib/dashboard";
 import { toCumulativeMoneySeries, toDecisionSeries, toCapUtilisation } from "@/lib/chart-series";
 import { getRecoveryStats } from "@/lib/recovery/attribution";
@@ -33,7 +34,7 @@ export default async function DashboardPage() {
   const merchant = await getSessionMerchant();
   if (!merchant) redirect("/login");
 
-  const [auditTrail, escalations, razorpayStatus, agents, moneyMoved, decisionCounts, recoveryStats, decisionStats, moneyAtRisk, capturedRows, decisionRows, recoveredRows] =
+  const [auditTrail, escalations, razorpayStatus, agents, moneyMoved, decisionCounts, recoveryStats, decisionStats, moneyAtRisk, capturedRows, decisionRows, recoveredRows, rewardStats] =
     await Promise.all([
       getAuditTrail(merchant.id, 100),
       getPendingEscalations(merchant.id),
@@ -47,6 +48,7 @@ export default async function DashboardPage() {
       getCapturedMoneyRows(merchant.id, CHART_WINDOW_DAYS),
       getDecisionRows(merchant.id, CHART_WINDOW_DAYS),
       getRecoveredMoneyRows(merchant.id, CHART_WINDOW_DAYS),
+      getRewardLedgerStats(merchant.id),
     ]);
 
   // Shaped on the server so the client bundle never sees the raw rows,
@@ -265,6 +267,34 @@ export default async function DashboardPage() {
           </Surface>
         </div>
       </section>
+
+      {/* The reward loop, surfaced here rather than only inside its own
+          section: a buyer earning coins on a capture and spending them
+          again is a money action like any other, and belongs on the page
+          that shows money moving. */}
+      {rewardStats.ledgerEntryCount > 0 && (
+        <Surface variant="glass" className="p-6 mb-16">
+          <div className="flex flex-wrap items-start justify-between gap-4 mb-5">
+            <div>
+              <h3 className="text-[var(--t-h4)] font-medium tracking-tight text-on-ink">Reward coins</h3>
+              <p className="text-sm text-on-ink-dim mt-1 max-w-[52ch]">
+                Buyers earn coins on a captured purchase and redeem them against a future one, or against AI credits.
+              </p>
+            </div>
+            <Link
+              href="/dashboard/rewards"
+              className="text-sm text-accent hover:text-accent-bright underline underline-offset-2 shrink-0"
+            >
+              Open the coin program
+            </Link>
+          </div>
+          <div className="grid grid-cols-3 gap-6">
+            <Stat label="Issued" value={rewardStats.totalIssuedCoins} tone="allow" />
+            <Stat label="Redeemed" value={rewardStats.totalRedeemedCoins} tone="accent" />
+            <Stat label="Outstanding" value={rewardStats.netOutstandingCoins} />
+          </div>
+        </Surface>
+      )}
 
       <AuditTrail initialEntries={auditTrail} />
     </div>

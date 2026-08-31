@@ -28,6 +28,11 @@ import {
   Power,
   Menu,
   X,
+  ListChecks,
+  Terminal,
+  MessageSquarePlus,
+  Plug,
+  PackageOpen,
   type LucideIcon,
 } from "lucide-react";
 
@@ -53,6 +58,11 @@ const ICONS: Record<string, LucideIcon> = {
   "/dashboard/policies": Scale,
   "/dashboard/embed": Code,
   "/dashboard/settings": Settings,
+  "/dashboard/tasks": ListChecks,
+  "/dashboard/cli": Terminal,
+  "/dashboard/setup-conversation": MessageSquarePlus,
+  "/dashboard/integrations": Plug,
+  "/dashboard/returns": PackageOpen,
 };
 
 export interface NavItem {
