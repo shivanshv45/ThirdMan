@@ -22,25 +22,32 @@ interface ProviderConfig {
   scope: string;
 }
 
-const PROVIDERS: Record<OAuthProvider, ProviderConfig> = {
-  google: {
-    clientId: env.GOOGLE_CLIENT_ID,
-    clientSecret: env.GOOGLE_CLIENT_SECRET,
-    authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
-    tokenUrl: "https://oauth2.googleapis.com/token",
-    scope: "openid email profile",
-  },
-  github: {
-    clientId: env.GITHUB_CLIENT_ID,
-    clientSecret: env.GITHUB_CLIENT_SECRET,
-    authorizeUrl: "https://github.com/login/oauth/authorize",
-    tokenUrl: "https://github.com/login/oauth/access_token",
-    scope: "read:user user:email",
-  },
-};
+// A function, not a module-level object literal: reading env.* at module
+// evaluation time is exactly what src/lib/env.ts's lazy proxy is meant to
+// avoid triggering during a build's static page-data collection. Called
+// fresh each time rather than cached, since these are just optional
+// strings, not anything worth memoizing.
+function getProviders(): Record<OAuthProvider, ProviderConfig> {
+  return {
+    google: {
+      clientId: env.GOOGLE_CLIENT_ID,
+      clientSecret: env.GOOGLE_CLIENT_SECRET,
+      authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      scope: "openid email profile",
+    },
+    github: {
+      clientId: env.GITHUB_CLIENT_ID,
+      clientSecret: env.GITHUB_CLIENT_SECRET,
+      authorizeUrl: "https://github.com/login/oauth/authorize",
+      tokenUrl: "https://github.com/login/oauth/access_token",
+      scope: "read:user user:email",
+    },
+  };
+}
 
 export function isProviderConfigured(provider: OAuthProvider): boolean {
-  const config = PROVIDERS[provider];
+  const config = getProviders()[provider];
   return !!config.clientId && !!config.clientSecret;
 }
 
@@ -49,7 +56,7 @@ function redirectUri(provider: OAuthProvider): string {
 }
 
 export function buildAuthorizeUrl(provider: OAuthProvider, state: string): string {
-  const config = PROVIDERS[provider];
+  const config = getProviders()[provider];
   if (!config.clientId) {
     throw new Error(`oauth: ${provider} is not configured (missing client id)`);
   }
@@ -78,7 +85,7 @@ export interface OAuthProfile {
 }
 
 async function exchangeCodeForToken(provider: OAuthProvider, code: string): Promise<string> {
-  const config = PROVIDERS[provider];
+  const config = getProviders()[provider];
   if (!config.clientId || !config.clientSecret) {
     throw new Error(`oauth: ${provider} is not configured (missing client secret)`);
   }
