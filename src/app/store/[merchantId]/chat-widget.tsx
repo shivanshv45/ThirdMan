@@ -36,6 +36,59 @@ interface Message {
   content: string;
 }
 
+/**
+ * The model's replies are short, real prose (chat.ts's own docstring:
+ * conversational, never a document) — a full markdown renderer would be a
+ * new dependency for a problem this small. This covers exactly what a
+ * Groq conversational reply actually produces: paragraph breaks, "- "
+ * bullet lines, and **bold** emphasis — real formatting, not raw text
+ * flattened into one unstyled blob.
+ */
+function FormattedReply({ text }: { text: string }) {
+  const paragraphs = text.split(/\n{2,}/).filter((p) => p.trim().length > 0);
+
+  return (
+    <div className="space-y-1.5">
+      {paragraphs.map((paragraph, i) => {
+        const lines = paragraph.split("\n").map((l) => l.trim());
+        const isBulletBlock = lines.every((l) => l.startsWith("- ") || l.startsWith("• "));
+
+        if (isBulletBlock) {
+          return (
+            <ul key={i} className="list-disc pl-4 space-y-0.5">
+              {lines.map((line, j) => (
+                <li key={j}>{renderInline(line.replace(/^[-•]\s+/, ""))}</li>
+              ))}
+            </ul>
+          );
+        }
+
+        return (
+          <p key={i} className="whitespace-pre-wrap">
+            {lines.map((line, j) => (
+              <span key={j}>
+                {j > 0 && <br />}
+                {renderInline(line)}
+              </span>
+            ))}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Bold-only inline emphasis (**text**) — the one inline marker worth supporting for a short reply. */
+function renderInline(line: string): React.ReactNode[] {
+  const parts = line.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
+      return <strong key={i}>{part.slice(2, -2)}</strong>;
+    }
+    return <span key={i}>{part}</span>;
+  });
+}
+
 interface CartLine {
   variantId: string;
   productId: string;
@@ -243,7 +296,7 @@ export function ChatWidget({ merchantId, variant = "floating", embedKey, display
               m.role === "customer" ? "ml-auto bg-accent text-accent-ink" : "bg-ink-overlay text-on-ink"
             }`}
           >
-            {m.content}
+            {m.role === "assistant" ? <FormattedReply text={m.content} /> : m.content}
           </div>
         ))}
         {/* Real: only shown while the /api/chat round-trip is actually in

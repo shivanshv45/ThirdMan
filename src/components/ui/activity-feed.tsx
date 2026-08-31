@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { ShieldCheck, ShieldX, ShieldAlert, Activity, ChevronDown, X } from "lucide-react";
+import { ShieldCheck, ShieldX, ShieldAlert, Activity, ChevronDown, X, Radio } from "lucide-react";
 import { formatPaise } from "@/lib/money";
 import { useLiveActivity, type LiveDecision } from "./live-activity";
 
@@ -23,6 +23,7 @@ import { useLiveActivity, type LiveDecision } from "./live-activity";
 
 const TOAST_TTL_MS = 9000;
 const MAX_VISIBLE = 3;
+const HIDDEN_STORAGE_KEY = "activity-feed-hidden";
 
 const TONE = {
   allow: {
@@ -70,6 +71,29 @@ export function ActivityFeed() {
   const [expired, setExpired] = useState<Set<string>>(new Set());
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
 
+  // A merchant-chosen preference, not app state — read once via a lazy
+  // initializer (same pattern chat-widget.tsx's sessionToken uses) so
+  // it's persisted across navigation/reload without a setState-in-effect,
+  // and hiding the feed actually stays hidden rather than reappearing on
+  // the next page.
+  const [hidden, setHidden] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(HIDDEN_STORAGE_KEY) === "1";
+    } catch {
+      // localStorage unavailable — default to shown.
+      return false;
+    }
+  });
+
+  function setHiddenPersisted(next: boolean) {
+    setHidden(next);
+    try {
+      localStorage.setItem(HIDDEN_STORAGE_KEY, next ? "1" : "0");
+    } catch {
+      // Best-effort — the toggle still works for this page load either way.
+    }
+  }
+
   // Each arrival gets its own dismissal timer. While the feed is
   // expanded nothing auto-expires — a merchant reading the list should
   // not have rows vanish from under them.
@@ -94,11 +118,12 @@ export function ActivityFeed() {
 
   const live = recent.filter((e) => !expired.has(e.id));
   const shown = expanded ? recent.slice(0, 12) : live.slice(0, MAX_VISIBLE);
+  const hasAnyActivity = recent.length > 0;
 
-  // Nothing has happened yet and nothing is wrong — say nothing. An
+  // Nothing has happened yet and nothing is wrong — say nothing, and
+  // don't offer a hide toggle for a feed with nothing in it. An
   // always-present empty widget is chrome pretending to be activity.
-  if (shown.length === 0 && status !== "offline") return null;
-  if (shown.length === 0 && status === "offline") return null;
+  if (!hasAnyActivity && status !== "offline") return null;
 
   return (
     <div
@@ -107,27 +132,28 @@ export function ActivityFeed() {
       aria-live="polite"
       aria-label="Live agent activity"
     >
-      {expanded && recent.length > MAX_VISIBLE && (
+      {!hidden && expanded && recent.length > MAX_VISIBLE && (
         <div className="pointer-events-auto text-[var(--t-label)] uppercase tracking-[0.08em] text-on-ink-faint font-medium px-1">
           Last {shown.length} decisions
         </div>
       )}
 
-      {shown.map((entry, i) => (
-        <ActivityCard
-          key={entry.id}
-          entry={entry}
-          index={i}
-          onDismiss={() => {
-            const t = timers.current.get(entry.id);
-            if (t) clearTimeout(t);
-            timers.current.delete(entry.id);
-            dismiss(entry.id);
-          }}
-        />
-      ))}
+      {!hidden &&
+        shown.map((entry, i) => (
+          <ActivityCard
+            key={entry.id}
+            entry={entry}
+            index={i}
+            onDismiss={() => {
+              const t = timers.current.get(entry.id);
+              if (t) clearTimeout(t);
+              timers.current.delete(entry.id);
+              dismiss(entry.id);
+            }}
+          />
+        ))}
 
-      {recent.length > MAX_VISIBLE && (
+      {!hidden && recent.length > MAX_VISIBLE && (
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
@@ -141,6 +167,21 @@ export function ActivityFeed() {
           {expanded ? "Collapse" : `Show ${Math.min(recent.length, 12)} recent`}
         </button>
       )}
+
+      {/* A persistent show/hide toggle, distinct from an individual
+          card's dismiss — dismissing a card clears one entry, this hides
+          the whole feed and remembers the choice across pages/reloads. */}
+      <button
+        type="button"
+        onClick={() => setHiddenPersisted(!hidden)}
+        aria-pressed={!hidden}
+        aria-label={hidden ? "Show live activity feed" : "Hide live activity feed"}
+        title={hidden ? "Show live activity feed" : "Hide live activity feed"}
+        className="pointer-events-auto inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] border border-ink-line bg-ink-raised/90 backdrop-blur-md px-3 py-1.5 text-xs text-on-ink-dim hover:text-on-ink transition-colors duration-[var(--dur-fast)] shadow-[0_4px_20px_rgba(0,0,0,0.5)]"
+      >
+        <Radio size={13} style={hidden ? undefined : { color: "var(--allow-bright)" }} />
+        {hidden ? "Show feed" : "Hide feed"}
+      </button>
     </div>
   );
 }
