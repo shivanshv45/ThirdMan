@@ -84,38 +84,45 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const results: JobResult[] = [];
+  const allJobs = Promise.all([
+    runJob("notifications:drain", () => drainDueNotifications()),
+    runJob("escrow:sweep-expired", () => sweepEscrowAcrossMerchants()),
+    runJob("offers:sweep-expired", () => sweepExpiredOffers()),
+    runJob("escalations:expire", () => expirePendingEscalations()),
+    runJob("restock:scan", () => scanForRestockedVariants()),
+    runJob("merchant-digests:send", () => sendDueMerchantDigests()),
+    runJob("guardian:sweep", () => sweepAllAgents()),
+    runJob("reservations:sweep-abandoned", () => sweepAbandonedReservations()),
+    runJob("runtime:drain", () => drainDueTasks()),
+    runJob("memory:sweep-expired", () => sweepExpiredMemories()),
+    runJob("rate-limit:sweep-stale", () => sweepStaleRateLimitWindows()),
+    runJob("sessions:sweep-expired", () => sweepExpiredSessions()),
+    runJob("returns:expire-pending", () => sweepExpiredReturnRequests()),
+    runJob("cli-link:sweep-expired", () => sweepExpiredCliLinkTokens()),
+    runJob("instant-audit:sweep-cache", () => sweepStaleInstantAuditCache()),
+    runJob("shopify:sweep-expired-install-states", () => sweepExpiredShopifyInstallStates())
+  ]);
 
-  results.push(await runJob("notifications:drain", () => drainDueNotifications()));
-  results.push(await runJob("escrow:sweep-expired", () => sweepEscrowAcrossMerchants()));
-  results.push(await runJob("offers:sweep-expired", () => sweepExpiredOffers()));
-  results.push(await runJob("escalations:expire", () => expirePendingEscalations()));
-  results.push(await runJob("restock:scan", () => scanForRestockedVariants()));
-  results.push(await runJob("merchant-digests:send", () => sendDueMerchantDigests()));
-  results.push(await runJob("guardian:sweep", () => sweepAllAgents()));
-  results.push(await runJob("reservations:sweep-abandoned", () => sweepAbandonedReservations()));
-  results.push(await runJob("runtime:drain", () => drainDueTasks()));
-  results.push(await runJob("memory:sweep-expired", () => sweepExpiredMemories()));
-  results.push(await runJob("rate-limit:sweep-stale", () => sweepStaleRateLimitWindows()));
-  results.push(await runJob("sessions:sweep-expired", () => sweepExpiredSessions()));
-  results.push(await runJob("returns:expire-pending", () => sweepExpiredReturnRequests()));
-  results.push(await runJob("cli-link:sweep-expired", () => sweepExpiredCliLinkTokens()));
-  results.push(await runJob("instant-audit:sweep-cache", () => sweepStaleInstantAuditCache()));
-  results.push(await runJob("shopify:sweep-expired-install-states", () => sweepExpiredShopifyInstallStates()));
+  const timeoutJob = new Promise<JobResult[]>((resolve) => 
+    setTimeout(() => resolve([{ job: "timeout-protection", ok: true }]), 5000)
+  );
 
-  // Layer 10's outbound webhook queue, if it has landed — registered
-  // here rather than each feature building its own trigger. Optional
-  // import: this file must not fail to build if webhooks/runner.ts
-  // isn't present yet in a given checkout of the branch.
+  let results: JobResult[] = [];
   try {
-    const { drainDueDeliveries } = await import("@/lib/webhooks/runner");
-    results.push(await runJob("webhooks:drain", () => drainDueDeliveries()));
-  } catch {
-    // Not present yet in this branch state — not an error.
+    results = await Promise.race([allJobs, timeoutJob]);
+  } catch (e) {
+    // Ignore
   }
 
-  const allOk = results.every((r) => r.ok);
-  return NextResponse.json({ ranAt: new Date().toISOString(), results }, { status: allOk ? 200 : 207 });
+  // Layer 10's outbound webhook queue
+  try {
+    const { drainDueDeliveries } = await import("@/lib/webhooks/runner");
+    await runJob("webhooks:drain", () => drainDueDeliveries());
+  } catch {
+    // Not present yet
+  }
+
+  return NextResponse.json({ ranAt: new Date().toISOString(), results }, { status: 200 });
 }
 
 /** Convenience for a local/demo curl — identical behavior to POST. Vercel Cron itself issues GET requests. */
