@@ -1,5 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
+
+export const maxDuration = 60;
 import { db, schema } from "@/lib/db";
 import { env } from "@/lib/env";
 import { drainDueNotifications } from "@/lib/notifications/send";
