@@ -78,10 +78,35 @@ const envSchema = z.object({
 
 export type Env = z.infer<typeof envSchema>;
 
+/**
+ * `next build` statically evaluates every route's module graph to collect
+ * page data, which runs any module-level code that touches `env` — long
+ * before a request is ever served. A build stage legitimately has no
+ * runtime secrets (Cloud Run/Buildpacks builds the image first, and only
+ * the deployed container gets the real environment), so validating there
+ * fails the build over credentials that aren't supposed to exist yet.
+ *
+ * Next sets NEXT_PHASE for exactly this reason. Scoping the bypass to
+ * that one value keeps it impossible to hit at runtime: a served request
+ * never has NEXT_PHASE set to the build phase, so it always validates.
+ */
+function isNextBuildPhase(): boolean {
+  return process.env.NEXT_PHASE === "phase-production-build";
+}
+
 function loadEnv(): Env {
   const result = envSchema.safeParse(process.env);
 
   if (!result.success) {
+    // During the build, hand back whatever is actually set rather than
+    // throwing. Nothing at build time may do real work with these values
+    // (no DB call, no provider call, no money action) — the only reason
+    // they're read at all is module evaluation, and a missing value here
+    // is not the same thing as a misconfigured deployment.
+    if (isNextBuildPhase()) {
+      return process.env as unknown as Env;
+    }
+
     const problems = result.error.issues
       .map((issue) => `  - ${issue.path.join(".")}: ${issue.message}`)
       .join("\n");
