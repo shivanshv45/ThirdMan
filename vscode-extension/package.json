@@ -4,7 +4,7 @@
   "description": "Runs the thirdman audit engine on your open workspace — findings in the Problems panel anchored to real file/line positions, generated files reviewed as a diff, readiness score in the status bar.",
   "version": "0.1.0",
   "private": true,
-  "publisher": "thirdman",
+  "publisher": "ShivanshVerma",
   "type": "module",
   "engines": {
     "vscode": "^1.85.0"
