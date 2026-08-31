@@ -91,6 +91,10 @@ next-env.d.ts
 # deleted in case of a future rollback, but never pushed.
 /public/bg_video.mp4
 
+# the Devpost/submission write-up — drafted here, pasted into the
+# submission form, not part of the repo a judge browses
+/SUBMISSION.md
+
 # local scratchpad
 /scratch/
 
