@@ -12,7 +12,7 @@
 
 <div align="center">
 
-**`63 tables`** · **`41 migrations`** · **`729 tests, zero mocks`** · **`30 failure demos`** · **`24 layers`** · **`~57k lines of TypeScript`**
+**`65 tables`** · **`42 migrations`** · **`744 tests, zero mocks`** · **`30 failure demos`** · **`27 layers`** · **`~66k lines of TypeScript`**
 
 </div>
 
@@ -36,7 +36,7 @@ ThirdMan is that party, built as a working merchant platform rather than a polic
 
 | | Who is on the other end | What they get |
 |---|---|---|
-| **Merchant dashboard** | A human running a business | Spend caps, a live decision stream over SSE, the recovery pipeline, negotiation floors, capability grants, a returns queue, an incident view, a treasury, a memory bank, a task queue, a kill switch |
+| **Merchant dashboard** | A human running a business | Spend caps, a live decision stream over SSE with an activity feed on every page, charts over the real ledger, the recovery pipeline, negotiation floors, capability grants, a returns queue, an incident view, a treasury, a memory bank, a task queue, a kill switch |
 | **Buyer chat** | A human customer | A conversational storefront: discover, build a multi-item cart, negotiate, redeem coins, pay, ask for a refund. Embeddable on any merchant's own domain with one `<script>` tag |
 | **Agent API** | An external AI buyer | Headless HTTP plus a native MCP server, fourteen tools, no UI at all, designed to be integrated against by something that is not a browser |
 
@@ -168,7 +168,7 @@ The gate contract in [ARCHITECTURE.md](ARCHITECTURE.md) is eighteen numbered poi
 
 <br/>
 
-## Twenty-four layers
+## Twenty-seven layers
 
 Each shipped complete before the next began, against a checkable definition of done: runs end to end without manual DB edits, every money action in the audit log with a reason, bounds enforced by deterministic code and covered by a test, at least one failure path demonstrable.
 
@@ -395,6 +395,8 @@ OpenTelemetry, scoped deliberately and strictly to the money path. A custom `Spa
 
 The decision stream is Server-Sent Events over Web Streams, replacing dashboard polling, with tenant isolation enforced structurally: the route resolves the session merchant and hands exactly that id to the query. It degrades to polling if the connection drops.
 
+One connection feeds the whole dashboard rather than one per component. A React context fans the stream out to a bottom-right activity feed and a status indicator in the nav, so the agent's work is visible on every page instead of only on the page showing the audit table. Both are driven strictly by real arriving rows: the indicator's sharp flare fires only when a decision genuinely lands, there is no synthetic heartbeat standing in for activity, and a quiet system renders a quiet feed. When `EventSource` is unavailable entirely the indicator says so rather than idling green.
+
 ### Model routing and Model Armor
 
 Five providers behind one wrapper. **Groq** is the default and the only one this project has real operating history for; **Gemini** is reserved for genuinely hard reasoning; **NVIDIA NIM, OpenRouter and Z.ai** are all three reached through one shared OpenAI-compatible HTTP caller rather than three new SDKs. A non-default provider is requested only by the router, never scattered across feature call sites, and **always falls back to Groq**. The result object reports **who actually served the call**, never who was requested.
@@ -558,7 +560,9 @@ There is a shared component vocabulary rather than one-off styled elements per p
 
 > A pending state renders only while a real async operation is actually in flight, never on a timer. Every list, transcript and feed renders real rows read at request time. An empty state is rendered honestly as *nothing has happened yet*, never padded out with invented data to look more finished than it is.
 
-The single deliberate exception is the public landing page's refusal example, labelled *Illustrative* in the UI copy itself, because an unauthenticated page has no merchant to scope real audit data to and the alternatives are fabricating silently or leaking a real tenant's data. Even the snapshot chart on the dashboard is an integer-count composition rather than a time series, because the honest answer was that there is not yet enough real activity to chart a trend without inventing one.
+The single deliberate exception is the public landing page's refusal example, labelled *Illustrative* in the UI copy itself, because an unauthenticated page has no merchant to scope real audit data to and the alternatives are fabricating silently or leaking a real tenant's data.
+
+That contract is what makes the charts harder than they look. A dashboard drawing a confident curve through three data points is lying about a business, so **every chart is gated on a deterministic minimum before it renders anything**. The gate lives in `chart-series.ts` as pure functions covered by property tests, not in a component: a per-day series needs a real minimum of distinct days with genuine activity, a cumulative money series needs a minimum of real underlying transactions, and below either threshold the chart renders an explicit *not enough activity yet* state rather than a shape. Padding a sparse series with empty buckets cannot open the gate, and there is a property test asserting exactly that. Amounts stay integer paise all the way to the tick formatter, where `formatPaise` converts once, because a chart axis is the most natural place in a codebase to accidentally write `x / 100`.
 
 A new merchant's day one is non-empty, but only with **real rows clearly labelled as defaults to review** — a conservative cap, a starting policy, a minimal capability set. A real default configuration is not fabricated data. A fake transaction would be, and there are none.
 
@@ -580,6 +584,7 @@ A new merchant's day one is non-empty, but only with **real rows clearly labelle
 | **Testing** | Vitest against a real database with **zero mocks**, plus `fast-check` property tests on the gate, the runtime and the treasury |
 | **Distribution** | An `npx` CLI, a VS Code extension, a generated WooCommerce plugin, a public no-install audit page, and a one-tag embed |
 | **Styling** | Tailwind v4 on a hand-authored token system, Framer Motion, Lucide icons, `next/font` self-hosted Fraunces and Geist |
+| **Charts** | Recharts for the axis-bearing charts, reading series shaped by pure integer-paise functions. Funnels, ranked bars and composition bars are hand-authored from the same token system, because they are proportional divs and a library buys nothing |
 | **Money** | Integer paise. Everywhere. No float, no `Number` division, converted to rupees only at the display edge |
 
 <br/>

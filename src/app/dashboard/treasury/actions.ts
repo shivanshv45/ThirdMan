@@ -6,6 +6,21 @@ import { requireSessionMerchant } from "@/lib/auth";
 import { setTreasurySettings } from "@/lib/treasury";
 import { createMerchantAuthoredRule, setRewardRuleEnabled, deleteRewardRule, draftRuleFromInstruction, approveDraftedRule, type RuleAst } from "@/lib/reward-rules";
 import { setModelBudget } from "@/lib/model-router";
+import { draftTreasuryAction, type ChatTurn } from "@/lib/section-chat/treasury-draft";
+import { confirmTreasuryAction } from "@/lib/section-chat/treasury-confirm";
+import type { TreasuryProposal } from "@/lib/section-chat/treasury-schema";
+
+export async function draftTreasuryChatAction(history: ChatTurn[]) {
+  const merchant = await requireSessionMerchant();
+  return draftTreasuryAction(merchant.id, history);
+}
+
+export async function confirmTreasuryChatAction(proposal: TreasuryProposal) {
+  const merchant = await requireSessionMerchant();
+  const result = await confirmTreasuryAction(merchant.id, proposal);
+  if (result.ok) revalidatePath("/dashboard/treasury");
+  return result;
+}
 
 function fail(message: string): never {
   redirect(`/dashboard/treasury?error=${encodeURIComponent(message)}`);

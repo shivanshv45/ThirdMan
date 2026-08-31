@@ -63,3 +63,21 @@ export async function refreshRecoveryData(): Promise<{
   const [stats, queue] = await Promise.all([getRecoveryStats(merchant.id), getFailureQueue(merchant.id)]);
   return { stats, queue };
 }
+
+// --- Section chat bar (draft/confirm, no direct write from a model) ---
+
+import { draftRecoveryAction, type ChatTurn } from "@/lib/section-chat/recovery-draft";
+import { confirmRecoveryAction } from "@/lib/section-chat/recovery-confirm";
+import type { RecoveryProposal } from "@/lib/section-chat/recovery-schema";
+
+export async function draftRecoveryChatAction(history: ChatTurn[]) {
+  const merchant = await requireSessionMerchant();
+  return draftRecoveryAction(merchant.id, history);
+}
+
+export async function confirmRecoveryChatAction(proposal: RecoveryProposal) {
+  const merchant = await requireSessionMerchant();
+  const result = await confirmRecoveryAction(merchant.id, proposal);
+  if (result.ok) revalidatePath("/dashboard/recovery");
+  return result;
+}

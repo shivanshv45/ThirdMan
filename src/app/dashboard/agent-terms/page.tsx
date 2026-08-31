@@ -2,8 +2,9 @@ import { redirect } from "next/navigation";
 import { getSessionMerchant } from "@/lib/auth";
 import { getMerchantAgentTerms } from "@/lib/agent-terms";
 import { setAgentTerms } from "./actions";
-import { PageHeader, Surface, Field, Input, Button } from "@/components/ui";
+import { PageHeader, Surface, Field, Input, Button, SectionExplainer } from "@/components/ui";
 import { schema } from "@/lib/db";
+import { AgentTermsChatBar } from "./agent-terms-chat-bar";
 
 const CAPABILITY_LABELS: Record<(typeof schema.agentCapabilityEnum.enumValues)[number], string> = {
   "products:read": "Read the catalogue",
@@ -51,7 +52,9 @@ export default async function AgentTermsPage({
         </Surface>
       )}
 
-      <Surface variant="raised" className="p-5">
+      <AgentTermsChatBar />
+
+      <Surface variant="raised" className="p-5 relative">
         <h2 className="text-[var(--t-h4)] font-medium text-on-ink mb-3">Unknown agents</h2>
         <form action={setAgentTerms} className="space-y-4">
           <label className="flex items-center gap-2 text-sm text-on-ink-dim">
@@ -112,6 +115,17 @@ export default async function AgentTermsPage({
             Save agent terms
           </Button>
         </form>
+        <SectionExplainer
+          title="how an unknown agent is gated"
+          steps={[
+            { label: "An agent with no history arrives", detail: "Never trusted by default" },
+            { label: "Terms decide what it can do", detail: "Deterministic, same as a spend cap", tone: "accent" },
+          ]}
+          branches={[
+            { condition: "Self-registration open", steps: [{ label: "Starting cap applies", detail: "Bounded from the first purchase", tone: "allow" }] },
+            { condition: "No terms published", steps: [{ label: "Denied", detail: "Absence is closed, not permissive", tone: "deny" }] },
+          ]}
+        />
       </Surface>
     </div>
   );

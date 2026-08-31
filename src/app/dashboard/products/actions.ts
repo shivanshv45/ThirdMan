@@ -4,6 +4,21 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import * as mutations from "@/lib/dashboard-mutations";
 import { requireSessionMerchant } from "@/lib/auth";
+import { draftProductsAction, type ChatTurn } from "@/lib/section-chat/products-draft";
+import { confirmProductsAction } from "@/lib/section-chat/products-confirm";
+import type { ProductsProposal } from "@/lib/section-chat/products-schema";
+
+export async function draftProductsChatAction(history: ChatTurn[]) {
+  const merchant = await requireSessionMerchant();
+  return draftProductsAction(merchant.id, history);
+}
+
+export async function confirmProductsChatAction(proposal: ProductsProposal) {
+  const merchant = await requireSessionMerchant();
+  const result = await confirmProductsAction(merchant.id, proposal);
+  if (result.ok) revalidatePath("/dashboard/products");
+  return result;
+}
 
 /**
  * Thin Server Action wrappers, same pattern as app/dashboard/actions.ts —

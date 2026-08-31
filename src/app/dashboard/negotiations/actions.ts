@@ -7,6 +7,21 @@ import { db, schema } from "@/lib/db";
 import * as mutations from "@/lib/dashboard-mutations";
 import { requireSessionMerchant } from "@/lib/auth";
 import { getNegotiationTranscript } from "@/lib/negotiation";
+import { draftNegotiationsAction, type ChatTurn } from "@/lib/section-chat/negotiations-draft";
+import { confirmNegotiationsAction } from "@/lib/section-chat/negotiations-confirm";
+import type { NegotiationsProposal } from "@/lib/section-chat/negotiations-schema";
+
+export async function draftNegotiationsChatAction(history: ChatTurn[]) {
+  const merchant = await requireSessionMerchant();
+  return draftNegotiationsAction(merchant.id, history);
+}
+
+export async function confirmNegotiationsChatAction(proposal: NegotiationsProposal) {
+  const merchant = await requireSessionMerchant();
+  const result = await confirmNegotiationsAction(merchant.id, proposal);
+  if (result.ok) revalidatePath("/dashboard/negotiations");
+  return result;
+}
 
 /**
  * Thin Server Action wrapper, same pattern as

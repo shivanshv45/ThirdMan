@@ -1,0 +1,547 @@
+
+Razorpay AI Buildathon — Track 01 · Agentic Commerce, with a Track 03 Revenue Recovery layer
+ThirdMan
+
+the third man between you and the buyer — holding the ledger, and saying no when it needs saying.
+65
+tables
+744
+tests, zero mocks
+27
+layers shipped
+~66k
+lines of TypeScript
+30
+failure demos
+01 — Submission overview
+The problem
+Today's stack has exactly two positions
+
+Give an AI agent a payment credential and you have given it your bank account. There is no middle setting — until the agent is asked to act autonomously, unattended, on behalf of a stranger.
+Position one
+
+The agent has the key.
+
+It can spend anything, any time, with no shape drawn around it. Fine for a demo. Not fine once it runs unattended.
+Position two
+
+The agent has nothing.
+
+Safe, and useless — the merchant is unreachable by the AI buyers that are about to become a real distribution channel.
+The third position — what ThirdMan builds
+
+The agent can act, but only inside a shape the merchant drew.
+02
+Problem
+Who this is for
+A real multi-tenant product, not a single-merchant demo
+
+Any merchant can sign up, connect their own Razorpay account, and get sellable to AI buyers immediately. The schema was built multi-tenant from the first migration — not retrofitted later.
+ACTOR
+The AI buyer agent
+
+External, headless. Talks only to the Agent API and this product's own MCP server — no UI, no browser, no human in the loop by default.
+ACTOR
+The human customer
+
+Talks to the buyer chat widget — a conversational storefront, embeddable on any merchant's own domain with a single script tag.
+ACTOR
+The merchant
+
+Runs the dashboard — spend caps, the live audit trail, the recovery pipeline, negotiation floors, capability grants, a kill switch.
+Bootstrap history, closed honestly
+Layers 0–1 used one hardcoded demo merchant as a deliberate, temporary shortcut to get the gate and audit trail built fast. That shortcut was fully removed in Layer 2 — Merchant Onboarding, before any commerce feature was built on top of it. Every layer since has treated "the merchant" as one row among many, never a fixed constant.
+03
+Form factor
+The governing rule
+AI decides judgment. Code decides limits.
+
+Applied without exception across every one of 27 layers. A model proposes; code validates against a closed grammar; only code writes. The split itself is a graded criterion in this competition.
+Deterministic code only — never a model
+
+    Spend caps and remaining-balance arithmetic
+    Retry counts and stopping rules
+    Escalation and ROI thresholds
+    Whether a bound was breached
+    Negotiation concession prices
+    Any arithmetic on money, anywhere
+
+The model, legitimately
+
+    Classifying an ambiguous decline reason
+    Conversational product discovery
+    Drafting customer-facing copy
+    Phrasing an already-decided counter-offer
+    Conducting a return conversation
+    Explaining a decision in plain language
+
+04
+The rule
+The mechanism
+One function is the only path to a money action
+
+attemptMoneyAction() — not middleware, not a convention. Every surface calls it. If money reaches Razorpay without passing through it, that's a bug the test suite exists to catch.
+01shadow mode off
+02capability granted
+03Guardian state normal
+↓
+04agent terms accepted
+05mandate valid
+06spend cap has room
+↓
+07stock available
+08price matches catalogue
+09risk assessed — may only escalate
+↓ any check fails, or all pass
+DENY — reserve nothing, record the bound
+ESCALATE — hold for a human
+ALLOW — reserve, execute, audit
+5 / 5
+allowed under a cap sized for 5, out of 20 concurrent requests
+0
+of 3 stock left after 6 concurrent buyers race for it — exactly 3 denials
+200
+HTTP status on a denial — a reason, never a bare error
+2000
+random reserve/release runs proving the cap balance never goes negative
+05
+The gate
+The guarantees that took real engineering
+Six claims that are proven, not just intended
+
+The gate's own contract in ARCHITECTURE.md runs to eighteen numbered points. These are the ones that needed real work to actually hold under load.
+A failure gives everything back, exactly
+If Razorpay rejects after budget was reserved, the reservation releases to precisely its pre-reservation value — machine-checked with fast-check across 2,000 random reserve/release interleavings, run against both a pure model and the real DB-backed gate.
+A reservation outlives the process that made it
+reservationExpiresAt is stamped from the database's own clock. A scheduled sweep reclaims anything abandoned by a crashed process — ten agents can hit checkout, nine can crash mid-way, and the stock still comes back.
+A denial is HTTP 200
+A refusal is a well-formed successful response naming exactly why — an agent needs to read the reason, and an error status can't distinguish "over budget" from "server broke." The one deliberate exception: an unauthenticated request now answers 402 Payment Required with an x402-shaped challenge.
+The risk layer can only escalate
+assessRisk() runs strictly after every deterministic bound has already passed — by call order in the function, not by convention. A model can add caution. It has no code path back to allow.
+"Executed" is not "captured"
+Creating a Razorpay order is an intent to collect, not proof money arrived. The transition to captured happens only on independent verification — the browser's HMAC signature or the webhook — both converging on the same idempotent function.
+Idempotent under genuine concurrency
+A repeated request sharing an idempotency key replays the original outcome. The loser of a real unique-index race releases its own reservation and replays the winner's row — a real drizzle error-wrapping bug surfaced while proving this (see "What broke").
+06
+The gate
+Architecture
+One backend, three front doors, one audit log
+
+Every surface reserves against the same spend cap and writes to the same ledger — the shared spine that makes this one product instead of three demos in a trench coat.
+Merchant Dashboard
+spend caps, live decision stream, recovery, kill switch
+Buyer Chat
+discover, negotiate, redeem coins, checkout — embeddable
+Agent API + MCP
+14 tools, headless, no UI at all
+↓
+attemptMoneyAction()
+↓
+spend_caps · one atomic UPDATE
+Razorpay · real test-mode orders
+audit_log · every decision, every reason
+Why not middleware
+Middleware only covers HTTP paths — it would miss webhook-triggered recovery actions and internal reward issuance, which are money actions too. An explicit function call is greppable, so coverage is auditable by inspection, not just by trust.
+07
+Architecture
+How a purchase actually flows
+From "buy it" to a captured payment
+
+The same sequence runs whether the buyer is a human in the chat widget or an AI agent over MCP.
+01 · INTENT
+A buyer says "add the 250g ethiopia." Model Armor inspects the message deterministically first — no model call needed to clear a clean message.
+02 · PROPOSE
+A model proposes intent; code resolves it against the real catalogue and writes the cart. The cart returned to the client is always code-computed, never the model's prose.
+03 · GATE
+"Buy it" calls attemptMoneyAction(). Shadow mode, capability, Guardian, terms, mandate, credentials, cap, stock, and price are checked in that fixed order.
+04 · RESERVE & EXECUTE
+On a pass: reserve budget and stock atomically, stamp the expiry from the DB clock, create the real Razorpay order.
+05 · CAPTURE
+The buyer completes payment; the webhook or the signed browser callback verifies it independently. Only then does status become captured — coins issue, treasury funds, memory candidates extract.
+On any bound failure
+The gate logs the deny and the exact bound, and answers 200 "denied: [plain reason]" — with a signed Refusal Receipt available on request. Nothing was reserved, so nothing needs releasing.
+08
+Purchase flow
+What an agent can actually read
+The catalogue, and this product's own MCP server
+
+Razorpay ships an excellent MCP server — but it exposes a merchant's own account operations to the merchant's own assistant. The opposite problem from what an external buyer's agent needs: a merchant's catalogue, transactable by something that's never integrated before.
+The catalogue model
+
+products are marketing-level; product_variants are the stable, agent-referenceable unit — SKU, integer-paise price, internal cost, stock, availability, attributes, GTIN and MPN. A product with zero active variants is filtered out of the public catalogue entirely, rather than shown unbuyable. Return and shipping terms are structured fields, rendered to prose only for display — never the reverse, since that would put a model between a buyer agent and a contractual term.
+Fourteen tools, one server
+
+Streamable HTTP, stateless — a fresh instance per request, scoped to one already-authenticated agent, so no session state can leak between agents. search_products is deterministic word-overlap, no LLM — fast, free, reproducible. purchase calls attemptMoneyAction() unchanged. There is no second money path for MCP, the widget, recovery, returns, or coins.
+Verified, not just tested
+A real MCP client-shaped sequence over curl — initialize → tools/list → tools/call — created a genuine Razorpay test-mode order, confirmed by reading the resulting money_actions and audit_log rows back from the database. Not just a test written against the server's own code.
+09
+Catalogue & MCP
+Section Two
+Track 03 — Revenue Recovery
+
+Every failure passes through the identical gate a purchase does. Recovering money is not a special case — it's a bounded agent like any other.
+01
+Diagnose — deterministic first, a model only for the unmapped remainder
+02
+Decide — an exhaustive switch that fails the build on an unhandled case
+03
+Recover — a real, payable Payment Link, through the same gate
+04
+Attribute — recovered revenue from one verified source, never claimed early
+10
+Section divider
+Track 03 — revenue recovery
+A pipeline that knows when to stop
+
+Failed payments — real webhook or a merchant-triggered batch — flow through one deterministic policy file: attempt ceiling, backoff schedule, ROI governor, escalation threshold. Nothing about the outcome branches on where the failure came from.
+DIAGNOSE
+A deterministic lookup table runs first. Only an unmapped decline code reaches a model — which fails closed to unknown / unrecoverable rather than guessing.
+DECIDE
+An exhaustive, never-typed switch chooses the strategy. A new decline category with no policy branch fails the build — it cannot fall through silently.
+RECOVER
+A real, payable Razorpay Payment Link is created through the same gate, as a capped internal agent — bounded exactly like any external buyer.
+ATTRIBUTE
+Recovered revenue is set from one place only — the verified payment_link.paid webhook. Never claimed optimistically.
+5
+genuinely payable rzp.io links generated live, against a real test-mode account
+2nd #
+headline metric is a restraint count — attempts deliberately not made
+11
+Revenue recovery
+The loop we're proudest of
+Cashback that becomes working AI credits
+
+A reward coin is a money action in both directions — issuance and redemption both pass through the identical spend-cap gate as a purchase. What's on the other side of redemption isn't a discount code. It's real usage on real models.
+01
+Earn
+
+Coins accrue on a real purchase, at a merchant-set rate. Every issuance writes its own ledger row and audit entry — never a cached balance.
+02
+Redeem
+
+A balance is always the live SUM of the ledger. The redemption's own INSERT is conditional on that same live sum, computed atomically in one statement.
+03
+Spend
+
+Coins buy real Groq model usage — verified against Groq's own live /models endpoint before being hardcoded. Every redemption stores which provider genuinely served it.
+12
+Coins → credits
+Discounting without weakening the gate
+Bundles, offers, and a refusal that's counted too
+
+The gate's most important bound is that the caller can never name its own price. A discount has to survive that rule, not bypass it.
+MERCHANT-AUTHORED, NEVER CALLER-ASSERTED
+A caller references a merchant-authored bundle by offerId. The gate independently re-derives the expected amount from that row and denies on any mismatch — identical in spirit to the plain catalogue price check.
+FILTERED BEFORE THE MODEL EVER SEES IT
+runOfferEngine() computes bundle price minus summed real cost per candidate, and removes anything at or below zero before it reaches the model. An unprofitable upsell isn't rejected by the model — it was never in its input.
+EVERY RUN IS AUDITED, EVEN A REFUSAL
+Every engine run writes an offer_decisions row whether or not it produced an offer, with the exact eligible-candidate and below-floor counts. The refusal count is a headline dashboard number — evidence a bound is real.
+A cost floor exists before creation
+A merchant authors a bundle, and code enforces a maximum discount percent and a cost floor before the row can exist at all — the check runs at write time, not just at redemption.
+13
+Bundles & offers
+Bounded negotiation
+A floor a buyer can never actually find
+
+A negotiation that refuses below a floor and agrees above it leaks the floor's location by construction — a buyer probing ₹800 (refused) then ₹850 (agreed) has just binary-searched it to within ₹50.
+Why the floor is a stated price, not a margin
+
+The floor is a merchant-authored price, never derived from costPaise. What a buyer can ever learn by probing is "the merchant's stated minimum" — never the merchant's actual cost or margin, a far more sensitive number. Capping counters at 3 turns makes even that probe impractical for useful precision.
+The model never picks the number
+
+computeConcessionCeiling() is a pure schedule that converges to the floor by the final turn. submitBuyerCounter reassigns the price from that code-computed ceiling unconditionally after the model call returns — no code path lets a model response, however adversarial, move the number a buyer is offered. The model's only job is phrasing the sentence.
+Caught before release
+The turn-budget check shipped with a real off-by-one, caught by its own required test before release — logged in FAILURES.md rather than quietly patched.
+14
+Negotiation
+Section Three
+Trust, Authorization & Proof
+
+The place where "AI decides judgment, code decides limits" is least comfortable — and therefore most worth doing properly.
+01
+Capabilities, AP2 mandates — authentication is not authorization
+02
+The Runtime Guardian and the Kill Switch
+03
+The returns desk — a human decides, every single time
+04
+The protocol surface — discovery, and proof of agency
+05
+The Memory Bank — context that can never move a bound
+06
+The durable agent runtime, and the Adversarial Buyer
+15
+Section divider
+Authentication is not authorization
+Capability scoping and AP2 mandates
+
+A closed enum of seven capabilities in a database-constrained join table, deny by default, checked before any route or MCP tool logic runs.
+Refunds and payouts don't exist in the enum
+
+A stronger statement than granting-then-revoking — no capability grant could ever expose them to an agent, because the enum has no member for them. That absence is now a readable fact in the public discovery document, so an integrating agent can see the ceiling before writing a line of code.
+AP2 mandate verification, ES256
+
+An honestly scoped subset of Google's Agent Payments Protocol — Checkout and Payment Mandates as ES256-signed JWTs. ES256, not Ed25519, because AP2 forbids a deterministic signature scheme here — it would let an attacker build a rainbow table mapping known hashes to signatures. Verification runs six deterministic fail-closed steps in order.
+7
+closed capability enum, checked before any route logic runs
+6
+deterministic fail-closed verification steps, every attempt logged naming exactly which failed
+P-256
+per-merchant keypair, private half AES-256-GCM encrypted at rest
+16
+Capabilities & AP2
+Is this agent behaving normally, right now
+The Runtime Guardian, and the Kill Switch
+
+Computed entirely from tables this codebase already owns — no new telemetry source, no model consulted.
+FIVE SIGNALS, PERCENTILE-BASED
+Transaction velocity, denied ratio, retry-against-the-same-target, escalation rate, AI-spend rate — each against the agent's own trailing 14-day percentile_cont baseline. A percentile, not a mean plus standard deviation, because one outlier destroys a mean-based threshold.
+A BOUND, NOT AN OBSERVER
+Called inline inside checkBounds() before the spend cap is even loaded — a suspended agent is denied with zero budget reserved. A breach advances one step, normal → throttled → suspended, and suspension requires an explicit merchant re-arm.
+THE KILL SWITCH
+Freezes every agent atomically in one transaction, moving each to suspended rather than revoking — reversible. Each agent's exact prior state is snapshotted, so unfreezing restores what was really there.
+Never silent, never generic
+Every transition records the exact signal, observed value, and baseline — "8 failed payments in 90 seconds against a baseline of 1.2" — never merely "suspended."
+17
+Guardian & kill switch
+The most uncomfortable application of the rule
+The returns desk: AI recommends, a human decides — every time
+
+A return is a conversation about money the merchant has already banked. There is no auto-approval threshold anywhere, and its absence is written down as a deliberate choice, so a future layer has to argue for it rather than quietly add one.
+Eligibility runs entirely in code, first
+
+Before a single model token is spent: the money action exists and belongs to this merchant and requester, is genuinely captured, is inside any published window, hasn't already been refunded, has no other open request. The refundable amount is computed here — the model never gets a chance to produce that number.
+The model's one power points only one way
+
+It can decline to forward a claim that stays incoherent after a real clarifying attempt. It can never approve. declined_by_desk is kept distinct from rejected so a decision is never misattributed to a human who never saw it.
+Proven structurally, not just described
+returns-desk.ts — the module holding every model call this feature makes — contains no import of gate.ts anywhere in its source, asserted by test. demo-failure-return-cannot-self-approve.ts runs a real model recommendation and shows the refund still unissued, whatever the model said.
+18
+Returns desk
+Discovery, and proof of agency
+The protocol surface
+
+The discovery document used to disclaim conformance to everything — including a real AP2 subset already built. That's silence about a real capability, not honesty about a missing one, and it was fixed.
+.well-known
+.well-known/agent-commerce.json sits at the origin root, built by one function shared with the per-merchant manifest, so the two documents cannot drift. A real directory of every connected merchant, not a "default merchant" resolved from a query param.
+HONEST NAMING
+Names the MCP endpoint's URL/transport/auth, the closed capability enum with refunds/payouts' total absence surfaced as fact, the exact documented AP2/x402 subset — and states ACP and NPCI's UAP as not implemented, because naming what you don't do is what makes naming what you do worth reading.
+402 CHALLENGE
+An unauthenticated purchase request answers 402 Payment Required with a challenge pointing at how to get a key — the one deliberate exception to the "denial is 200" contract, since no agent identity exists yet to evaluate a bound against.
+REFUSAL RECEIPT
+Every gate decision can emit a signed, verifiable artifact saying this system refused this action, for this bound, at this time. A refusal you can prove is worth more than one you have to be believed about.
+19
+Protocol surface
+Context that outlives one session
+The Memory Bank — proven to never move the gate
+
+Real prior purchases, a real coin balance, past negotiation outcomes, things a buyer explicitly said — retrieved on a genuinely later session. The governing rule: memory is context, never a bound. Proven two ways at once.
+Structurally
+
+gate.ts contains no import of the memory module anywhere in its source, asserted by test.
+Behaviourally
+
+The identical purchase, same agent, same cap, produces a byte-identical decision and reason — whether or not that agent has a rich, deliberately adversarial memory bank planted for it.
+Rendering is the real security property
+Each memory renders through one fixed template per key — a stored value is never concatenated raw into a system prompt. A buyer who tries to plant "ignore all previous instructions" as a durable memory is refused at validation, and the refusal is itself a real auditable event. Cart, catalogue, and prices are final — memory always loses on conflict.
+20
+Memory bank
+Long-running work, with no worker process
+The durable agent runtime
+
+Recovery sequences need real backoff windows spanning real time. There is no worker process anywhere on the stack — a task is a row, claimed atomically, advanced by one scheduled tick.
+CLAIM
+The same conditional-UPDATE pattern the gate already proves correct. waiting (correctly blocked) and pending (ready now) are deliberately distinct statuses — a stalled task and a patient one are never conflated.
+CRASH SAFETY
+Eligibility is genuinely two cases: never claimed, or claimed with an expired lease. A process that claims a task and dies mid-step must not strand it forever.
+DB CLOCK ONLY
+Every timestamp comparison uses the database's own clock, never the app server's — a real ~500ms skew was measured against this project's own Neon instance while building the layer.
+GUARDED CREATION
+A task kind that can take a money action is refused creation outright with no agent id — a structural guarantee that a task can never act with no bounded identity.
+10 / 8
+parallel drains over 8 due tasks — every task claimed exactly once
+21
+Agent runtime
+Testing the bound with something that wants past it
+The Adversarial Buyer, and the Theatre
+
+agent-buyer/ is a real, autonomous, goal-driven AI buyer on Google ADK and Gemini — a standalone package outside src/, no import of application code, no database access, holding nothing but a real agent API key and speaking only through this product's own MCP endpoint.
+The unscripted run
+Given a plain-English goal — buy 3 units of a seeded SKU under a budget no naive purchase can satisfy — the agent was refused three different ways by three already-existing bounds (per-transaction max, the negotiation turn ceiling, spend cap balance), adapted its strategy each time without being told to, and completed two real purchases through the real gate. Nothing was added to gate.ts or mcp-server.ts to make the scenario interesting.
+Two real bugs, only visible under real load
+ADK's MCPToolset re-resolves the entire tool list on every agent turn, turning a handful of logical calls into roughly fifteen times the HTTP volume — enough to trip the merchant's own rate limiter from framework chattiness alone. And a Gemini quota failure arrives as a normal ADK event carrying errorCode, not a thrown exception — without an explicit guard, a rate-limited run would have reported itself as succeeded.
+22
+Adversarial buyer
+Scoped deliberately, strictly to the money path
+Observability, and Model Armor
+OpenTelemetry, money-path only
+
+A custom SpanProcessor intercepts every span end: if it or its parent carries a thirdman.money_action_id, keep it — otherwise drop it instantly. A 1000-span ring buffer, no external collector. GenAI semantic conventions are recorded explicitly, so token cost and latency are visible per decision. The live decision stream runs on Server-Sent Events, fanned to a bottom-right activity feed on every dashboard page.
+Model Armor — may block, never approve
+
+Inspects untrusted input before a prompt, and model output before it reaches a tool or a user. A deterministic pattern pass runs first; an optional model second opinion may only escalate a clean verdict to suspicious, never clear a block. Every non-clean verdict logs a scrubbed, bounded excerpt — because a payload crafted to be logged is itself an attack.
+Five providers, one wrapper, mandatory fallback
+Groq is the default and the only provider this project has real operating history for. Gemini is reserved for genuinely hard reasoning. NVIDIA NIM, OpenRouter, and Z.ai are all reached through one shared OpenAI-compatible caller. The result object always reports who actually served the call, never who was requested — and a first-choice NVIDIA model id returned a real HTTP 410 days after being sourced, caught because every model id was verified against the live endpoint before being committed.
+23
+Observability
+Section Four
+Getting a Merchant Online
+
+Most merchants this is for have a store admin panel, not a repo. The readiness checks live in one shared module — only the delivery differs, and the test suite enforces that claim.
+01
+npx thirdman init — the developer path, runnable by a judge in 60 seconds
+02
+The Instant Audit — no install, public, paste a URL
+03
+VS Code extension — findings anchored to real lines
+04
+A real Shopify OAuth app, and a generated WooCommerce plugin
+05
+The design system this whole product is built on
+24
+Section divider
+Distribution
+One audit engine, five front doors
+
+Most merchants have a store admin panel, not a repo. So the readiness checks live in one shared module, and only the delivery surface differs — enforced by the test suite, not just claimed in prose.
+npx thirdman init
+The developer path — reads real product data, real markup, real routes, and offers the integration as a diff, file by file, that the merchant approves. The one part of this submission a judge can run themselves.
+VS Code extension
+The same engine's findings anchored to actual lines in actual files — a squiggle on line 47, not a paragraph in a terminal.
+Instant Audit
+No install — paste a store URL, get a real readiness report. Respects the target's own robots.txt; a check that couldn't run says so, never a fabricated score.
+Shopify app
+Real OAuth2 install against a merchant's own shop, a bounded catalogue sync that stops at a preview — nothing lands until the merchant confirms.
+WooCommerce plugin
+Generated per merchant, pre-filled with their own key — so the merchant never types one. The single most error-prone step in any integration, removed.
+SETUP CONVERSATION
+A merchant says "I need something to chase failed payments, and two that can talk to customers" in plain English. The model proposes a name, cap, and the minimum capability set for the job — deny-by-default survives the convenience layer. Nothing is created until one explicit confirmation.
+SHADOW MODE
+Install it and it changes nothing. Enforced in the gate, not a UI hiding buttons — no code path from a shadow-mode merchant reaches execution. Every simulated outcome is labelled as shadow output everywhere it renders.
+25
+Onboarding surfaces
+The one part a judge can run themselves
+npx thirdman init — the governing rule, enforced in code
+
+Reads a merchant's real product data, real page markup, and real routes, scores what an AI buyer can and cannot do with the store today — then offers to write the integration as a diff the merchant approves, file by file.
+One chokepoint for every read and write
+fs-scope.ts's ProjectScope.resolve() throws on any path outside the project root — enforced, not documented.
+Nothing is written unseen
+planWrite / applyWrite are split so a write is always diffed and shown before it can happen.
+Secrets refuse an unsafe home
+secrets.ts reads the project's real .gitignore before writing an agent key to .env.local, refusing loudly with UnsafeSecretWriteError when it isn't covered — demonstrated live in its own failure demo.
+Evidence-based stack detection
+Real package.json dependencies, real config files, real PHP markers. Two or more real matches ask rather than guess — a wrong guess is the worst failure mode a tool like this has.
+An idempotent snippet injector
+Every injected block is wrapped in markers matched regardless of HTML-comment or JSX-comment syntax — a snippet from a prior run is found and replaced in place, never duplicated, on a second run.
+26
+The CLI
+Dark by decision, not by trend
+A design system built around what the product actually does
+
+The product's real job is counting things precisely and occasionally refusing a lot of money — the palette is deliberately shifted away from both Razorpay's own brand and the generic indigo-on-dark that reads as machine-generated.
+SPINE
+The allow / deny / escalate triad
+
+🟢 Allow — money moves. 🟡 Escalate — held for a human. 🔴 Deny — reason on record. Not a decorative accent — the three things the product does all day, matching the schema's own closed enum.
+TYPE
+Fraunces, Geist Sans, Geist Mono
+
+A warm, slightly severe display serif for anything that should read as considered; Geist Sans for the functional layer; Geist Mono with tabular figures for every number, id, and SKU. No money figure anywhere renders in a proportional font.
+RULE
+No mocks, anywhere in the UI
+
+A pending state renders only while a real async operation is in flight. Every chart is gated on a deterministic minimum before it draws a shape — a sparse series renders "not enough activity yet," never a confident curve through three points.
+27
+Design system
+Twenty-seven layers, each complete before the next began
+The build order
+
+Every layer shipped against a checkable definition of done: runs end to end with no manual DB edits, every money action in the audit log with a reason, bounds enforced by deterministic code and covered by a test, at least one failure path demonstrable.
+L0 – L3The spine
+Schema, audit log, Razorpay integration → the gate → multi-tenant merchant onboarding → the revenue recovery pipeline.
+L4 – L8Commerce
+Checkout, escrow, buyer chat → structured catalogue, this product's own MCP server → bundles, the offer engine, reward coins → explainability and the refusal log → bounded negotiation.
+L9 – L12Reach
+The design system, a full UI pass → the embeddable widget, outbound webhooks → notifications, AI-credit rewards → OAuth.
+L13 – L16Trust
+Capabilities, AP2 mandates, the Guardian → the AI Treasury, reward-rule AST → OpenTelemetry, the SSE command view → five-provider routing, Model Armor.
+L17 – L19Autonomy
+The durable agent runtime → the Memory Bank → the Adversarial Buyer, and the Theatre.
+L20 – L26Product
+The merchant CLI → the protocol surface, proof of agency → the returns desk → deployment, reservation sweeps → onboarding surfaces → control surfaces, kill switch → hardening.
+28
+27 layers
+This is not a mocked demo
+What broke, and what proved it real
+
+744 tests, zero mocks, run against a real database and a real Razorpay test account. A selection of what that discipline actually caught.
+744
+tests, zero mocks
+30
+repeatable, self-cleaning failure demos
+60+
+breakages logged in the moment, in FAILURES.md
+5×
+the same "model can't reach the ledger" proof, run structurally across five subsystems
+Why no mocks
+A stress test provoking a genuine Razorpay rejection once caught a real bug — a dynamic import that silently failed to resolve — that a mocked suite could never have seen, since the mock intercepts the call before module resolution even matters.
+29
+Proof
+FAILURES.md — logged in the moment, not reconstructed later
+What broke, and how we got out
+
+Sixty-plus real breakages. A selection, because the interesting ones are never the typos.
+audit_log had no merchant_id
+Its lookup matched two ways — a real merchant, or "no money action linked at all" — and that second branch had no way to be scoped to anyone. With a second real merchant about to exist, every merchant-less row would have shown up in every merchant's audit trail. Closed before it ever shipped to two tenants; every isolation test since then proves scoping by actual id-enumeration, not an empty-list check.
+A Gemini quota failure is an event, not an exception
+Google ADK surfaces it as a normal event carrying an error code — a bare try/catch never saw it. A rate-limited adversarial-buyer run would have reported itself as succeeded without an explicit "an empty turn is always an error" guard.
+A login rate limit keyed by email, not IP
+That's an account lockout you can trigger against a stranger — found by this project's own security review of the very layer built explicitly to avoid lockouts. Re-keyed to client IP.
+drizzle wraps the real Postgres error on .cause
+Checking err.code for a unique-violation never matched — the real code lives on err.cause.code. Found by printing the real error object once instead of guessing from memory.
+The buyer chat's model hallucinated a cart quantity
+The returned cart data was always correct — only the model's prose said "four" when the real cart held two. Fixed by isolating every authoritative number as its own labelled "SYSTEM FACT" line, a fix since reused in the explainer, the memory bank, and the returns desk.
+A CSS reset silently disabled every Tailwind spacing utility
+Unlayered rules beat @layer utilities — every px-*, mt-*, and mx-auto in the entire app was dead, on the dashboard and storefront both, until this was found.
+A partial unique index needs its WHERE predicate repeated
+In onConflictDoNothing, or Postgres rejects the arbiter outright — this hit three separate tables the same way before the pattern was recognized.
+The same FK-ordering miss, four separate times
+A cleanup script deleting money_actions before negotiations, then before escalations, then two more pairs across two later layers. Logged each time rather than quietly patched, because the recurring pattern is itself the finding.
+30
+What broke
+DECISIONS.md — real alternatives, and why this one won
+Tradeoffs made on purpose
+
+A decision is only logged when a reasonable engineer could have chosen differently.
+The gate is a module every action calls — not middleware
+Because middleware only covers HTTP paths; it would miss webhook-triggered recovery and internal reward issuance, which are money actions too. An explicit call is greppable, so coverage is auditable by inspection.
+Recovery attempts are bounded by a real, capped agent — not a bypass
+Because a bypass would mean the single most differentiated Track 01 claim — "the recovery agent is bounded exactly like everything else" — wouldn't actually be true. A cap-exhausted recovery attempt is just a normal gate denial, not a new failure mode.
+The negotiation floor is a stated price, never derived from cost
+Because the only thing a buyer can ever learn by probing is the merchant's stated minimum — never their actual margin, a far more sensitive number a merchant might not want exposed at all.
+Dead-stock liquidation (L8-5) and abandonment-to-upsell (L6-6): cut, not faked
+Because the real seeded merchant had 7 lifetime money actions — any "slow-moving stock" signal computed from that would be indistinguishable from noise. Building a feature that runs real code over real rows but produces a meaningless answer is worse than not building it — it looks evidence-based while being decorative.
+31
+Real tradeoffs
+Under the hood
+The stack
+Framework	Next.js 16 (App Router), React 19, TypeScript — one repo serving dashboard, storefront, chat, embed, and every API route
+Data	PostgreSQL (Neon) via Drizzle ORM — 65 tables, 42 migrations, the single source of truth
+Payments	Razorpay — real test-mode orders, hosted Checkout, HMAC-verified webhooks, Payment Links, capture, refund
+Agent protocol	This product's own MCP server on @modelcontextprotocol/sdk — 14 tools, plus honest AP2 and x402 subsets with .well-known discovery
+Models	Groq (default), Gemini, NVIDIA NIM, OpenRouter, Z.ai — five providers behind one wrapper with mandatory fallback
+Autonomous buyer	Google ADK on Gemini — a standalone package with no database access, speaking only MCP
+Crypto	AES-256-GCM at rest, scrypt for passwords, ES256 (jose) for AP2 mandates and Refusal Receipts
+Observability	OpenTelemetry with a custom money-path-only span processor, plus SSE for the live decision stream
+Testing	Vitest against a real database, zero mocks, plus fast-check property tests on the gate and the treasury
+Distribution	An npx CLI, a VS Code extension, a generated WooCommerce plugin, a public no-install audit page, a one-tag embed
+Money	Integer paise, everywhere — no float, no Number division, converted to rupees only at the display edge
+32
+Stack
+
+"Money is arithmetic, and arithmetic does not negotiate. Everything else in here is a conversation."
+
+ThirdMan — built for the Razorpay AI Buildathon
+33
+Close

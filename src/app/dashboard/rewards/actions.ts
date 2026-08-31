@@ -56,3 +56,21 @@ export async function toggleAiCreditTier(formData: FormData) {
   await mutations.setAiCreditTierEnabled(merchant.id, tierId, enabled);
   revalidatePath("/dashboard/rewards");
 }
+
+// --- Section chat bar (draft/confirm, no direct write from a model) ---
+
+import { draftRewardsAction, type ChatTurn } from "@/lib/section-chat/rewards-draft";
+import { confirmRewardsAction } from "@/lib/section-chat/rewards-confirm";
+import type { RewardsProposal } from "@/lib/section-chat/rewards-schema";
+
+export async function draftRewardsChatAction(history: ChatTurn[]) {
+  const merchant = await requireSessionMerchant();
+  return draftRewardsAction(merchant.id, history);
+}
+
+export async function confirmRewardsChatAction(proposal: RewardsProposal) {
+  const merchant = await requireSessionMerchant();
+  const result = await confirmRewardsAction(merchant.id, proposal);
+  if (result.ok) revalidatePath("/dashboard/rewards");
+  return result;
+}

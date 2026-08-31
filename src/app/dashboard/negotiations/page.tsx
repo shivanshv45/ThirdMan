@@ -4,7 +4,8 @@ import { getRecentNegotiations, getNegotiableVariants } from "@/lib/dashboard";
 import { formatPaise } from "@/lib/money";
 import { setNegotiationFloor } from "./actions";
 import { NegotiationList } from "./negotiation-list";
-import { PageHeader, Surface, Stat, DetailsToggle, Input, Button, EmptyState } from "@/components/ui";
+import { PageHeader, Surface, Stat, DetailsToggle, Input, Button, EmptyState, SectionExplainer } from "@/components/ui";
+import { NegotiationsChatBar } from "./negotiations-chat-bar";
 
 const STATUS_LABELS: Record<string, string> = {
   open: "Open",
@@ -45,12 +46,25 @@ export default async function NegotiationsPage({
         </p>
       )}
 
-      <Surface variant="raised" className="p-6">
+      <NegotiationsChatBar />
+
+      <Surface variant="raised" className="p-6 relative">
         <div className="grid grid-cols-3 gap-6">
           <Stat label="Total negotiations" value={negotiations.length} />
           <Stat label="Agreed" value={agreedCount} tone="allow" />
           <Stat label="Refused — floor held" value={refusedCount} tone="deny" />
         </div>
+        <SectionExplainer
+          title="how negotiation works"
+          steps={[
+            { label: "Buyer asks for a discount", detail: "Human or agent" },
+            { label: "Agent counters", detail: "Never below your floor", tone: "accent" },
+          ]}
+          branches={[
+            { condition: "Floor reached", steps: [{ label: "Agreed", detail: "Buyer can redeem the price", tone: "allow" }] },
+            { condition: "Turns run out first", steps: [{ label: "Refused", detail: "The floor held", tone: "deny" }] },
+          ]}
+        />
       </Surface>
 
       <Surface variant="raised" className="p-5">

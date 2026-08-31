@@ -3,7 +3,8 @@ import { getSessionMerchant } from "@/lib/auth";
 import { getMerchantPolicy } from "@/lib/dashboard";
 import { describeMerchantPolicy } from "@/lib/policy-text";
 import { setMerchantPolicy } from "./actions";
-import { PageHeader, Surface, Field, Input, Select, Button } from "@/components/ui";
+import { PageHeader, Surface, Field, Input, Select, Button, SectionExplainer } from "@/components/ui";
+import { PoliciesChatBar } from "./policies-chat-bar";
 
 export default async function PoliciesPage({
   searchParams,
@@ -29,11 +30,21 @@ export default async function PoliciesPage({
         </p>
       )}
 
-      <Surface variant="raised" className="p-5">
+      <PoliciesChatBar />
+
+      <Surface variant="raised" className="p-5 relative">
         <h2 className="text-[var(--t-h4)] font-medium text-on-ink mb-2">Current policy (as an agent would read it)</h2>
         <p className="text-sm text-on-ink bg-ink-overlay border border-ink-line-soft rounded-[var(--radius)] px-3 py-2 font-mono">
           {describeMerchantPolicy(policy)}
         </p>
+        <SectionExplainer
+          title="how policy reaches a buyer"
+          steps={[
+            { label: "You set structured terms", detail: "Returns, refunds, shipping" },
+            { label: "An agent reads them directly", detail: "No parsing a paragraph", tone: "accent" },
+            { label: "It factors into the sale", detail: "A cautious agent may skip an unclear policy" },
+          ]}
+        />
       </Surface>
 
       <Surface variant="raised" className="p-5">

@@ -4,7 +4,7 @@ import { getTreasuryOverview } from "@/lib/treasury";
 import { listRewardRules } from "@/lib/reward-rules";
 import { getUseCaseBudgetStatus, getRoutingSavings, type ModelUseCase } from "@/lib/model-router";
 import { getRecentTreasuryLedgerEntries } from "@/lib/dashboard";
-import { PageHeader, Surface, MoneyStat, Stat, Field, Input, Select, Button, EmptyState, Table, Thead, Tr, Th, Td, DonutChart, RankedBarChart, formatPaiseGrouped } from "@/components/ui";
+import { PageHeader, Surface, MoneyStat, Stat, Field, Input, Select, Button, EmptyState, Table, Thead, Tr, Th, Td, DonutChart, RankedBarChart, formatPaiseGrouped, SectionExplainer } from "@/components/ui";
 import {
   saveTreasurySettings,
   createRewardRule,
@@ -14,6 +14,7 @@ import {
   approveDraftedRuleAction,
   saveModelBudget,
 } from "./actions";
+import { TreasuryChatBar } from "./treasury-chat-bar";
 
 const USE_CASES: { value: ModelUseCase; label: string }[] = [
   { value: "support_chat", label: "Support chat" },
@@ -93,6 +94,8 @@ export default async function TreasuryPage({
         </p>
       )}
 
+      <TreasuryChatBar />
+
       <Surface variant="raised" className="p-6">
         <h2 className="text-[var(--t-h4)] font-medium text-on-ink mb-4">Pool balance</h2>
         <div className="grid grid-cols-3 gap-6">
@@ -143,7 +146,7 @@ export default async function TreasuryPage({
         </Surface>
       </section>
 
-      <Surface variant="raised" className="p-5">
+      <Surface variant="raised" className="p-5 relative">
         <h2 className="text-[var(--t-h4)] font-medium text-on-ink mb-1">{settings ? "Allocation policy" : "The Treasury is not enabled"}</h2>
         <p className="text-sm text-on-ink-dim mb-4 max-w-[var(--measure)]">
           {settings
@@ -179,9 +182,17 @@ export default async function TreasuryPage({
             {settings ? "Save" : "Enable the Treasury"}
           </Button>
         </form>
+        <SectionExplainer
+          title="where the pool comes from"
+          steps={[
+            { label: "A payment is captured", detail: "Real GMV only, never a hold" },
+            { label: "Your allocation rate applies", detail: "A % of that captured amount", tone: "accent" },
+            { label: "It splits three ways", detail: "Buyer credits, your AI budget, reserve" },
+          ]}
+        />
       </Surface>
 
-      <Surface variant="raised" className="p-5">
+      <Surface variant="raised" className="p-5 relative">
         <h2 className="text-[var(--t-h4)] font-medium text-on-ink mb-1">Margin-aware reward rules</h2>
         <p className="text-sm text-on-ink-dim mb-4 max-w-[var(--measure)]">
           A multiplier applied to coin issuance when a purchase&apos;s real order value, margin, or return-buyer status matches. The first matching rule wins. No rule ever executes model-generated code — every rule is validated against a fixed, typed grammar before it can be stored.
@@ -280,6 +291,14 @@ export default async function TreasuryPage({
             </form>
           </div>
         )}
+        <SectionExplainer
+          title="how a reward rule fires"
+          steps={[
+            { label: "A purchase completes", detail: "Real order value and margin" },
+            { label: "Rules are checked in priority order", detail: "First match wins", tone: "accent" },
+            { label: "Coin issuance is multiplied", detail: "Never model-generated code — a fixed, typed grammar" },
+          ]}
+        />
       </Surface>
 
       <Surface variant="raised" className="p-5">

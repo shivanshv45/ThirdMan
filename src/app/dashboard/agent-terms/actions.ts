@@ -6,8 +6,23 @@ import { setMerchantAgentTerms } from "@/lib/agent-terms";
 import { requireSessionMerchant } from "@/lib/auth";
 import { rupeesToPaise } from "@/lib/money";
 import { schema } from "@/lib/db";
+import { draftAgentTermsAction, type ChatTurn } from "@/lib/section-chat/agent-terms-draft";
+import { confirmAgentTermsAction } from "@/lib/section-chat/agent-terms-confirm";
+import type { AgentTermsProposal } from "@/lib/section-chat/agent-terms-schema";
 
 type AgentCapability = (typeof schema.agentCapabilityEnum.enumValues)[number];
+
+export async function draftAgentTermsChatAction(history: ChatTurn[]) {
+  const merchant = await requireSessionMerchant();
+  return draftAgentTermsAction(merchant.id, history);
+}
+
+export async function confirmAgentTermsChatAction(proposal: AgentTermsProposal) {
+  const merchant = await requireSessionMerchant();
+  const result = await confirmAgentTermsAction(merchant.id, proposal);
+  if (result.ok) revalidatePath("/dashboard/agent-terms");
+  return result;
+}
 
 /**
  * One form is the whole truth, same shape as setMerchantPolicy/

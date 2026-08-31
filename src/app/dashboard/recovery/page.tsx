@@ -3,7 +3,8 @@ import { getSessionMerchant } from "@/lib/auth";
 import { getRecoveryStats, getFailureQueue } from "@/lib/recovery/attribution";
 import { loadDemoBatchAction, runRecoveryBatchAction } from "./actions";
 import { FailureQueue } from "./failure-queue";
-import { PageHeader, Surface, MoneyStat, Stat, Button, formatPaiseGrouped, FunnelChart, RankedBarChart, ReadinessGauge } from "@/components/ui";
+import { PageHeader, Surface, MoneyStat, Stat, Button, formatPaiseGrouped, FunnelChart, RankedBarChart, ReadinessGauge, SectionExplainer } from "@/components/ui";
+import { RecoveryChatBar } from "./recovery-chat-bar";
 
 const RULE_LABELS: Record<string, string> = {
   already_resolved: "Already resolved",
@@ -28,7 +29,9 @@ export default async function RecoveryPage() {
     <div className="space-y-8">
       <PageHeader title="Revenue recovery" description="Failed payments, diagnosis, and bounded automatic recovery." />
 
-      <Surface variant="raised" className="p-6">
+      <RecoveryChatBar />
+
+      <Surface variant="raised" className="p-6 relative">
         <div className="grid grid-cols-2 sm:grid-cols-[1.5fr_1fr_1fr] gap-6 items-end">
           <MoneyStat
             label="Recovered"
@@ -85,6 +88,29 @@ export default async function RecoveryPage() {
           against them is real: it passes through the same spend-cap gate as any other agent purchase, creates a
           real Razorpay order, and is verified before anything counts as recovered.
         </p>
+        <SectionExplainer
+          title="the recovery pipeline"
+          steps={[
+            { label: "Payment fails", detail: "A real decline, or a demo batch", tone: "deny" },
+            { label: "Diagnosed", detail: "Model classifies the reason", tone: "accent" },
+            { label: "A rule decides", detail: "Attempt, wait, or stop" },
+          ]}
+          branches={[
+            {
+              condition: "A stopping rule fires",
+              steps: [
+                { label: "Written off", detail: "No money spent chasing it", tone: "escalate" },
+              ],
+            },
+            {
+              condition: "Cleared to attempt",
+              steps: [
+                { label: "Real gate call", detail: "Same spend-cap checks as any purchase", tone: "accent" },
+                { label: "Recovered", detail: "Verified before it counts", tone: "allow" },
+              ],
+            },
+          ]}
+        />
       </Surface>
 
       {/* The Track 03 story in one view: what came in, what was actually

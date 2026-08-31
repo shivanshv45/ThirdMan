@@ -15,7 +15,8 @@ import {
 } from "./actions";
 import { StorefrontLink } from "./storefront-link";
 import { ImportCatalogue } from "./import-catalogue";
-import { PageHeader, Surface, Button, Field, Input, EmptyState, DetailsToggle } from "@/components/ui";
+import { PageHeader, Surface, Button, Field, Input, EmptyState, DetailsToggle, SectionExplainer } from "@/components/ui";
+import { ProductsChatBar } from "./products-chat-bar";
 
 export default async function ProductsPage({
   searchParams,
@@ -34,6 +35,8 @@ export default async function ProductsPage({
         title="Products"
         description="Your catalogue. Agents can only buy products listed here, at the price and stock shown — never a price they name themselves."
       />
+
+      <ProductsChatBar />
 
       <Surface variant="raised" className="p-4 flex items-center justify-between flex-wrap gap-3">
         <div>
@@ -60,7 +63,7 @@ export default async function ProductsPage({
 
       <ImportCatalogue />
 
-      <Surface variant="raised" className="p-5">
+      <Surface variant="raised" className="p-5 relative">
         <h2 className="text-[var(--t-h4)] font-medium text-on-ink mb-3">Add a product</h2>
         <form action={createProduct} className="grid grid-cols-2 gap-3">
           <div className="col-span-2">
@@ -97,6 +100,14 @@ export default async function ProductsPage({
             </Button>
           </div>
         </form>
+        <SectionExplainer
+          title="the product catalogue"
+          steps={[
+            { label: "You add a product", detail: "Price, cost, stock" },
+            { label: "It's listed", detail: "Visible to buyers and agents" },
+            { label: "An agent can buy it", detail: "Only at the price and stock shown here", tone: "accent" },
+          ]}
+        />
       </Surface>
 
       <section>

@@ -3,7 +3,8 @@ import { getSessionMerchant } from "@/lib/auth";
 import { getRewardSettingsForDashboard, getRewardLedgerStats, getAiCreditTiersForDashboard, getRewardCoinRows } from "@/lib/dashboard";
 import { setRewardSettings, createAiCreditTier, toggleAiCreditTier } from "./actions";
 import { TIER_PRESETS } from "./tier-presets";
-import { PageHeader, Surface, Stat, Field, Input, Select, Button, EmptyState, DonutChart, CoinFlowChart } from "@/components/ui";
+import { PageHeader, Surface, Stat, Field, Input, Select, Button, EmptyState, DonutChart, CoinFlowChart, SectionExplainer } from "@/components/ui";
+import { RewardsChatBar } from "./rewards-chat-bar";
 
 export default async function RewardsPage({
   searchParams,
@@ -36,7 +37,9 @@ export default async function RewardsPage({
         </p>
       )}
 
-      <Surface variant="raised" className="p-6">
+      <RewardsChatBar />
+
+      <Surface variant="raised" className="p-6 relative">
         <h2 className="text-[var(--t-h4)] font-medium text-on-ink mb-4">Ledger</h2>
         <div className="grid grid-cols-3 gap-6">
           <Stat label="Issued" value={stats.totalIssuedCoins} />
@@ -46,6 +49,23 @@ export default async function RewardsPage({
         <p className="text-xs text-on-ink-faint mt-4">
           {stats.ledgerEntryCount} ledger entries total. Every entry ties back to a real, gated money action.
         </p>
+        <SectionExplainer
+          title="the ledger"
+          steps={[
+            { label: "Buyer pays", detail: "A real capture completes", tone: "accent" },
+            { label: "Coins issued", detail: "Issue rate x purchase value", tone: "allow" },
+            { label: "Coins outstanding", detail: "Sits as a real balance" },
+          ]}
+          branches={[
+            {
+              condition: "Buyer redeems later",
+              steps: [
+                { label: "Coins spent", detail: "Capped at max redemption %", tone: "escalate" },
+                { label: "Value applied", detail: "To a future purchase or AI credit", tone: "allow" },
+              ],
+            },
+          ]}
+        />
       </Surface>
 
       {/* The coin program's two real questions: how the issued supply
@@ -72,7 +92,7 @@ export default async function RewardsPage({
         </Surface>
       </section>
 
-      <Surface variant="raised" className="p-5">
+      <Surface variant="raised" className="p-5 relative">
         <h2 className="text-[var(--t-h4)] font-medium text-on-ink mb-1">
           {settings ? "Program settings" : "Rewards are not enabled"}
         </h2>
@@ -121,9 +141,17 @@ export default async function RewardsPage({
             {settings ? "Save" : "Enable rewards"}
           </Button>
         </form>
+        <SectionExplainer
+          title="program settings"
+          steps={[
+            { label: "Value per coin", detail: "Fixed rupees, set by you" },
+            { label: "Issue rate", detail: "% of a capture paid in coins", tone: "accent" },
+            { label: "Max redemption", detail: "Ceiling on any single purchase", tone: "escalate" },
+          ]}
+        />
       </Surface>
 
-      <Surface variant="raised" className="p-5">
+      <Surface variant="raised" className="p-5 relative">
         <h2 className="text-[var(--t-h4)] font-medium text-on-ink mb-1">AI credit tiers</h2>
         <p className="text-sm text-on-ink-dim mb-4 max-w-[var(--measure)]">
           Buyers can spend coins on a real AI response from one of these models — each one genuinely served by Groq, under its real name, at whatever price you set. No model ever decides its own price; that&apos;s always this fixed integer.
@@ -175,6 +203,15 @@ export default async function RewardsPage({
         ) : (
           <p className="text-xs text-on-ink-faint">Every available model already has a tier.</p>
         )}
+        <SectionExplainer
+          title="AI credit tiers"
+          steps={[
+            { label: "Buyer has coins", detail: "From a real purchase" },
+            { label: "Buyer picks a model", tone: "accent" },
+            { label: "Coins deducted", detail: "Your fixed price for that tier", tone: "escalate" },
+            { label: "Real Groq response", detail: "Served under its real name", tone: "allow" },
+          ]}
+        />
       </Surface>
     </div>
   );

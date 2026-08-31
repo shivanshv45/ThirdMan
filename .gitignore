@@ -43,8 +43,13 @@ yarn-error.log*
 /agent-buyer/run-logs
 
 # cli/ (the "thirdman" merchant CLI, Layer 20) is the same shape — its
-# own standalone package with its own node_modules.
+# own standalone package with its own node_modules. Its published build
+# output goes to cli/dist (tsconfig.build.json); tsconfig.json itself is
+# noEmit, but an editor's own tsc watch/emit-on-save task can still drop
+# stray .js next to cli/src's .ts sources — ignored so that never lands.
 /cli/node_modules
+/cli/dist
+/cli/src/**/*.js
 
 # vscode-extension (Layer 24) is also a standalone package
 /vscode-extension/node_modules

@@ -30,3 +30,7 @@ export type { DonutSlice } from "./donut-chart";
 export { RankedBarChart } from "./ranked-bar-chart";
 export type { RankedBar } from "./ranked-bar-chart";
 export { CoinFlowChart } from "./coin-flow-chart";
+export { SectionChatBar } from "./section-chat-bar";
+export type { SectionChatBarProps } from "./section-chat-bar";
+export { SectionExplainer, SectionExplainerContent } from "./section-explainer";
+export type { ExplainerStep, ExplainerBranch } from "./section-explainer";

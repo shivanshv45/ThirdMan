@@ -4,6 +4,21 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import * as mutations from "@/lib/dashboard-mutations";
 import { requireSessionMerchant } from "@/lib/auth";
+import { draftPoliciesAction, type ChatTurn } from "@/lib/section-chat/policies-draft";
+import { confirmPoliciesAction } from "@/lib/section-chat/policies-confirm";
+import type { PoliciesProposal } from "@/lib/section-chat/policies-schema";
+
+export async function draftPoliciesChatAction(history: ChatTurn[]) {
+  const merchant = await requireSessionMerchant();
+  return draftPoliciesAction(merchant.id, history);
+}
+
+export async function confirmPoliciesChatAction(proposal: PoliciesProposal) {
+  const merchant = await requireSessionMerchant();
+  const result = await confirmPoliciesAction(merchant.id, proposal);
+  if (result.ok) revalidatePath("/dashboard/policies");
+  return result;
+}
 
 export async function setMerchantPolicy(formData: FormData) {
   const merchant = await requireSessionMerchant();
