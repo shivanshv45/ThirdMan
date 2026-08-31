@@ -43,6 +43,13 @@ const envSchema = z.object({
   // this app configures — optional, used only to resolve the real
   // production domain for social-share image URLs (see layout.tsx).
   VERCEL_URL: z.string().optional(),
+  // This deployment's own public origin, e.g. https://thirdman-xxx.run.app
+  // — the full origin including scheme, no trailing slash. Takes
+  // precedence over VERCEL_URL in getAppUrl(). Required on any host that
+  // doesn't inject its own URL (Cloud Run): without it an OAuth
+  // redirect_uri resolves to localhost and the sign-in lands on the
+  // merchant's own machine instead of coming back here.
+  APP_URL: z.string().url("APP_URL must be a full origin, e.g. https://example.com").optional(),
   // Layer 11: outbound customer/merchant email. Optional — absent means
   // notifications/provider.ts falls back to a console-log provider, a
   // real (not mocked) degradation that still exercises the whole queue,
@@ -154,5 +161,12 @@ export const env = new Proxy({} as Env, {
  * unsubscribe link, merchant-alerts.ts's digest links.
  */
 export function getAppUrl(): string {
-  return env.VERCEL_URL ? `https://${env.VERCEL_URL}` : "http://localhost:3000";
+  // APP_URL wins wherever it's set, because it's the only one that works
+  // on a host that doesn't inject its own URL. Cloud Run doesn't (unlike
+  // Vercel), so without this the OAuth redirect_uri fell back to
+  // localhost and sent a signing-in merchant to their own machine.
+  // Trailing slash stripped so callers can append a path unconditionally.
+  if (env.APP_URL) return env.APP_URL.replace(/\/+$/, "");
+  if (env.VERCEL_URL) return `https://${env.VERCEL_URL}`;
+  return "http://localhost:3000";
 }

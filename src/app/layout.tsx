@@ -39,7 +39,11 @@ const archivoBlack = Archivo_Black({
 // doesn't need the full required-vars validation env.ts otherwise
 // enforces, and shouldn't force a build to have every production
 // credential present just to compute a URL for social-share tags.
-const siteUrl = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000";
+// Mirrors getAppUrl()'s precedence (APP_URL, then VERCEL_URL, then dev),
+// reading process.env rather than importing it for the reason above.
+const siteUrl =
+  process.env.APP_URL?.replace(/\/+$/, "") ??
+  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),

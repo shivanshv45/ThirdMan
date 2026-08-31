@@ -56,14 +56,14 @@ Three pieces, each doing real work rather than satisfying a checkbox. Every clai
 |---|---|---|
 | **Gemini 3.5+** | `gemini-3.5-flash` via the Gemini API, driving the autonomous buyer agent's entire reasoning loop. Also reachable in the main app as the router's hard-reasoning tier | [`agent-buyer/src/model.ts`](agent-buyer/src/model.ts), [`src/lib/llm.ts`](src/lib/llm.ts) |
 | **Google Agent Framework** | **Google ADK** (`@google/adk`) — `LlmAgent`, `Runner`, `InMemorySessionService`, and ADK's `beforeToolCallback`/`afterToolCallback` hooks carrying this project's deterministic ceilings | [`agent-buyer/src/loop.ts`](agent-buyer/src/loop.ts) |
-| **Google Cloud infrastructure** | **Cloud Scheduler**, driving the authenticated `POST /api/cron/run` tick every minute — the only scheduled entrypoint this stack has, and the thing that makes 17 sweep jobs real | [`src/app/api/cron/run/route.ts`](src/app/api/cron/run/route.ts), [DEPLOYMENT.md](DEPLOYMENT.md) |
+| **Google Cloud infrastructure** | **Cloud Run** serves the deployed app (dashboard, storefront, embed, MCP server, discovery document). **Cloud Scheduler** drives the authenticated `POST /api/cron/run` tick every minute — the only scheduled entrypoint this stack has, and the thing that makes 17 sweep jobs real | [`src/app/api/cron/run/route.ts`](src/app/api/cron/run/route.ts) |
 | **GenAI SDK** | `@google/genai`, the SDK ADK itself runs on, pinned as a direct dependency of the buyer agent package | [`agent-buyer/package.json`](agent-buyer/package.json) |
 
 ### Why Cloud Scheduler is load-bearing here, not decorative
 
-This architecture has **no worker process anywhere**. That is a deliberate design decision documented in ARCHITECTURE.md long before any deployment question came up: a durable task is a *row*, claimed atomically by a conditional `UPDATE`, advanced by one scheduled tick. Which means the scheduler is not monitoring the system from outside — **it is the system's only clock.**
+This architecture has **no worker process anywhere**. That was a deliberate design decision made long before any deployment question came up: a durable task is a *row*, claimed atomically by a conditional `UPDATE`, advanced by one scheduled tick. Which means the scheduler is not monitoring the system from outside — **it is the system's only clock.**
 
-Vercel's own cron runs at most once per day on the free tier. This project's tightest deterministic bound is `RESERVATION_TIMEOUT_MINUTES` at 5 minutes, so a daily tick would leave stock and budget locked for up to a day past their own deadline. Cloud Scheduler at `* * * * *` closes that gap. `vercel.json` deliberately carries **no `crons` block** as a result.
+Cloud Run scales to zero and runs nothing between requests, so without an external tick the recovery backoffs, reservation sweeps, and escalation expiries simply never fire. This project's tightest deterministic bound is `RESERVATION_TIMEOUT_MINUTES` at 5 minutes, so Cloud Scheduler at `* * * * *` keeps every sweep's real lag well inside its own deadline rather than merely at it.
 
 One tick fans out into seventeen isolated, individually-idempotent jobs — one failing cannot stop the rest:
 
@@ -192,19 +192,56 @@ cd agent-buyer && npm install && npm run run
 
 Give it a goal it cannot naively satisfy and watch it get refused by real bounds, adapt, and route around them — then open `/dashboard/theatre` to see its reasoning paired against the merchant's own decision stream, correlated by real money action id.
 
-### 6. Deploy
+### 6. Deploy to Google Cloud
 
-Full instructions, including the exact `gcloud scheduler jobs create` invocation and how to verify the tick is genuinely running, are in **[DEPLOYMENT.md](DEPLOYMENT.md)**.
+The app runs on **Cloud Run**, and **Cloud Scheduler** drives its one authenticated tick. Both are required: Cloud Run serves every decision, Cloud Scheduler is what makes time pass for the durable runtime.
+
+**Deploy the service.** Buildpacks builds straight from source, no Dockerfile:
 
 ```bash
-vercel --prod
+gcloud run deploy thirdman \
+  --source=. \
+  --region=europe-west1 \
+  --allow-unauthenticated
+```
+
+**Set the runtime environment.** Every variable from step 1, plus `APP_URL` pointing at the service's own URL:
+
+```bash
+gcloud run services update thirdman --region=europe-west1 \
+  --set-env-vars="APP_URL=https://<your-service>.run.app,DATABASE_URL=...,RAZORPAY_KEY_ID=...,RAZORPAY_KEY_SECRET=...,RAZORPAY_WEBHOOK_SECRET=...,GROQ_API_KEY=...,GEMINI_API_KEY=...,ENCRYPTION_KEY=...,CRON_SECRET=..."
+```
+
+`APP_URL` is not optional on Cloud Run. Unlike Vercel, Cloud Run injects no URL of its own, so without it every absolute URL the app generates (OAuth `redirect_uri` included) falls back to localhost and a merchant signing in gets sent to their own machine.
+
+For OAuth, register `https://<your-service>.run.app/api/auth/google/callback` and the GitHub equivalent with each provider.
+
+**Start the clock.** One job, every minute, hitting the tick that fans out to all 17 sweeps:
+
+```bash
 gcloud services enable cloudscheduler.googleapis.com
+
 gcloud scheduler jobs create http thirdman-cron-tick \
-  --location=us-central1 --schedule="* * * * *" \
-  --uri="https://<deploy-domain>/api/cron/run" \
-  --http-method=POST --headers="Authorization=Bearer <CRON_SECRET>" \
+  --location=europe-west1 \
+  --schedule="* * * * *" \
+  --uri="https://<your-service>.run.app/api/cron/run" \
+  --http-method=POST \
+  --headers="Authorization=Bearer <CRON_SECRET>" \
   --attempt-deadline=30s
 ```
+
+A minute is not arbitrary. The tightest deterministic bound in the system is `RESERVATION_TIMEOUT_MINUTES` at 5, so a one-minute tick keeps every sweep's real lag well inside its own deadline rather than merely at it.
+
+**Verify it is genuinely running**, rather than assuming:
+
+```bash
+gcloud scheduler jobs describe thirdman-cron-tick --location=europe-west1
+gcloud scheduler jobs run thirdman-cron-tick --location=europe-west1
+```
+
+Then confirm the app side actually did something: query `audit_log` for rows with `actor = 'system'` in the last few minutes, or watch a reservation disappear from `/dashboard/reservations` on schedule.
+
+**Cost.** Cloud Run scales to zero, and Cloud Scheduler's free tier covers three jobs per project per month against the one used here. Tear down with `gcloud run services delete thirdman` and `gcloud scheduler jobs delete thirdman-cron-tick`.
 
 <br/>
 
@@ -742,7 +779,7 @@ A new merchant's day one is non-empty, but only with **real rows clearly labelle
 | **Agent protocol** | `@modelcontextprotocol/sdk`. This product's own server, Streamable HTTP, stateless, fourteen tools. AP2 and x402 subsets named exactly, `.well-known` discovery |
 | **Models** | Groq (default), **Gemini 3.5 Flash**, NVIDIA NIM, OpenRouter, Z.ai. All five behind one wrapper with mandatory fallback and per-token integer-paise cost accounting |
 | **Agent framework** | **Google ADK** (`@google/adk`) with `LlmAgent` / `Runner` / `InMemorySessionService` and its tool-callback hooks, on **`@google/genai`** — a standalone package with no database access, speaking only MCP |
-| **Cloud** | **Google Cloud Scheduler** driving the one authenticated tick that fans out to 17 idempotent sweep jobs. Vercel for the app, Neon for Postgres |
+| **Cloud** | **Google Cloud Run** serving the app, built from source by Buildpacks. **Google Cloud Scheduler** driving the one authenticated tick that fans out to 17 idempotent sweep jobs. Neon for Postgres |
 | **Auth** | Session cookies with rotation-on-login and scrypt password hashing, plus **Google OAuth** and **GitHub OAuth** (both optional pairs — an unconfigured provider hides its button rather than rendering one that 500s). Per-account decaying backoff, deliberately never a lockout |
 | **Integrations** | **Shopify** OAuth app with a real Admin API catalogue sync (`read_products` only, encrypted offline token), a generated **WooCommerce** plugin, CSV import, and a model-assisted paste-a-blob importer |
 | **Crypto** | Node `crypto`. AES-256-GCM for merchant secrets at rest, scrypt for passwords, `jose` for ES256 AP2 mandates and Refusal Receipts, `timingSafeEqual` everywhere a secret or signature is compared |
@@ -767,7 +804,7 @@ Every row points at something runnable or readable, not a claim.
 | **Correctness under real concurrency** | `gate.test.ts` (20 concurrent against a cap of 5), `gate.properties.test.ts` (`fast-check`, 2000 runs), `runtime/tasks.properties.test.ts` (10 parallel drains, 8 tasks, each claimed once) |
 | **A bound actually refusing** | Any of the 33 `scripts/demo-failure-*.ts`. Self-cleaning, real DB, real Razorpay test account |
 | **Autonomous agent behaviour** | `agent-buyer/` — then `/dashboard/theatre` to see its reasoning against the merchant's real decisions |
-| **Google Cloud, running** | [DEPLOYMENT.md](DEPLOYMENT.md) §2, and [`src/app/api/cron/run/route.ts`](src/app/api/cron/run/route.ts) — 17 jobs behind one authenticated tick |
+| **Google Cloud, running** | [`src/app/api/cron/run/route.ts`](src/app/api/cron/run/route.ts) — 17 jobs behind one authenticated tick, on Cloud Run, driven by Cloud Scheduler |
 | **Gemini + ADK, wired for real** | [`agent-buyer/src/loop.ts`](agent-buyer/src/loop.ts) and [`agent-buyer/src/model.ts`](agent-buyer/src/model.ts) |
 | **What an external agent sees** | `GET /.well-known/agent-commerce.json`, then `POST /api/mcp` |
 | **Honesty about what is not built** | The `implemented: false` entries in the discovery document, and [FAILURES.md](FAILURES.md) |
