@@ -281,13 +281,27 @@ export function AntCanvas({
           }
         }
       } else if (phase === "inspect") {
-        pt += dt;
         const d = Math.hypot(coin.x - a.x, coin.y - a.y);
-        spd = d > coin.r * 1.7 ? 22 * s * effectiveSpeed : 0;
+        // Matches the exact offset "held" uses below (f = 9.6*s + coin.r) —
+        // so once the ant is close enough to start gripping, the coin is
+        // already sitting right at the mandibles with no jump when it
+        // switches to following the ant.
+        const grabDist = 9.6 * s + coin.r;
+        const atCoin = d <= grabDist;
+        spd = atCoin ? 0 : 22 * s * effectiveSpeed;
         target = { x: coin.x, y: coin.y };
         a.probe = Math.min(1, a.probe + dt * 1.6);
-        if (pt > 2.0) {
-          phase = "grip";
+        // Only start the grip once the ant has actually walked into range —
+        // previously this fired on a flat timer regardless of distance, so
+        // an ant that hadn't fully closed the gap would still "grip", and
+        // the coin would visibly snap/jump to meet it.
+        if (atCoin) {
+          pt += dt;
+          if (pt > 0.5) {
+            phase = "grip";
+            pt = 0;
+          }
+        } else {
           pt = 0;
         }
       } else if (phase === "grip") {
