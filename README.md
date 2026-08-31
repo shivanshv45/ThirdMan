@@ -12,7 +12,9 @@
 
 <div align="center">
 
-**`65 tables`** · **`42 migrations`** · **`744 tests, zero mocks`** · **`30 failure demos`** · **`27 layers`** · **`~66k lines of TypeScript`**
+**`65 tables`** · **`43 migrations`** · **`811 tests, zero mocks`** · **`33 failure demos`** · **`27 layers`** · **`~66k lines of TypeScript`**
+
+**Gemini 3.5 Flash** · **Google ADK** · **Google Cloud Scheduler** · **MCP** · **AP2** · **x402** · **OpenTelemetry**
 
 </div>
 
@@ -41,6 +43,168 @@ ThirdMan is that party, built as a working merchant platform rather than a polic
 | **Agent API** | An external AI buyer | Headless HTTP plus a native MCP server, fourteen tools, no UI at all, designed to be integrated against by something that is not a browser |
 
 Every one of them writes to the same `audit_log`, reserves against the same `spend_caps` row, and calls the same function to move money. That shared spine is what makes this one product rather than three demos wearing a trench coat.
+
+<br/>
+
+## Gemini, ADK, and Google Cloud
+
+<img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/google/google-original.svg" height="18" align="left" alt="Google" />&nbsp;
+
+Three pieces, each doing real work rather than satisfying a checkbox. Every claim below points at a file you can open.
+
+| Requirement | What this project actually runs | Where it lives |
+|---|---|---|
+| **Gemini 3.5+** | `gemini-3.5-flash` via the Gemini API, driving the autonomous buyer agent's entire reasoning loop. Also reachable in the main app as the router's hard-reasoning tier | [`agent-buyer/src/model.ts`](agent-buyer/src/model.ts), [`src/lib/llm.ts`](src/lib/llm.ts) |
+| **Google Agent Framework** | **Google ADK** (`@google/adk`) — `LlmAgent`, `Runner`, `InMemorySessionService`, and ADK's `beforeToolCallback`/`afterToolCallback` hooks carrying this project's deterministic ceilings | [`agent-buyer/src/loop.ts`](agent-buyer/src/loop.ts) |
+| **Google Cloud infrastructure** | **Cloud Scheduler**, driving the authenticated `POST /api/cron/run` tick every minute — the only scheduled entrypoint this stack has, and the thing that makes 17 sweep jobs real | [`src/app/api/cron/run/route.ts`](src/app/api/cron/run/route.ts), [DEPLOYMENT.md](DEPLOYMENT.md) |
+| **GenAI SDK** | `@google/genai`, the SDK ADK itself runs on, pinned as a direct dependency of the buyer agent package | [`agent-buyer/package.json`](agent-buyer/package.json) |
+
+### Why Cloud Scheduler is load-bearing here, not decorative
+
+This architecture has **no worker process anywhere**. That is a deliberate design decision documented in ARCHITECTURE.md long before any deployment question came up: a durable task is a *row*, claimed atomically by a conditional `UPDATE`, advanced by one scheduled tick. Which means the scheduler is not monitoring the system from outside — **it is the system's only clock.**
+
+Vercel's own cron runs at most once per day on the free tier. This project's tightest deterministic bound is `RESERVATION_TIMEOUT_MINUTES` at 5 minutes, so a daily tick would leave stock and budget locked for up to a day past their own deadline. Cloud Scheduler at `* * * * *` closes that gap. `vercel.json` deliberately carries **no `crons` block** as a result.
+
+One tick fans out into seventeen isolated, individually-idempotent jobs — one failing cannot stop the rest:
+
+```
+notifications:drain          escrow:sweep-expired        offers:sweep-expired
+escalations:expire           restock:scan                merchant-digests:send
+guardian:sweep               reservations:sweep-abandoned runtime:drain
+memory:sweep-expired         rate-limit:sweep-stale      sessions:sweep-expired
+returns:expire-pending       cli-link:sweep-expired      instant-audit:sweep-cache
+shopify:sweep-expired-install-states                     webhooks:drain
+```
+
+The endpoint authenticates with a `CRON_SECRET` bearer token compared in **constant time** via `timingSafeEqual`, and an unauthorized tick is rejected without being logged as an application error, because a public endpoint that logs every probe is a log-flooding vector.
+
+### Why the buyer agent is a real ADK agent, not an SDK import
+
+`agent-buyer/` is a standalone package outside `src/` with its own `package.json`, **no import of `src/lib/*`, no `DATABASE_URL`, and no database client in its dependency tree** — all three asserted by a static isolation test. It holds one real agent API key and speaks to the product exclusively through MCP over the same `/api/mcp` any third-party integration would use.
+
+That isolation is what makes it a genuine adversary rather than a friendly test harness. It cannot read the caps it is trying to exceed. It discovers what it is allowed to do the same way a stranger's agent would: by being refused and reading the reason.
+
+Two real bugs came out of running ADK against a live stateless MCP server, both documented in [FAILURES.md](FAILURES.md):
+
+- ADK's `MCPToolset` re-resolves the **entire tool list on every agent turn** via a fresh `listTools()` handshake, and each tool call opens its own session against the deliberately stateless transport — together turning a handful of logical calls into roughly **fifteen times** the HTTP volume, enough to trip this product's own rate limiter purely from framework chattiness. Fixed by resolving tools once per run.
+- A Gemini quota failure arrives as a **normal ADK event carrying `errorCode`**, not a thrown exception. A `try`/`catch` around the loop never saw it, so without a separate "an empty turn is always an error, never a silent success" guard, a rate-limited run would have cheerfully reported itself as `succeeded`.
+
+<br/>
+
+## Spin-up
+
+Reproducible from a clean clone. Roughly ten minutes, most of it waiting on `npm install`.
+
+### Prerequisites
+
+Node 20+, a PostgreSQL database (this project uses [Neon](https://neon.tech)'s free tier), a [Razorpay](https://razorpay.com) test-mode account, a [Groq](https://console.groq.com) API key, and a [Google AI Studio](https://aistudio.google.com/apikey) key for Gemini. All five have free tiers.
+
+### 1. Install and configure
+
+```bash
+git clone <repo-url> && cd thirdman
+npm install
+cp .env.example .env.local
+```
+
+`src/lib/env.ts` is the single source of truth for configuration and **fails loudly at import time** if anything required is missing or malformed — never at 2am mid-demo. Required:
+
+```bash
+DATABASE_URL=              # postgres://... (Neon or any Postgres 15+)
+RAZORPAY_KEY_ID=           # test-mode key from the Razorpay dashboard
+RAZORPAY_KEY_SECRET=
+RAZORPAY_WEBHOOK_SECRET=   # any string; must match the webhook you register
+GROQ_API_KEY=              # default provider for everything
+GEMINI_API_KEY=            # Gemini 3.5 Flash
+ENCRYPTION_KEY=            # openssl rand -base64 32  (must decode to 32 bytes)
+```
+
+Optional, each degrading honestly rather than crashing when absent:
+
+```bash
+CRON_SECRET=               # required for Cloud Scheduler to authenticate
+RESEND_API_KEY=            # absent -> notifications log to console, queue still real
+GOOGLE_CLIENT_ID=          # absent -> the Google button is hidden, not broken
+GOOGLE_CLIENT_SECRET=
+GITHUB_CLIENT_ID=          # same posture
+GITHUB_CLIENT_SECRET=
+SHOPIFY_API_KEY=           # absent -> "Connect Shopify" simply isn't rendered
+SHOPIFY_API_SECRET=
+NVIDIA_API_KEY=            # + NVIDIA_ENDPOINT
+OPENROUTER_API_KEY=
+ZAI_API_KEY=
+```
+
+### 2. Migrate and seed
+
+```bash
+npm run db:migrate    # 43 migrations
+npm run script scripts/seed.ts
+```
+
+The seed is **idempotent** — safe to re-run. It creates one real merchant (`demo@northsidecoffee.test` / `demo-password-123`), a coherent 15-product coffee catalogue with real integer-paise prices and costs, and two agents (one active, one revoked). Agent API keys are **randomly generated per environment and never hardcoded**; only the hash is stored, and the raw key is written once to a gitignored local file so re-running stays idempotent.
+
+### 3. Run
+
+```bash
+npm run dev           # http://localhost:3000
+```
+
+| Surface | URL |
+|---|---|
+| Merchant dashboard | `/dashboard` (log in with the seeded credentials) |
+| Buyer storefront + chat | `/store/<merchantId>` |
+| Embeddable widget | `/embed/<publishableKey>` |
+| Public no-install store audit | `/audit` |
+| Discovery document | `/.well-known/agent-commerce.json` |
+| Agent API / MCP | `POST /api/agent/*`, `POST /api/mcp` |
+
+### 4. Verify it actually works
+
+```bash
+npm test                                          # 811 tests, real DB, zero mocks
+npm run script scripts/check-env.ts               # every credential, live
+npm run script scripts/integration-proof.ts       # end-to-end money path
+npm run script scripts/demo-failure-cap-exceeded.ts   # watch a bound refuse
+```
+
+Every `scripts/demo-failure-*.ts` is self-cleaning and safe to run twice back to back. They hit a real database and a real Razorpay test account — none of them are mocked.
+
+### 5. Run the autonomous ADK buyer against it
+
+From the repo root, provision the agent's own real key, spend cap, capability grants, and a catalogue deliberately tuned so the goal is **not** satisfiable by the naive path:
+
+```bash
+npm run script scripts/seed-buyer-agent.ts    # idempotent; reset with scripts/reset-buyer-agent.ts
+```
+
+Then create `agent-buyer/.env.local` with the three variables its own `src/env.ts` requires — an independent schema that deliberately shares nothing with the parent app:
+
+```bash
+THIRDMAN_BASE_URL=http://localhost:3000
+THIRDMAN_AGENT_KEY=      # the real agent key printed by the seed step above
+GEMINI_API_KEY=
+```
+
+```bash
+cd agent-buyer && npm install && npm run run
+```
+
+Give it a goal it cannot naively satisfy and watch it get refused by real bounds, adapt, and route around them — then open `/dashboard/theatre` to see its reasoning paired against the merchant's own decision stream, correlated by real money action id.
+
+### 6. Deploy
+
+Full instructions, including the exact `gcloud scheduler jobs create` invocation and how to verify the tick is genuinely running, are in **[DEPLOYMENT.md](DEPLOYMENT.md)**.
+
+```bash
+vercel --prod
+gcloud services enable cloudscheduler.googleapis.com
+gcloud scheduler jobs create http thirdman-cron-tick \
+  --location=us-central1 --schedule="* * * * *" \
+  --uri="https://<deploy-domain>/api/cron/run" \
+  --http-method=POST --headers="Authorization=Bearer <CRON_SECRET>" \
+  --attempt-deadline=30s
+```
 
 <br/>
 
@@ -572,20 +736,43 @@ A new merchant's day one is non-empty, but only with **real rows clearly labelle
 
 | | |
 |---|---|
-| **Framework** | Next.js 16 (App Router), React 19, TypeScript. One repo serving dashboard, storefront, chat, embed, the public audit and every API route |
-| **Data** | PostgreSQL (Neon) via Drizzle ORM. 63 tables, 41 migrations, the single source of truth no cache is permitted to disagree with |
+| **Framework** | Next.js 16 (App Router, Turbopack), React 19, TypeScript strict. One repo serving dashboard, storefront, chat, embed, the public audit and every API route |
+| **Data** | PostgreSQL (Neon serverless) via Drizzle ORM + `postgres-js`. 65 tables, 43 migrations, the single source of truth no cache is permitted to disagree with |
 | **Payments** | Razorpay. Real test-mode orders, hosted Checkout (never a server-side card form), HMAC signature verification on both the checkout callback and inbound webhooks, Payment Links, capture, refund |
 | **Agent protocol** | `@modelcontextprotocol/sdk`. This product's own server, Streamable HTTP, stateless, fourteen tools. AP2 and x402 subsets named exactly, `.well-known` discovery |
-| **Models** | Groq (default), Gemini, NVIDIA NIM, OpenRouter, Z.ai. All five behind one wrapper with mandatory fallback |
-| **Autonomous buyer** | Google ADK (`@google/adk`) on `gemini-3.5-flash`, a standalone package with no database access, speaking only MCP |
-| **Crypto** | Node `crypto`. AES-256-GCM for merchant secrets at rest, scrypt for passwords, `jose` for ES256 AP2 mandates and Refusal Receipts, `timingSafeEqual` everywhere a signature is compared |
-| **Observability** | OpenTelemetry with a custom money-path-only span processor, plus SSE for the live decision stream |
-| **Validation** | zod at every trust boundary. Every API input, every jsonb column whose shape must stay closed, every model proposal |
-| **Testing** | Vitest against a real database with **zero mocks**, plus `fast-check` property tests on the gate, the runtime and the treasury |
-| **Distribution** | An `npx` CLI, a VS Code extension, a generated WooCommerce plugin, a public no-install audit page, and a one-tag embed |
+| **Models** | Groq (default), **Gemini 3.5 Flash**, NVIDIA NIM, OpenRouter, Z.ai. All five behind one wrapper with mandatory fallback and per-token integer-paise cost accounting |
+| **Agent framework** | **Google ADK** (`@google/adk`) with `LlmAgent` / `Runner` / `InMemorySessionService` and its tool-callback hooks, on **`@google/genai`** — a standalone package with no database access, speaking only MCP |
+| **Cloud** | **Google Cloud Scheduler** driving the one authenticated tick that fans out to 17 idempotent sweep jobs. Vercel for the app, Neon for Postgres |
+| **Auth** | Session cookies with rotation-on-login and scrypt password hashing, plus **Google OAuth** and **GitHub OAuth** (both optional pairs — an unconfigured provider hides its button rather than rendering one that 500s). Per-account decaying backoff, deliberately never a lockout |
+| **Integrations** | **Shopify** OAuth app with a real Admin API catalogue sync (`read_products` only, encrypted offline token), a generated **WooCommerce** plugin, CSV import, and a model-assisted paste-a-blob importer |
+| **Crypto** | Node `crypto`. AES-256-GCM for merchant secrets at rest, scrypt for passwords, `jose` for ES256 AP2 mandates and Refusal Receipts, `timingSafeEqual` everywhere a secret or signature is compared |
+| **Observability** | OpenTelemetry (`@vercel/otel` + custom `SpanProcessor`) scoped strictly to the money path, GenAI semantic conventions for token usage, plus SSE over Web Streams for the live decision stream |
+| **Validation** | zod at every trust boundary. Every API input, every jsonb column whose shape must stay closed, every model proposal, every environment variable |
+| **Testing** | Vitest against a real database with **zero mocks**, plus `fast-check` property tests on the gate, the runtime and the treasury. 811 tests across four packages |
+| **Distribution** | An `npx` CLI (`thirdman`), a VS Code extension, a generated WooCommerce plugin, a public no-install audit page, and a one-tag embed |
 | **Styling** | Tailwind v4 on a hand-authored token system, Framer Motion, Lucide icons, `next/font` self-hosted Fraunces and Geist |
 | **Charts** | Recharts for the axis-bearing charts, reading series shaped by pure integer-paise functions. Funnels, ranked bars and composition bars are hand-authored from the same token system, because they are proportional divs and a library buys nothing |
 | **Money** | Integer paise. Everywhere. No float, no `Number` division, converted to rupees only at the display edge |
+
+<br/>
+
+## Where to look, if you are evaluating this
+
+Every row points at something runnable or readable, not a claim.
+
+| If you want to check… | Open this |
+|---|---|
+| **The one path money can take** | [`src/lib/gate.ts`](src/lib/gate.ts) — `attemptMoneyAction()`. There is no second one |
+| **That a model cannot reach money** | The five isolation tests: `memory-never-influences-gate.test.ts`, `trust-score-never-influences-gate.test.ts`, `returns-desk.isolation.test.ts`, `setup-conversation.isolation.test.ts`, `agent-buyer/src/isolation.test.ts` |
+| **Correctness under real concurrency** | `gate.test.ts` (20 concurrent against a cap of 5), `gate.properties.test.ts` (`fast-check`, 2000 runs), `runtime/tasks.properties.test.ts` (10 parallel drains, 8 tasks, each claimed once) |
+| **A bound actually refusing** | Any of the 33 `scripts/demo-failure-*.ts`. Self-cleaning, real DB, real Razorpay test account |
+| **Autonomous agent behaviour** | `agent-buyer/` — then `/dashboard/theatre` to see its reasoning against the merchant's real decisions |
+| **Google Cloud, running** | [DEPLOYMENT.md](DEPLOYMENT.md) §2, and [`src/app/api/cron/run/route.ts`](src/app/api/cron/run/route.ts) — 17 jobs behind one authenticated tick |
+| **Gemini + ADK, wired for real** | [`agent-buyer/src/loop.ts`](agent-buyer/src/loop.ts) and [`agent-buyer/src/model.ts`](agent-buyer/src/model.ts) |
+| **What an external agent sees** | `GET /.well-known/agent-commerce.json`, then `POST /api/mcp` |
+| **Honesty about what is not built** | The `implemented: false` entries in the discovery document, and [FAILURES.md](FAILURES.md) |
+| **What broke, and how it got fixed** | [FAILURES.md](FAILURES.md) — sixty-plus entries written in the moment |
+| **Why a decision was made this way** | [DECISIONS.md](DECISIONS.md) — every real alternative that was considered and rejected |
 
 <br/>
 

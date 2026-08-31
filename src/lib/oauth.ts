@@ -136,7 +136,7 @@ async function fetchGithubProfile(accessToken: string): Promise<OAuthProfile> {
   const headers = {
     Authorization: `Bearer ${accessToken}`,
     Accept: "application/vnd.github+json",
-    "User-Agent": "razorpay-buildathon",
+    "User-Agent": "thirdman",
   };
 
   const userRes = await fetch("https://api.github.com/user", { headers });

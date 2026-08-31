@@ -54,8 +54,8 @@ import { runRecoveryBatch, confirmRecoveryLinkPaid } from "@/lib/recovery/sequen
  * Usage: npm run script scripts/demo-live-feed.ts
  */
 
-const MIN_GAP_MS = 8_000;
-const MAX_GAP_MS = 20_000;
+const MIN_GAP_MS = 18_000;
+const MAX_GAP_MS = 40_000;
 const DEMO_AGENT_COUNT = 12;
 const DEMO_AGENT_PREFIX = "Demo Feed Buyer";
 
@@ -176,7 +176,7 @@ async function main() {
         });
         log(`RECOVERY: failure recorded — ₹${(amountPaise / 100).toFixed(2)} declined (${decline.declineCode}), queued.`);
 
-        await sleep(2000 + Math.random() * 2000);
+        await sleep(4000 + Math.random() * 4000);
         const batch = await runRecoveryBatch(merchant.id);
         log(`RECOVERY: batch run — attempted ${batch.attempted}, ₹${(batch.recoveredPaise / 100).toFixed(2)} recovered so far, ${batch.writtenOff} written off.`);
 
@@ -187,7 +187,7 @@ async function main() {
 
         if (attempt?.razorpayPaymentLinkId && attempt.outcome === "pending") {
           log(`RECOVERY: link generated — ${attempt.paymentLinkUrl}`);
-          await sleep(3000 + Math.random() * 3000);
+          await sleep(6000 + Math.random() * 6000);
           await confirmRecoveryLinkPaid(attempt.razorpayPaymentLinkId, amountPaise);
           log(`RECOVERY: SUCCEEDED — ₹${(amountPaise / 100).toFixed(2)} recovered via the payment link, confirmed paid.`);
         } else if (attempt) {
@@ -228,7 +228,7 @@ async function main() {
 
         if (attempt.decision === "allow" && attempt.moneyActionId && attempt.razorpayOrderId) {
           log(`[${agent.name}] PURCHASE ALLOW — ${attempt.reason}`);
-          await sleep(3000 + Math.random() * 3000);
+          await sleep(6000 + Math.random() * 6000);
           const capture = await confirmCapture(attempt.moneyActionId, `pay_demo_${attempt.moneyActionId.slice(0, 12)}`, "checkout_signature");
           log(`[${agent.name}] CAPTURE  ${capture.decision.toUpperCase()} — ${capture.reason}`);
           if (capture.decision === "allow") {

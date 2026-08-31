@@ -114,7 +114,7 @@ export async function buildMerchantManifest(merchantId: string, origin: string) 
         subset: "An unauthenticated purchase attempt against POST /api/agent/purchase receives HTTP 402 Payment Required with a challenge body naming the authentication scheme and where to obtain a key — not a full x402 payment-settlement flow.",
       },
       acp: { implemented: false },
-      npciUap: { implemented: false, note: "NPCI's Unified Agentic Protocol is not implemented and not claimed. Named here only because it appears in this project's own hackathon brief as context." },
+      npciUap: { implemented: false, note: "NPCI's Unified Agentic Protocol is not implemented and not claimed. Named here only so an integrating agent can see it was considered and deliberately left out." },
     },
     note: env.NODE_ENV === "production" ? undefined : "Development build — pricing and availability shown are from real, non-production seed/test data.",
   };

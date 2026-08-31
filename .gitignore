@@ -51,6 +51,11 @@ yarn-error.log*
 /cli/dist
 /cli/src/**/*.js
 
+# Stray .js.map sourcemaps from the same editor watch/emit-on-save
+# behaviour, wherever a .ts source is compiled in place — cli/src and
+# shared/ both hit this.
+*.js.map
+
 # vscode-extension (Layer 24) is also a standalone package
 /vscode-extension/node_modules
 /vscode-extension/out
@@ -63,11 +68,12 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# project docs — local reference only, not pushed
-/ARCHITECTURE.md
+# project docs — most are local reference only, not pushed.
+# ARCHITECTURE.md, FAILURES.md and DECISIONS.md are the exception: the
+# README links to all three as real evidence (what broke, why a
+# decision was made) and a judge needs to actually be able to open
+# them, so those three are tracked and pushed on purpose.
 /CLAUDE.md
-/DECISIONS.md
-/FAILURES.md
 /PROGRESS.md
 /prd.md
 /plans/
