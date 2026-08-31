@@ -97,9 +97,23 @@ export async function POST(req: NextRequest) {
   // affect the checkout's own success response — issuing coins is
   // additive, and its own idempotency key (the purchase's money_action
   // id) protects against the webhook also triggering this.
-  if (result.decision === "allow" && !moneyAction.holdOnly && moneyAction.agentId) {
+  //
+  // Every human storefront/chat buyer shares one agentId (the
+  // __storefront_checkout agent — see storefront.ts), so it cannot
+  // identify one buyer's balance from another's. buyerSessionToken, set
+  // at order-creation time from the real request, is the actual
+  // per-buyer identity in that case and is what getCoinBalance/the
+  // ai-credits balance lookup key on — prefer it whenever present.
+  // Falls back to agentId only for a real, individually-keyed agent
+  // purchase (MCP/agent API), which has no session token at all.
+  const rewardIdentity = moneyAction.buyerSessionToken
+    ? { sessionToken: moneyAction.buyerSessionToken }
+    : moneyAction.agentId
+      ? { agentId: moneyAction.agentId }
+      : null;
+  if (result.decision === "allow" && !moneyAction.holdOnly && moneyAction.agentId && rewardIdentity) {
     try {
-      await issueRewardCoinsForCapture(moneyAction.merchantId, moneyAction.agentId, moneyAction.id, moneyAction.amountPaise, { agentId: moneyAction.agentId }, moneyAction.variantId);
+      await issueRewardCoinsForCapture(moneyAction.merchantId, moneyAction.agentId, moneyAction.id, moneyAction.amountPaise, rewardIdentity, moneyAction.variantId);
     } catch (err) {
       console.warn("[checkout/verify] reward coin issuance failed:", err);
     }

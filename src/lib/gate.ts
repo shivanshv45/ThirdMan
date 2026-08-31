@@ -1256,6 +1256,7 @@ async function attemptMoneyActionTraced(
         status: "pending_escalation",
         idempotencyKey: request.idempotencyKey,
         checkoutMandateId: request.checkoutMandateId,
+        buyerSessionToken: request.sessionToken ?? null,
       });
       setMoneyActionId(moneyAction.id);
 
@@ -1301,6 +1302,7 @@ async function attemptMoneyActionTraced(
       idempotencyKey: request.idempotencyKey,
       reservationExpiresAt: sql<Date>`now() + interval '${sql.raw(String(RESERVATION_TIMEOUT_MINUTES))} minutes'`,
       checkoutMandateId: request.checkoutMandateId,
+      buyerSessionToken: request.sessionToken ?? null,
     });
     setMoneyActionId(moneyAction.id);
 

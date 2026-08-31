@@ -245,6 +245,7 @@ export async function POST(req: NextRequest) {
       amountPaise: cart!.amountPaise,
       context: `Storefront checkout: cart (${cart!.lines.length} item${cart!.lines.length === 1 ? "" : "s"})${contextSuffix}`,
       cartConversationId: conversation.id,
+      sessionToken,
       idempotencyKey,
     });
 
@@ -311,6 +312,7 @@ export async function POST(req: NextRequest) {
     context: `Storefront checkout: ${product.name}${contextSuffix}`,
     variantId: variant.id,
     quantity,
+    sessionToken,
     idempotencyKey,
   });
 

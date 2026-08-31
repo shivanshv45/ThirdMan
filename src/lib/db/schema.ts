@@ -444,6 +444,15 @@ export const moneyActions = pgTable(
     // mandate," never as an ambiguous or silently-verified state — see
     // explainability.ts and DECISIONS.md.
     checkoutMandateId: uuid("checkout_mandate_id").references((): typeof checkoutMandates.id => checkoutMandates.id),
+    // The buyer's storefront/chat session token, when this purchase has
+    // one (agentId is the shared __storefront_checkout agent for every
+    // human buyer on a merchant, so it cannot identify one buyer from
+    // another). Set at order-creation time from the request; read back at
+    // capture to issue reward coins under the real buyer's identity
+    // instead of the shared agent id — see reward-coins.ts's
+    // getCoinBalance, which already looks a session-based buyer's balance
+    // up by sessionToken, never agentId, when no real agent is involved.
+    buyerSessionToken: text("buyer_session_token"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

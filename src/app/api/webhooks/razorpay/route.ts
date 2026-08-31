@@ -176,10 +176,18 @@ async function handlePaymentCaptured(payload: unknown): Promise<void> {
   // capture, never a hold, and issueRewardCoinsForCapture's own
   // idempotency key (the purchase's money_action id) protects against
   // double-issuing when both this webhook and the browser's signature
-  // check confirm the same payment.
-  if (result.decision === "allow" && !moneyAction.holdOnly && moneyAction.agentId) {
+  // check confirm the same payment. Same buyerSessionToken preference as
+  // /api/checkout/verify — every human buyer shares one agentId (the
+  // __storefront_checkout agent), so the session token is the real
+  // per-buyer identity when one was recorded at order-creation time.
+  const rewardIdentity = moneyAction.buyerSessionToken
+    ? { sessionToken: moneyAction.buyerSessionToken }
+    : moneyAction.agentId
+      ? { agentId: moneyAction.agentId }
+      : null;
+  if (result.decision === "allow" && !moneyAction.holdOnly && moneyAction.agentId && rewardIdentity) {
     try {
-      await issueRewardCoinsForCapture(moneyAction.merchantId, moneyAction.agentId, moneyAction.id, moneyAction.amountPaise, { agentId: moneyAction.agentId }, moneyAction.variantId);
+      await issueRewardCoinsForCapture(moneyAction.merchantId, moneyAction.agentId, moneyAction.id, moneyAction.amountPaise, rewardIdentity, moneyAction.variantId);
     } catch (err) {
       console.warn("[webhook] reward coin issuance failed:", err);
     }

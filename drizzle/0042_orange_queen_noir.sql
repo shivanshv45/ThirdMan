@@ -1,0 +1,1 @@
+ALTER TABLE "money_actions" ADD COLUMN "buyer_session_token" text;
